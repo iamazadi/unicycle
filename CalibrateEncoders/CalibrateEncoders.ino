@@ -27,7 +27,7 @@ const int buttonBPin = 25;
 const int redPin = 4;
 const int greenPin = 5;
 const int bluePin = 6;
-const int samplesNumber = 600;
+const int samplesNumber = 512;
 const int period = 100; // the time interval between sensor readings in microseconds
 
 int calibrated = 0;
@@ -37,17 +37,21 @@ int tableBegin = 0;
 int tableEnd = samplesNumber - 1;
 int directionOfRotation = 0;
 int minIndex = 0;
+int secondMinIndex = 0;
 int maxIndex = samplesNumber - 1;
-int countdown = 32;
+int countdown = 64;
 int debugMinMaxValues = 1;
 double table1[samplesNumber] = {};
 double table2[samplesNumber] = {};
 double processedReading1 = 0.0;
 double processedReading2 = 0.0;
 double sensorPosition = 0.0;
-double minValue = 0.0;
+double minValue = 1023.0;
 double maxValue = 0.0;
 double averageVelocity = 0.0;
+double minVelocity = 1023.0;
+double maxVelocity = 0.0;
+float hue = 0.0;
 
 // Make an instance of the FIR filter. In this example we'll use
 // floating point values and an 8 element filter. For a moving average
@@ -93,8 +97,7 @@ bool changeSetpoint(void *) {
       tableIndex = max(tableIndex - 1, tableBegin);
     if (tableIndex <= tableBegin || tableIndex >= tableEnd)
       directionOfRotation = 100 - directionOfRotation;
-    double rawPosition = getPosition(table1[tableIndex], table2[tableIndex]);
-    setpoint = (rawPosition - minValue) / (maxValue - minValue);
+    setpoint = getPosition(table1[tableIndex], table2[tableIndex]);
   }
   return true;
 }
@@ -103,10 +106,8 @@ bool changeSetpoint(void *) {
 bool readSensors(void *) {
   processedReading1 = fir1.processReading(analogRead(A0));
   processedReading2 = fir2.processReading(analogRead(A1));
+  sensorPosition = getPosition(processedReading1, processedReading2);
   if (calibrated == 1) {
-    double rawPosition = getPosition(processedReading1, processedReading2);
-    // sensorPosition = (rawPosition - minValue) / (maxValue - minValue);
-    sensorPosition = rawPosition;
     input = sensorPosition;
     myController.compute();
   }
@@ -129,37 +130,91 @@ bool calibrate(const char *m) {
   double velocity = 0.0;
   double acceleration = 0.0;
   double accumulator = 0.0;
+  double threshold = 1.0;
+  double threshold2 = 5.0;
   int counter = 0;
 
-  // Find the minimum and maximum position values
-  for (int i = 2; i < samplesNumber; i++) {
+  // find the minimum velocity
+  for (int i = 1; i < samplesNumber; i++) {
     _position = getPosition(table1[i], table2[i]);
     velocity = _position - getPosition(table1[i - 1], table2[i - 1]);
-    acceleration = velocity - (getPosition(table1[i - 1], table2[i - 1]) - getPosition(table1[i - 2], table2[i - 2]));
     accumulator += abs(velocity);
     counter++;
-    // the first derivative at critical points is approximately equal to zero
-    if (abs(velocity) < 0.1) {
-      // the second derivative at valleys is positive
-      // look in the first third of samples
-      if (acceleration > 0.0 && _position < minValue && abs(_position - minValue) > 0.1 && i <= samplesNumber / 3) {
-        minValue = _position;
-        minIndex = i;
-      }
-      // the second derivative at peaks is negative
-      // ensure that the maximum value occurs after the minimum value
-      if (acceleration < 0.0 && _position > maxValue && abs(_position - maxValue) > 0.1 && i > minIndex) {
-        maxValue = _position;
-        maxIndex = i;
-      }
+    if (abs(velocity) < minVelocity) {
+      minVelocity = abs(velocity);
+    }
+    if (abs(velocity) > maxVelocity) {
+      maxVelocity = abs(velocity);
     }
   }
   // Find the average distance between two consecutive sensor positions
   averageVelocity = accumulator / counter;
 
-  calibrated = 1;
+  threshold = maxVelocity / 4.0;
+  // threshold2 = 1.0 * maxVelocity;
+  
 
-  return true; // repeat? true
+  // Find the minimum position value
+  for (int i = 2; i < samplesNumber; i++) {
+    _position = getPosition(table1[i], table2[i]);
+    velocity = _position - getPosition(table1[i - 1], table2[i - 1]);
+    acceleration = velocity - (getPosition(table1[i - 1], table2[i - 1]) - getPosition(table1[i - 2], table2[i - 2]));
+    // the first derivative at critical points is approximately equal to zero
+    if (abs(velocity) <= threshold) {
+      // the second derivative at valleys is positive
+      // look in the first third of samples
+      if (acceleration > 0.0) {
+        if (_position < minValue && i < samplesNumber / 3) {
+          minValue = _position;
+          minIndex = i;
+        }
+      }
+    }
+  }
+
+  // Find the maximum position value
+  for (int i = minIndex + 2; i < samplesNumber; i++) {
+    _position = getPosition(table1[i], table2[i]);
+    velocity = _position - getPosition(table1[i - 1], table2[i - 1]);
+    acceleration = velocity - (getPosition(table1[i - 1], table2[i - 1]) - getPosition(table1[i - 2], table2[i - 2]));
+    // the first derivative at critical points is approximately equal to zero
+    if (abs(velocity) <= threshold) {
+      // the second derivative at peaks is negative
+      // ensure that the maximum value occurs after the minimum value
+      if (acceleration < 0.0) { 
+        if (_position > maxValue && i > minIndex * 1.1 && i <  samplesNumber * 2 / 3) {
+          maxValue = _position;
+          maxIndex = i;
+        }
+      }
+    }
+  }
+
+  int distance = 0;
+  if (maxIndex > minIndex * 1.1)
+    distance = maxIndex - minIndex;
+  else
+    return false;
+
+  // Find the second occurance of the minimum value for getting the whole period
+  for (int i = maxIndex + 2; i < samplesNumber; i++) {
+    _position = getPosition(table1[i], table2[i]);
+    velocity = _position - getPosition(table1[i - 1], table2[i - 1]);
+    acceleration = velocity - (getPosition(table1[i - 1], table2[i - 1]) - getPosition(table1[i - 2], table2[i - 2]));
+    // the first derivative at critical points is approximately equal to zero
+    if (abs(velocity) <= threshold) {
+      // the second derivative at valleys is positive
+      // look in the first third of samples
+      if (acceleration > 0.0 && abs(_position - minValue) <= 2.0 * averageVelocity && i < maxIndex + distance * 1.1) {
+        secondMinIndex = i;
+      }
+    }
+  }
+
+  if (maxValue > minValue && maxIndex > minIndex && secondMinIndex > maxIndex && abs((maxIndex - minIndex + maxIndex) - secondMinIndex) < 100)
+    calibrated = 1;
+
+  return false; // repeat? true
 }
 
 
@@ -171,6 +226,8 @@ void setup() {
 
   minValue = getPosition(1023.0, 1023.0);
   maxValue = getPosition(0.0, 0.0);
+  minVelocity = minValue;
+  maxVelocity = maxValue;
 
   // For a moving average we want all of the coefficients to be unity.
   float coef[8] = { 1., 1., 1., 1., 1., 1., 1., 1.};
@@ -184,6 +241,9 @@ void setup() {
   // call the calculate_velocity function every 1000 micros (1 second)
   timer1.every(100000, changeSetpoint);
 
+  // set ADC pins A0 and A1 as input
+  pinMode(A0, INPUT);
+  pinMode(A1, INPUT);
   // set pins 2 and 3 as outputs:
   pinMode(oneAPin, OUTPUT);
   pinMode(twoAPin, OUTPUT);
@@ -217,19 +277,18 @@ void setup() {
   // myController.stop();                // Turn off the PID controller (compute() will not do anything until start() is called)
 
   // call print_message in 5 seconds, but with microsecond resolution
-  u_timer.in(5000000, calibrate, "delayed five seconds using microseconds");
+  u_timer.in(6000000, calibrate, "delayed five seconds using microseconds");
 }
 
 // the loop routine runs over and over again forever:
 void loop() {
-
   if (calibrated == 1) {
 
     int _output = 255;
     int dutyCycleOneA = _output;
     int dutyCycleTwoA = 255 - _output;
 
-    float hue = tableIndex / samplesNumber * 360.0;
+    hue = (sensorPosition - minValue) * 360.0 / (maxValue - minValue);
     float saturation = 1.0;
     float brightness = 1.0;
     hsv hsvColor;
@@ -268,12 +327,19 @@ void loop() {
   // print out the value you read:
   if (debugMinMaxValues == 1) {
     Serial.print("i: "); Serial.print(minIndex); Serial.print(" ");
+    Serial.print("j: "); Serial.print(maxIndex); Serial.print(" ");
+    Serial.print("k: "); Serial.print(secondMinIndex); Serial.print(" ");
     Serial.print("n: "); Serial.print(minValue); Serial.print(" | ");
-    Serial.print("a: "); Serial.print(maxIndex); Serial.print(" ");
     Serial.print("x: "); Serial.print(maxValue); Serial.print(" | ");
   }
   Serial.print("s: "); Serial.print(sensorPosition); Serial.print(" ");
-  //Serial.print("v: "); Serial.print(averageVelocity * 100); Serial.print(" | ");
+  
+  Serial.print("h: "); Serial.print(hue); Serial.print(" ");
+  Serial.print("c: "); Serial.print(samplesCounter); Serial.print(" ");
+  Serial.print("u: "); Serial.print(minVelocity); Serial.print(" ");
+  Serial.print("v: "); Serial.print(averageVelocity); Serial.print(" ");
+  Serial.print("w: "); Serial.print(maxVelocity); Serial.print(" | ");
+  
   Serial.println("uT");
   timer.tick(); // tick the timer
   timer1.tick();
