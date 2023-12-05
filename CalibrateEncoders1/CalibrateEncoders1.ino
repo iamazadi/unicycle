@@ -13,14 +13,14 @@ const int bluePin = 6;
 
 const int samplesNumber = 650; // the total number of raw pints in tables
 const int period = 5000; // the time interval between sensor readings in microseconds
-const int kernelSize = 1; // the kernel size of convolutional filters
+const int kernelSize = 2; // the kernel size of convolutional filters
 
 // variables will change:
 int calibrated = 0;
 int tableIndex = 0; // the current index of the table
 int tableBegin = 0;
-int tableMiddle = samplesNumber / 2;
-int tableEnd = tableMiddle + 1;
+// int tableMiddle = samplesNumber / 2;
+int tableEnd = samplesNumber;
 int countdown = 16; // for discarding at least 8 points so that the moving average stabilizes
 int samplesCounter = 0; // for keeping track of the number of recorded points in tables
 int buttonState = 0; // variable for reading the pushbutton status
@@ -60,7 +60,7 @@ bool readSensors(void *) {
     double distance = 1000000.0;
     double _distance;
     double _position;
-
+/*
     // For when the sensor position is at a critical point (peaks and valleys)
     if (abs(tableIndex - tableBegin) < 3 || abs(tableIndex - tableMiddle) < 3 || abs(tableIndex - tableEnd) < 3) {
       double entropy1 = 0.0;
@@ -119,15 +119,17 @@ bool readSensors(void *) {
     }
     // For when the sensor position is far from critical points (peaks and valleys)
     else {
+    */
       distance = 1000000.0;
-      for (int i = tableBegin; i < tableMiddle; i++) {
+      for (int i = tableBegin; i < tableEnd; i++) {
         _position = getPosition(table1[i], table2[i]);
         _distance = abs(_position - processedReading);
         if (_distance < distance) {
           distance = _distance;
-          firstHit = i;
+          tableIndex = i;
         }
       }
+      /*
       distance = 1000000.0;
       for (int i = tableMiddle; i <= tableEnd; i++) {
         _position = getPosition(table1[i], table2[i]);
@@ -137,12 +139,13 @@ bool readSensors(void *) {
           secondHit = i;
         }
       }
+      
       if (abs(tableIndex - firstHit) <= abs(tableIndex - secondHit))
         tableIndex = firstHit;
       else
         tableIndex = secondHit;
     }
-
+*/
     _position = ((double)tableIndex - (double)tableBegin) / ((double)tableEnd - (double)tableBegin);
     wheelVelocity = _position - wheelPosition;
     wheelPosition = _position;
@@ -197,7 +200,7 @@ bool calibrate(void *) {
   }
 
   // Third, find the index of the minimum
-  double threshold = 0.1;
+  double threshold = 0.01;
   for (int i = 0; i < samplesNumber - kernelSize / 2; i++) {
     product = 0.0;
     for (int j = 0; j < kernelSize; j++) {
@@ -222,11 +225,11 @@ bool calibrate(void *) {
       Serial.print("i2: "); Serial.print(i); Serial.print(" ");
       Serial.println("uT");
       value = product;
-      tableMiddle = i;
+      tableEnd = i;
       break;
     }
   }
-
+/*
   // Fifth, find the second occurence of the minimum to get a full period
   for (int i = tableMiddle + 1; i < samplesNumber - kernelSize / 2; i++) {
     product = 0.0;
@@ -241,15 +244,16 @@ bool calibrate(void *) {
       break;
     }
   }
-
-  int halfPeriod1 = tableMiddle - tableBegin;
-  int halfPeriod2 = tableEnd - tableMiddle;
-  double ratio = (double) halfPeriod1 / (double) halfPeriod2;
-  if (halfPeriod1 < samplesNumber / 2 && tableBegin < tableEnd && tableBegin < tableMiddle && tableMiddle < tableEnd && abs(ratio - 1.0) < 0.33)
+*/
+  int halfPeriod1 = tableEnd - tableBegin;
+  //int halfPeriod2 = tableEnd - tableMiddle;
+  //double ratio = (double) halfPeriod1 / (double) halfPeriod2;
+  //if (halfPeriod1 < samplesNumber / 2 && tableBegin < tableEnd && tableBegin < tableMiddle && tableMiddle < tableEnd && abs(ratio - 1.0) < 0.33)
+  if (halfPeriod1 < samplesNumber / 2 && tableBegin < tableEnd)
     calibrated = 1;
 
-  Serial.print("ratio: "); Serial.print(ratio); Serial.print(" ");
-  Serial.println("uT");
+  // Serial.print("ratio: "); Serial.print(ratio); Serial.print(" ");
+  // Serial.println("uT");
   return false; // repeat? true
 }
 
@@ -340,7 +344,7 @@ void loop() {
     Serial.print("s: "); Serial.print(processedReading); Serial.print(" ");
     Serial.print("i: "); Serial.print(tableIndex); Serial.print(" ");
     Serial.print("b: "); Serial.print(tableBegin); Serial.print(" ");
-    Serial.print("m: "); Serial.print(tableMiddle); Serial.print(" ");
+    //Serial.print("m: "); Serial.print(tableMiddle); Serial.print(" ");
     Serial.print("e: "); Serial.print(tableEnd); Serial.print(" ");
     Serial.println("uT");
   }
