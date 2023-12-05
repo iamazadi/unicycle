@@ -56,7 +56,7 @@ bool readSensors(void *) {
 
   if (calibrated == 1) {
     int firstHit = tableBegin;
-    int secondHit = tableEnd;
+    //int secondHit = tableEnd;
     double distance = 1000000.0;
     double _distance;
     double _position;
@@ -285,7 +285,7 @@ void setup() {
 
   digitalWrite(enablePin, HIGH);
   // Run the motor at a constant speed for calibration
-  analogWrite(oneAPin, 255);
+  analogWrite(oneAPin, 127);
   analogWrite(twoAPin, 0);
 
   // call the calculate_velocity function every 100 micros (0.0001 second)
