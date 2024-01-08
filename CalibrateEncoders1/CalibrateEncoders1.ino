@@ -1,205 +1,146 @@
 #include <arduino-timer.h>
 #include <FIR.h>
 #include <SimpleKalmanFilter.h>
+#include <Servo.h>
 #include "MPU9250.h"
 #include "ArduPID.h"
+#include <SoftwareSerial.h>
 #include "Tools.cpp"
 
 // These constants won't change. They're used to give names to the pins used:
-const int oneAPin = 2;
-const int twoAPin = 3;
-const int enablePin = 22;
-const int buttonPin = 26;
-const int redPin = 4;
+const int button1Pin = 23;
+const int button2Pin = 25;
+const int button3Pin = 27;
+const int actuatorPin = 13;
+const int enable12Pin = 52;
+const int enable34Pin = 53;
+const int oneAPin = 8;
+const int twoAPin = 9;
+const int threeAPin = 2;
+const int fourAPin = 3;
+const int redPin = 6;
 const int greenPin = 5;
-const int bluePin = 6;
+const int bluePin = 4;
+const int period = 100; // the time interval between sensor readings in microseconds
 
-const int samplesNumber = 550; // the total number of raw pints in tables
-const int period = 1000; // the time interval between sensor readings in microseconds
-const int kernelSize = 2; // the kernel size of convolutional filters
+int mpuUpdate = 0;
+int dutyCycleOneA = 127;
+int dutyCycleTwoA = 127;
+int dutyCycleThreeA = 127;
+int dutyCycleFourA = 127;
+int actuatorValue = 0;
+int sensorState = 0;
+int currentSensorState = 0; // connected to pin A1
+int counter = 0;
+int dutyCycleRed = 255;
+int dutyCycleGreen = 255;
+int dutyCycleBlue = 255;
+int button1State = 0; // variable for reading the pushbutton status
+int button2State = 0;
+int button3State = 0;
+int mode = 0;
+int buttonCounter = 0;
+int maxButtonCount = 5;
+int resetParams = 0;
+long unsigned int countPulses = 0;
 
 // variables will change:
-int calibrated = 1;
-int tableIndex = 0; // the current index of the table
-int tableBegin = 0;
-int tableEnd = samplesNumber;
-int countdown = 32; // for discarding at least 8 points so that the moving average stabilizes
-int samplesCounter = 0; // for keeping track of the number of recorded points in tables
-int buttonState = 0; // variable for reading the pushbutton status
-
-double table1[samplesNumber] = {};
-double table2[samplesNumber] = {};
-double minKernel[kernelSize] = {};
-double maxKernel[kernelSize] = {};
 double processedReading1 = 0.0;
 double processedReading2 = 0.0;
 double processedReading = 0.0;
 double processedReadingVelocity = 0.0;
-double wheelPosition = 0.0;
-double wheelVelocity = 0.0;
-double pitchValue = 0.0;
-double pitchVelocity = 0.0;
-double gyroPitchOffset = 5.0;
-double accXPitchOffset = 0.08;
-double accYPitchOffset = -0.01;
-double accZPitchOffset = 0.95;
-double pitchValueGyro = 0.0;
-double pitchValueAcc = 0.0;
-
-// the reaction wheel controller's parameters
-double k1 = 10.0;
-double k2 = 1.0;
-double k3 = 1.0;
+double processedReadingVelocity1 = 0.0;
+double processedReadingVelocity2 = 0.0;
+double phi = 0.0;
+double phiDot = 0.0;
+double phiDotDot = 0.0;
+double theta = 0.0;
+double thetaDot = 0.0;
+double thetaDotDot = 0.0;
+double velocity = 0.0;
+double acceleration = 0.0;
+double wheelSpeed = 0.0;
+double phiAccOffset = 0.0;
+double thetaAccOffset = 0.0;
+double phiAcc = 0.0;
+double thetaAcc = 0.0;
+double lowReading = 0.0;
+double highReading = 1023.0;
+float saturation = 100.0;
+float brightness = 100.0;
+float hue = 0.0;
+float safetyAngle = 18.0;
+double k1 = 65.0;
+double k2 = 10.0;
+double k3 = 10.0;
+double k4 = 0.45;
 
 ArduPID myController;
 double input;
 double output;
 // Arbitrary setpoint and gains - adjust these as fit for your project:
-double setpoint = 127.0;
-double p = 200.0;
-double i = 0.01;
-double d = 300.0;
+double setpoint = 0.0;
+double kp = 70.0;
+double ki = 10.0;
+double kd = 0.1;
+
+SoftwareSerial EEBlue(15, 14); // RX | TX
 
 MPU9250 mpu; // You can also use MPU9255 as is
 
-double e_mea = 0.1; // Measurement Uncertainty
-double e_est = 0.1; // Estimation Uncertainty
-double q = 0.01; // Process Noise
-SimpleKalmanFilter simpleKalmanFilter(e_mea, e_est, q);
-double e_mea1 = 0.1; // Measurement Uncertainty
-double e_est1 = 0.1; // Estimation Uncertainty
-double q1 = 0.01; // Process Noise
-SimpleKalmanFilter simpleKalmanFilter1(e_mea1, e_est1, q1);
-
-// Make an instance of the FIR filter. In this example we'll use
-// floating point values and an 8 element filter. For a moving average
-// that means an 8 point moving average.
-FIR<float, 8> fir1;
-FIR<float, 8> fir2;
+float e_mea = 0.01; // Measurement Uncertainty
+float e_est = 0.01; // Estimation Uncertainty
+float q = 0.01; // Process Noise
+SimpleKalmanFilter phiKalmanFilter(e_mea, e_est, q);
+SimpleKalmanFilter thetaKalmanFilter(e_mea, e_est, q);
 
 // For reading sensors
 Timer<1, micros> timer; // create a timer with 1 task and microsecond resolution
-// For calibrating sensors at startup
-Timer<1, micros> u_timer; // create a timer with 1 task and microsecond resolution
 
+Servo myServo;  // create servo object to control a servo
+FIR<float, 4> fir;
+// FIR<float, 8> fir2;
 
 bool readSensors(void *) {
-  processedReading1 = fir1.processReading(analogRead(A0));
-  processedReading2 = fir2.processReading(analogRead(A1));
-  double reading = getPosition(processedReading1, processedReading2);
-  processedReadingVelocity = reading - processedReading;
-  processedReading = reading;
-  /*
-    if (calibrated == 1) {
-      int firstHit = tableBegin;
-      double distance = 1000000.0;
-      double _distance;
-      double _position;
+  // double reading = fir.processReading(analogRead(A0));
+  // double reading2 = fir2.processReading(analogRead(A1));
+  //processedReadingVelocity1 = reading1 - processedReading1;
+  // processedReadingVelocity2 = reading2 - processedReading2;
+  //processedReading = reading;
+  //processedReading2 = reading2;
+  // double reading = getPosition(processedReading1, processedReading2);
 
-      for (int i = tableBegin; i <= tableEnd; i++) {
-        _position = getPosition(table1[i], table2[i]);
-        _distance = abs(_position - processedReading);
-        if (_distance < distance) {
-          distance = _distance;
-          tableIndex = i;
-        }
-      }
-
-      _position = ((double)tableIndex - (double)tableBegin) / ((double)tableEnd - (double)tableBegin);
-      wheelVelocity = _position - wheelPosition;
-      wheelPosition = _position;
+  // processedReadingVelocity = reading - processedReading;
+  // processedReading = reading;
+  double reading = analogRead(A0);
+  currentSensorState = analogRead(A1);
+  if (abs(reading - lowReading) < abs(reading - highReading)) {
+    lowReading = 0.2 * reading + 0.8 * lowReading;
+    sensorState = 0;
+  }
+  else {
+    highReading = 0.2 * reading + 0.8 * highReading;
+    if (sensorState == 0) {
+      sensorState = 1;
+      countPulses++;
     }
-  */
-  // Need to run at least the length of the filter for reliable processed values.
-  if (countdown > 0)
-    countdown--;
-  if (countdown == 0 && calibrated == 0 && samplesCounter < samplesNumber) {
-    table1[samplesCounter] = processedReading1;
-    table2[samplesCounter] = processedReading2;
-    samplesCounter++;
+  }
+  counter++;
+  if (counter > 24) {
+    acceleration = velocity - countPulses;
+    velocity = countPulses;
+    counter = 0;
+    countPulses = 0;
   }
   return true; // repeat? true
 }
 
 
-bool calibrate(void *) {
-  // turn off the motor before calibration
-  digitalWrite(enablePin, LOW);
-
-  Serial.print("samplesCounter: "); Serial.print(samplesCounter); Serial.print(" ");
-  Serial.println("uT");
-
-  int minIndex;
-  int maxIndex;
-  double minValue;
-  double maxValue;
-  double minimum = getPosition(1023.0, 1023.0);
-  double maximum = getPosition(0.0, 0.0);
-  double value;
-  double product;
-
-  // First, find the minimum and maximum of the sensor position
-  // Search the first third of samples since the data contains 3 revolutions of the wheel
-  for (int i = 0; i < samplesNumber - kernelSize; i++) {
-    value = getPosition(table1[i], table2[i]);
-    if (value < minimum) {
-      minimum = value;
-      minIndex = i;
-    }
-    if (value > maximum) {
-      maximum = value;
-      maxIndex = i;
-    }
-  }
-
-  // Second, initialize the kernels
-  for (int i = 0; i < kernelSize; i++) {
-    minKernel[i] = getPosition(table1[minIndex + i - kernelSize / 2], table2[minIndex + i - kernelSize / 2]);
-    maxKernel[i] = getPosition(table1[maxIndex + i - kernelSize / 2], table2[maxIndex + i - kernelSize / 2]);
-  }
-
-  // Third, find the index of the minimum
-  double threshold = 0.01;
-  for (int i = 0; i < samplesNumber - kernelSize / 2; i++) {
-    product = 0.0;
-    for (int j = 0; j < kernelSize; j++) {
-      product += abs(minKernel[j] - getPosition(table1[i + j - kernelSize / 2], table2[i + j - kernelSize / 2]));
-    }
-    if (product < threshold) {
-      Serial.print("i1: "); Serial.print(i); Serial.print(" ");
-      Serial.println("uT");
-      value = product;
-      tableBegin = i;
-      break;
-    }
-  }
-
-  // Fourth, find the index of the maximum
-  for (int i = tableBegin + 1; i < samplesNumber - kernelSize / 2; i++) {
-    product = 0.0;
-    for (int j = 0; j < kernelSize; j++) {
-      product += abs(maxKernel[j] - getPosition(table1[i + j - kernelSize / 2], table2[i + j - kernelSize / 2]));
-    }
-    if (product < threshold) {
-      Serial.print("i2: "); Serial.print(i); Serial.print(" ");
-      Serial.println("uT");
-      value = product;
-      tableEnd = i;
-      break;
-    }
-  }
-
-  int halfPeriod = tableEnd - tableBegin;
-  if (halfPeriod < samplesNumber / 2 && tableBegin < tableEnd)
-    calibrated = 1;
-
-  return false; // repeat? true
-}
-
 void setup() {
   // put your setup code here, to run once:
   // initialize serial communication at 9600 (or 115200) bits per second:
   Serial.begin(115200);
+  EEBlue.begin(9600); // Default communication rate of the Bluetooth module
 
   Wire.begin();
   delay(1000);
@@ -225,96 +166,179 @@ void setup() {
 
   // For a moving average we want all of the coefficients to be unity.
   float coef[8] = { 1., 1., 1., 1., 1., 1., 1., 1.};
+
   // Set the coefficients
-  fir1.setFilterCoeffs(coef);
-  fir2.setFilterCoeffs(coef);
+  fir.setFilterCoeffs(coef);
+  // fir2.setFilterCoeffs(coef);
 
   // set ADC pins A0 and A1 as input
   pinMode(A0, INPUT);
   pinMode(A1, INPUT);
+  digitalWrite(A0, HIGH);
+  digitalWrite(A1, HIGH);
+  // set the button pin as input
+  pinMode(button1Pin, INPUT);
+  pinMode(button2Pin, INPUT);
+  pinMode(button3Pin, INPUT);
+  // digitalWrite(buttonPin, HIGH);
   // set pins 2 and 3 as outputs:
   pinMode(oneAPin, OUTPUT);
   pinMode(twoAPin, OUTPUT);
+  pinMode(threeAPin, OUTPUT);
+  pinMode(fourAPin, OUTPUT);
   // set pin 22 as output:
-  pinMode(enablePin, OUTPUT);
-  // set the button pin as input
-  pinMode(buttonPin, INPUT);
-  digitalWrite(buttonPin, HIGH);
-  // set the RGB pins as output
-  pinMode(redPin, OUTPUT);
-  pinMode(greenPin, OUTPUT);
-  pinMode(bluePin, OUTPUT);
+  pinMode(enable12Pin, OUTPUT);
+  pinMode(enable34Pin, OUTPUT);
+  pinMode(actuatorPin, OUTPUT);
 
-  digitalWrite(enablePin, HIGH);
-  // Run the motor at a constant speed for calibration
-  analogWrite(oneAPin, 127);
-  analogWrite(twoAPin, 0);
-
-  myController.begin(&input, &output, &setpoint, p, i, d);
-
-  // myController.reverse()               // Uncomment if controller output is "reversed"
-  // myController.setSampleTime(10);      // OPTIONAL - will ensure at least 10ms have past between successful compute() calls
+  myController.begin(&input, &output, &setpoint, kp, ki, kd);
+  //myController.reverse();               // Uncomment if controller output is "reversed"
+  //myController.setSampleTime(7);      // OPTIONAL - will ensure at least 10ms have past between successful compute() calls
+  //myController.setOutputLimits(1000, 2000);
+  //myController.setBias(500);
   myController.setOutputLimits(0, 255);
-  myController.setBias(255.0 / 2.0);
-  myController.setWindUpLimits(-10, 10); // Groth bounds for the integral term to prevent integral wind-up
-
+  myController.setBias(0);
+  myController.setWindUpLimits(-10, 10); // Growth bounds for the integral term to prevent integral wind-up
   myController.start();
   // myController.reset();               // Used for resetting the I and D terms - only use this if you know what you're doing
   // myController.stop();                // Turn off the PID controller (compute() will not do anything until start() is called)
 
+  //myServo.attach(actuatorPin);  // attaches the servo on actuatorPin1A to the servo object
+  //myServo.writeMicroseconds(actuatorValue); // sets the servo position according to the scaled value
+  // myServo.write(actuatorValue);
+  delay(1000);
+
+  double counter = 0.0;
+  int mpuUpdate = 0;
+  for (int i = 0; i < 300; i++) {
+    mpuUpdate = mpu.update();
+    delay(10);
+    if (mpuUpdate) {
+      counter += 1.0;
+      phiAccOffset += mpu.getAccX();
+      thetaAccOffset += mpu.getAccY();
+    }
+  }
+  phiAccOffset /= counter;
+  thetaAccOffset /= counter;
+
   // call the calculate_velocity function every 100 micros (0.0001 second)
   timer.every(period, readSensors);
-  // call calibrate in 5 seconds, but with microsecond resolution
-  // u_timer.in(7000000, calibrate, "delayed five seconds using microseconds");
 }
+
 
 void loop() {
   // put your main code here, to run repeatedly:
-  int mpuUpdate = mpu.update();
-  if (mpuUpdate) {
-    double xBuffer = mpu.getAccX() - accXPitchOffset;
-    double yBuffer = mpu.getAccY() - accYPitchOffset;
-    double zBuffer = mpu.getAccZ() - accZPitchOffset;
-    double PitchBuffer = mpu.getPitch() - gyroPitchOffset;
-    //double PitchBuffer = simpleKalmanFilter1.updateEstimate(mpu.getPitch() - gyroPitchOffset); //calculate the high-pass signal 
-    //double measuredValue = atan2((- xBuffer) , sqrt(yBuffer * yBuffer + zBuffer * zBuffer)) * 57.3;
-    double estimatedValue = xBuffer;
-    // double estimatedValue = simpleKalmanFilter.updateEstimate(measuredValue);
-    pitchValueAcc = estimatedValue;
-    pitchValueGyro = PitchBuffer;
-    double _pitchValue = pitchValueAcc;// - 0.05 * pitchValueGyro;
-    pitchVelocity = _pitchValue - pitchValue;
-    pitchValue = _pitchValue;
-  }
-/*
-  // variate target angle
-  double ANGLE_FIXRATE = 1.0;
-  if (127.0 + pitchValue < setpoint) {
-    setpoint -= ANGLE_FIXRATE;
-  }
-  else {
-    setpoint += ANGLE_FIXRATE;
-  }
-  setpoint = min(255.0, max(0.0, setpoint));
-  */
-  setpoint = 127.0;
-  input = 127.0 + k1 * pitchValue + k2 * pitchVelocity + k3 * processedReadingVelocity; // Replace with sensor feedback
-  // output = k1 * processedReadingVelocity + k2 * pitchValue + k3 * pitchVelocity;
-  myController.compute();
-  int dutyCycleOneA = 255 - output;
-  int dutyCycleTwoA = output;
-  float saturation = 100.0;
-  float brightness = 100.0;
-  int dutyCycleRed = 255;
-  int dutyCycleGreen = 255;
-  int dutyCycleBlue = 255;
-
   // read the state of the pushbutton value:
-  buttonState = digitalRead(buttonPin);
+  button1State = digitalRead(button1Pin);
+  button2State = digitalRead(button2Pin);
+  button3State = digitalRead(button3Pin);
+  buttonCounter++;
+  if (button1State == HIGH && buttonCounter > maxButtonCount) {
+    buttonCounter = 0;
+    mode++;
+    if (mode > 7)
+      mode = 0;
+  }
+  if (button2State == HIGH && buttonCounter > maxButtonCount) {
+    buttonCounter = 0;
+    if (mode == 1)
+      k1 += 1.0;
+    if (mode == 2)
+      k2 += 10.0;
+    if (mode == 3)
+      k3 += 10.0;
+    if (mode == 4)
+      k4 += 1.0;
+    if (mode == 5)
+      kp += 1.0;
+    if (mode == 6)
+      ki += 1.0;
+    if (mode == 7)
+      kd += 1.0;
+    if (k1 > 200)
+      k1 = 200.0;
+    if (k2 > 1000)
+      k2 = 1000.0;
+    if (k3 > 1000)
+      k3 = 1000.0;
+    if (k4 > 10)
+      k4 = 10.0;
+    if (kp > 100)
+      kp = 100.0;
+    if (ki > 100)
+      ki = 100.0;
+    if (kd > 100)
+      kd = 100.0;
+    if (mode == 5 || mode == 6 || mode == 7)
+      resetParams = 1;
+  }
+  if (button3State == HIGH && buttonCounter > 10) {
+    buttonCounter = 0;
+    if (mode == 1)
+      k1 -= 1.0;
+    if (mode == 2)
+      k2 -= 10.0;
+    if (mode == 3)
+      k3 -= 10.0;
+    if (mode == 4)
+      k4 -= 1.0;
+    if (mode == 5)
+      kp -= 1.0;
+    if (mode == 6)
+      ki -= 1.0;
+    if (mode == 7)
+      kd -= 1.0;
+    if (k1 < 0)
+      k1 = 0;
+    if (k2 < 0)
+      k2 = 0;
+    if (k3 < 0)
+      k3 = 0;
+    if (k4 < 0)
+      k4 = 0;
+    if (kp < 0)
+      kp = 0.0;
+    if (ki < 0)
+      ki = 0.0;
+    if (kd < 0)
+      kd = 0.0;
+    if (mode == 5 || mode == 6 || mode == 7)
+      resetParams = 1;
+  }
 
-  if (calibrated == 1) {
-    double hue = pitchValue + 0.5 * 360.0;
+  if (resetParams == 1) {
+    myController.stop();
+    myController.reset();
+    myController.begin(&input, &output, &setpoint, kp, ki, kd);
+    myController.setOutputLimits(0, 255);
+    myController.setBias(0);
+    myController.setWindUpLimits(-10, 10);
+    myController.start();
+    resetParams = 0;
+  }
 
+  //  if (EEBlue.available() > 0) { // Checks whether data is comming from the serial port
+  //    state = EEBlue.read(); // Reads the data from the serial port
+  //  }
+
+  mpuUpdate = mpu.update();
+  if (mpuUpdate) {
+    phiAcc = phiKalmanFilter.updateEstimate(mpu.getAccX() - phiAccOffset);
+    phiDotDot = (90.0 * phiAcc - phi) - phiDot;
+    phiDot = 90.0 * phiAcc - phi;
+    phi = 90.0 * phiAcc;
+
+    thetaAcc = thetaKalmanFilter.updateEstimate(mpu.getAccY() - thetaAccOffset);
+    thetaDotDot = (90.0 * thetaAcc - theta) - thetaDot;
+    thetaDot = 90.0 * thetaAcc - theta;
+    theta = 90.0 * thetaAcc;
+
+    setpoint = 0.0;
+    input = theta; // Replace with sensor feedback
+    myController.compute();
+
+    hue = min(360.0, max(0.0, abs(theta) * 20.0));
     hsv hsvColor;
     hsvColor.h = hue;
     hsvColor.s = saturation;
@@ -323,70 +347,134 @@ void loop() {
     dutyCycleRed = 255 - rgbColor.r;
     dutyCycleGreen = 255 - rgbColor.g;
     dutyCycleBlue = 255 - rgbColor.b;
-
-    analogWrite(oneAPin, dutyCycleOneA);
-    analogWrite(twoAPin, dutyCycleTwoA);
-  }
-
-  // check if the pushbutton is pressed. If it is, the buttonState is HIGH:
-  // Added safety check for too large angles
-  if (buttonState == LOW && abs(pitchValue) < 0.25) {
-    digitalWrite(enablePin, HIGH);
     analogWrite(redPin, dutyCycleRed);
     analogWrite(greenPin, dutyCycleGreen);
     analogWrite(bluePin, dutyCycleBlue);
-  } else {
-    // turn the motor off:
-    digitalWrite(enablePin, LOW);
-    analogWrite(redPin, 255);
-    analogWrite(greenPin, 255);
-    analogWrite(bluePin, 255);
+
+    actuatorValue = max(0, min(255, abs(k1 * phi + k2 * phiDot + k3 * phiDotDot + k4 * velocity)));
+    if (abs(phi) < safetyAngle && abs(theta) < safetyAngle) { // Added safety check for too large angles
+      digitalWrite(enable12Pin, HIGH);
+      digitalWrite(enable34Pin, HIGH);
+
+      if (phi >= 0) {
+        dutyCycleThreeA = 0;
+        dutyCycleFourA = actuatorValue;
+      }
+      else {
+        dutyCycleThreeA = actuatorValue;
+        dutyCycleFourA = 0;
+      }
+
+      if (theta >= 0) {
+        dutyCycleOneA = 0;
+        dutyCycleTwoA = output;
+      }
+      else {
+        dutyCycleOneA = output;
+        dutyCycleTwoA = 0;
+      }
+
+
+      analogWrite(oneAPin, dutyCycleOneA);
+      analogWrite(twoAPin, dutyCycleTwoA);
+      analogWrite(threeAPin, dutyCycleThreeA);
+      analogWrite(fourAPin, dutyCycleFourA);
+    }
+    else {
+      digitalWrite(enable12Pin, LOW);
+      digitalWrite(enable34Pin, LOW);
+    }
   }
 
   // print out the value you read:
+  if (mpuUpdate == 1) {
+    //    Serial.print("v0: "); Serial.print(analogRead(A0)); Serial.print(" ");
+    //    Serial.print("v1: "); Serial.print(value); Serial.print(" ");
+    //    Serial.print("v2: "); Serial.print(valueDot); Serial.print(" ");
+    //    Serial.print("v3: "); Serial.print(valueDotDot); Serial.print(" ");
+    //    Serial.print("v4: "); Serial.print(velocity); Serial.print(" ");
+    //    Serial.print("act: "); Serial.print(actuatorValue); Serial.print(" ");
+    //    Serial.print("pitch: "); Serial.print(value); Serial.print(" ");
+    //    Serial.print("pitchD: "); Serial.print(valueDot); Serial.print(" ");
+    //    Serial.print("enc: "); Serial.print(velocity); Serial.print(" ");
+    //    Serial.print("curr: "); Serial.print(currentSensorState); Serial.print(" ");
+    //    Serial.println("uT");
 
-  if (calibrated == 1 && mpuUpdate == 1) {
-    //Serial.print("AccX: "); Serial.print(mpu.getAccX() - accXPitchOffset); Serial.print(" ");
-    //Serial.print("AccY: "); Serial.print(mpu.getAccY() - accYPitchOffset); Serial.print(" ");
-    //Serial.print("AccZ: "); Serial.print(mpu.getAccZ() - accZPitchOffset); Serial.print(" ");
-    //Serial.print("Gyro: "); Serial.print(mpu.getPitch() - gyroPitchOffset); Serial.print(" ");
-    Serial.print("pitch: "); Serial.print(pitchValue); Serial.print(" ");
-    //Serial.print("pitchAcc: "); Serial.print(pitchValueAcc); Serial.print(" ");
-    //Serial.print("pitchGyro: "); Serial.print(pitchValueGyro); Serial.print(" ");
-    Serial.print("input: "); Serial.print(input); Serial.print(" ");
-    Serial.print("setpoint: "); Serial.print(setpoint); Serial.print(" ");
-    Serial.print("output: "); Serial.print(output); Serial.print(" ");
-    //Serial.print("pos: "); Serial.print(wheelPosition); Serial.print(" ");
-    //Serial.print("vel: "); Serial.print(wheelVelocity); Serial.print(" ");
-    //Serial.print("pitch: "); Serial.print(pitchValue); Serial.print(" ");
-    //Serial.print("pitchVel: "); Serial.print(pitchVelocity); Serial.print(" ");
-    //Serial.print("s: "); Serial.print(processedReading); Serial.print(" ");
-    //Serial.print("i: "); Serial.print(tableIndex); Serial.print(" ");
-    //Serial.print("b: "); Serial.print(tableBegin); Serial.print(" ");
-    //Serial.print("e: "); Serial.print(tableEnd); Serial.print(" ");
-    Serial.println("uT");
+    if (mode == 1) {
+      EEBlue.print("k1*: "); EEBlue.print(k1); EEBlue.print(" ");
+      EEBlue.print("k2: "); EEBlue.print(k2); EEBlue.print(" ");
+      EEBlue.print("k3: "); EEBlue.print(k3); EEBlue.print(" ");
+      EEBlue.print("k4: "); EEBlue.print(k4); EEBlue.print(" ");
+      EEBlue.print("kp: "); EEBlue.print(kp); EEBlue.print(" ");
+      EEBlue.print("ki: "); EEBlue.print(ki); EEBlue.print(" ");
+      EEBlue.print("kd: "); EEBlue.print(kd); EEBlue.print(" ");
+    }
+    if (mode == 2) {
+      EEBlue.print("k1: "); EEBlue.print(k1); EEBlue.print(" ");
+      EEBlue.print("k2*: "); EEBlue.print(k2); EEBlue.print(" ");
+      EEBlue.print("k3: "); EEBlue.print(k3); EEBlue.print(" ");
+      EEBlue.print("k4: "); EEBlue.print(k4); EEBlue.print(" ");
+      EEBlue.print("kp: "); EEBlue.print(kp); EEBlue.print(" ");
+      EEBlue.print("ki: "); EEBlue.print(ki); EEBlue.print(" ");
+      EEBlue.print("kd: "); EEBlue.print(kd); EEBlue.print(" ");
+    }
+    if (mode == 3) {
+      EEBlue.print("k1: "); EEBlue.print(k1); EEBlue.print(" ");
+      EEBlue.print("k2: "); EEBlue.print(k2); EEBlue.print(" ");
+      EEBlue.print("k3*: "); EEBlue.print(k3); EEBlue.print(" ");
+      EEBlue.print("k4: "); EEBlue.print(k4); EEBlue.print(" ");
+      EEBlue.print("kp: "); EEBlue.print(kp); EEBlue.print(" ");
+      EEBlue.print("ki: "); EEBlue.print(ki); EEBlue.print(" ");
+      EEBlue.print("kd: "); EEBlue.print(kd); EEBlue.print(" ");
+    }
+    if (mode == 4) {
+      EEBlue.print("k1: "); EEBlue.print(k1); EEBlue.print(" ");
+      EEBlue.print("k2: "); EEBlue.print(k2); EEBlue.print(" ");
+      EEBlue.print("k3: "); EEBlue.print(k3); EEBlue.print(" ");
+      EEBlue.print("k4*: "); EEBlue.print(k4); EEBlue.print(" ");
+      EEBlue.print("kp: "); EEBlue.print(kp); EEBlue.print(" ");
+      EEBlue.print("ki: "); EEBlue.print(ki); EEBlue.print(" ");
+      EEBlue.print("kd: "); EEBlue.print(kd); EEBlue.print(" ");
+    }
+    if (mode == 5) {
+      EEBlue.print("k1: "); EEBlue.print(k1); EEBlue.print(" ");
+      EEBlue.print("k2: "); EEBlue.print(k2); EEBlue.print(" ");
+      EEBlue.print("k3: "); EEBlue.print(k3); EEBlue.print(" ");
+      EEBlue.print("k4: "); EEBlue.print(k4); EEBlue.print(" ");
+      EEBlue.print("kp*: "); EEBlue.print(kp); EEBlue.print(" ");
+      EEBlue.print("ki: "); EEBlue.print(ki); EEBlue.print(" ");
+      EEBlue.print("kd: "); EEBlue.print(kd); EEBlue.print(" ");
+    }
+    if (mode == 6) {
+      EEBlue.print("k1: "); EEBlue.print(k1); EEBlue.print(" ");
+      EEBlue.print("k2: "); EEBlue.print(k2); EEBlue.print(" ");
+      EEBlue.print("k3: "); EEBlue.print(k3); EEBlue.print(" ");
+      EEBlue.print("k4: "); EEBlue.print(k4); EEBlue.print(" ");
+      EEBlue.print("kp: "); EEBlue.print(kp); EEBlue.print(" ");
+      EEBlue.print("ki*: "); EEBlue.print(ki); EEBlue.print(" ");
+      EEBlue.print("kd: "); EEBlue.print(kd); EEBlue.print(" ");
+    }
+    if (mode == 7) {
+      EEBlue.print("k1: "); EEBlue.print(k1); EEBlue.print(" ");
+      EEBlue.print("k2: "); EEBlue.print(k2); EEBlue.print(" ");
+      EEBlue.print("k3: "); EEBlue.print(k3); EEBlue.print(" ");
+      EEBlue.print("k4: "); EEBlue.print(k4); EEBlue.print(" ");
+      EEBlue.print("kp: "); EEBlue.print(kp); EEBlue.print(" ");
+      EEBlue.print("ki: "); EEBlue.print(ki); EEBlue.print(" ");
+      EEBlue.print("kd*: "); EEBlue.print(kd); EEBlue.print(" ");
+    }
+    if (mode != 0) {
+      EEBlue.print("v1: "); EEBlue.print(phi); EEBlue.print(" ");
+      EEBlue.print("v2: "); EEBlue.print(phiDot); EEBlue.print(" ");
+      EEBlue.print("v3: "); EEBlue.print(phiDotDot); EEBlue.print(" ");
+      EEBlue.print("v4: "); EEBlue.print(theta); EEBlue.print(" ");
+      EEBlue.print("v5: "); EEBlue.print(thetaDot); EEBlue.print(" ");
+      EEBlue.print("v6: "); EEBlue.print(thetaDotDot); EEBlue.print(" ");
+      EEBlue.print("v7: "); EEBlue.print(velocity); EEBlue.print(" ");
+      EEBlue.print("v8: "); EEBlue.print(setpoint); EEBlue.print(" ");
+      EEBlue.println("uT");
+    }
   }
-  /*
-    Serial.print("i: "); Serial.print(input); Serial.print(" ");
-    Serial.print("s: "); Serial.print(setpoint); Serial.print(" ");
-    Serial.print("o: "); Serial.print(output); Serial.print(" ");
-    Serial.println("uT");
-  */
-  /*
-    double getAccBiasX = mpu.getAccBiasX() * 1000.f / (float)MPU9250::CALIB_ACCEL_SENSITIVITY;
-    double getAccBiasY = mpu.getAccBiasY() * 1000.f / (float)MPU9250::CALIB_ACCEL_SENSITIVITY;
-    double getAccBiasZ = mpu.getAccBiasZ() * 1000.f / (float)MPU9250::CALIB_ACCEL_SENSITIVITY;
-    Serial.print("getAccBiasX: "); Serial.print(getAccBiasX); Serial.print(" ");
-    Serial.print("getAccBiasY: "); Serial.print(getAccBiasY); Serial.print(" ");
-    Serial.print("getAccBiasZ: "); Serial.print(getAccBiasZ); Serial.print(" ");
-  */
-  /*
-    Serial.print("Pitch: "); Serial.print(pitchValueGyro); Serial.print(" ");
-    Serial.print("Pitch: "); Serial.print(pitchValueAcc); Serial.print(" ");
-    Serial.print("Pitch: "); Serial.print(pitchValue); Serial.print(" ");
-    Serial.println("uT");
-  */
 
   timer.tick(); // tick the timer
-  u_timer.tick(); // tick the timer
 }

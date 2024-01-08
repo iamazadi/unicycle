@@ -16,9 +16,94 @@ typedef struct {
 
 static rgb HSVtoRGB(hsv in);
 static double getPosition(double a, double b);
+static int getPulse(int x, int width, int minWidth);
+static bool calibrate(int tableBegin, int tableEnd, double * table1, double * table2, int samplesNumber, double * minKernel, double * maxKernel, int kernelSize);
 
 double getPosition(double a, double b) {
   return sqrt(pow(a, 2) + pow(b, 2));
+}
+
+int getPulse(int x, int width, int minWidth) {
+  float fraction = (x >= 20) ? x / 180.0 : 20 / 180.0;
+  int z = minWidth + (int)(width * fraction);
+  return z; // return the value
+}
+
+bool calibrate(int tableBegin, int tableEnd, double * table1, double * table2, int samplesNumber, double * minKernel, double * maxKernel, int kernelSize) {
+  // turn off the motor before calibration
+  // digitalWrite(enablePin, LOW);
+
+  // Serial.print("samplesCounter: "); Serial.print(samplesCounter); Serial.print(" ");
+  // Serial.println("uT");
+
+  int minIndex;
+  int maxIndex;
+  double minValue;
+  double maxValue;
+  double minimum = getPosition(1023.0, 1023.0);
+  double maximum = getPosition(0.0, 0.0);
+  double value;
+  double product;
+
+  // First, find the minimum and maximum of the sensor position
+  // Search the first third of samples since the data contains 3 revolutions of the wheel
+  for (int i = 0; i < samplesNumber - kernelSize; i++) {
+    value = getPosition(table1[i], table2[i]);
+    if (value < minimum) {
+      minimum = value;
+      minIndex = i;
+    }
+    if (value > maximum) {
+      maximum = value;
+      maxIndex = i;
+    }
+  }
+
+  // Second, initialize the kernels
+  for (int i = 0; i < kernelSize; i++) {
+    minKernel[i] = getPosition(table1[minIndex + i - kernelSize / 2], table2[minIndex + i - kernelSize / 2]);
+    maxKernel[i] = getPosition(table1[maxIndex + i - kernelSize / 2], table2[maxIndex + i - kernelSize / 2]);
+  }
+
+  // Third, find the index of the minimum
+  double threshold = 0.01;
+  for (int i = 0; i < samplesNumber - kernelSize / 2; i++) {
+    product = 0.0;
+    for (int j = 0; j < kernelSize; j++) {
+      double dummy = minKernel[j] - getPosition(table1[i + j - kernelSize / 2], table2[i + j - kernelSize / 2]);
+      product += (dummy >= 0.0) ? dummy : -dummy;
+    }
+    if (product < threshold) {
+      // Serial.print("i1: "); Serial.print(i); Serial.print(" ");
+      // Serial.println("uT");
+      value = product;
+      tableBegin = i;
+      break;
+    }
+  }
+
+  // Fourth, find the index of the maximum
+  for (int i = tableBegin + 1; i < samplesNumber - kernelSize / 2; i++) {
+    product = 0.0;
+    for (int j = 0; j < kernelSize; j++) {
+      double dummy = maxKernel[j] - getPosition(table1[i + j - kernelSize / 2], table2[i + j - kernelSize / 2]);
+      product += (dummy >= 0.0) ? dummy : -dummy;
+    }
+    if (product < threshold) {
+      // Serial.print("i2: "); Serial.print(i); Serial.print(" ");
+      // Serial.println("uT");
+      value = product;
+      tableEnd = i;
+      break;
+    }
+  }
+
+  int halfPeriod = tableEnd - tableBegin;
+  int calibrated = 0;
+  if (halfPeriod < samplesNumber / 2 && tableBegin < tableEnd)
+    calibrated = 1;
+
+  return calibrated;
 }
 
 rgb HSVtoRGB(hsv in) {
