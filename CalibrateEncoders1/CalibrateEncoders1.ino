@@ -40,18 +40,23 @@ int button2State = 0;
 int button3State = 0;
 int mode = 0;
 int buttonCounter = 0;
-int maxButtonCount = 5;
+int maxButtonCount = 3; // for delaying between successive pushes of the buttons
 int resetParams = 0;
 long unsigned int countPulses = 0;
 
 // variables will change:
 double reading;
+double minReading = 1023.0;
+double maxReading = 0.0;
+double minReading1 = 1023.0;
+double maxReading1 = 0.0;
 double processedReading1 = 0.0;
 double processedReading2 = 0.0;
 double processedReading = 0.0;
 double processedReadingVelocity = 0.0;
 double processedReadingVelocity1 = 0.0;
 double processedReadingVelocity2 = 0.0;
+double variation = 0.0;
 double phi = 0.0;
 double phiDot = 0.0;
 double phiDotDot = 0.0;
@@ -64,6 +69,7 @@ double velocity = 0.0;
 double acceleration = 0.0;
 double wheelSpeed = 0.0;
 double phiAccOffset = 0.0;
+double phiDotOffset = 1.6;
 double thetaAccOffset = 0.0;
 double phiGyroOffset = 0.0;
 double thetaGyroOffset = 0.0;
@@ -75,20 +81,20 @@ float saturation = 100.0;
 float brightness = 100.0;
 float hue = 0.0;
 float safetyAnglePhi = 20.0;
-float safetyAngleTheta = 35.0;
-double k1 = 38.0;
-double k2 = 150.0;
-double k3 = 450.0;
-double k4 = 24.0;
+float safetyAngleTheta = 20.0;
+double k1 = 18.0;
+double k2 = 45.0;
+double k3 = 45.0;
+double k4 = 10.0;
 
 ArduPID myController;
 double input;
 double output;
 // Arbitrary setpoint and gains - adjust these as fit for your project:
 double setpoint = 0.0;
-double kp = 30.0;
-double ki = 1.0;
-double kd = 1.0;
+double kp = 35.0;
+double ki = 0.01;
+double kd = 0.001;
 
 SoftwareSerial EEBlue(15, 14); // RX | TX
 
@@ -98,6 +104,7 @@ float e_mea = 0.01; // Measurement Uncertainty
 float e_est = 0.01; // Estimation Uncertainty
 float q = 0.01; // Process Noise
 SimpleKalmanFilter phiKalmanFilter(e_mea, e_est, q);
+SimpleKalmanFilter phiDotKalmanFilter(1.0, 1.0, q);
 SimpleKalmanFilter thetaKalmanFilter(e_mea, e_est, q);
 
 // For reading sensors
@@ -119,27 +126,37 @@ bool readSensors(void *) {
   // processedReadingVelocity = reading - processedReading;
   // processedReading = reading;
   double raw = analogRead(A0);
+  acceleration = abs(raw - reading) - velocity;
   velocity = abs(raw - reading);
   reading = raw;
-  currentSensorState = analogRead(A1);
-//  if (abs(reading - lowReading) < abs(reading - highReading)) {
-//    lowReading = 0.5 * reading + 0.5 * lowReading;
-//    sensorState = 0;
-//  }
-//  else {
-//    highReading = 0.5 * reading + 0.5 * highReading;
-//    if (sensorState == 0) {
-//      sensorState = 1;
-//      countPulses++;
-//    }
-//  }
-//  counter++;
-//  if (counter > 30) {
-//    acceleration = velocity - countPulses;
-//    velocity = countPulses;
-//    counter = 0;
-//    countPulses = 0;
-//  }
+  if (reading > maxReading)
+    maxReading = reading;
+  if (reading < minReading)
+    minReading = reading;
+    
+  currentSensorState = analogRead(A2);
+  if (currentSensorState > maxReading1)
+    maxReading1 = currentSensorState;
+  if (currentSensorState < minReading1)
+    minReading1 = currentSensorState;
+  //  if (abs(reading - lowReading) < abs(reading - highReading)) {
+  //    lowReading = 0.5 * reading + 0.5 * lowReading;
+  //    sensorState = 0;
+  //  }
+  //  else {
+  //    highReading = 0.5 * reading + 0.5 * highReading;
+  //    if (sensorState == 0) {
+  //      sensorState = 1;
+  //      countPulses++;
+  //    }
+  //  }
+  //  counter++;
+  //  if (counter > 30) {
+  //    acceleration = velocity - countPulses;
+  //    velocity = countPulses;
+  //    counter = 0;
+  //    countPulses = 0;
+  //  }
   return true; // repeat? true
 }
 
@@ -205,8 +222,8 @@ void setup() {
   //myController.setOutputLimits(1000, 2000);
   //myController.setBias(500);
   myController.setOutputLimits(0, 255);
-  myController.setBias(50);
-  myController.setWindUpLimits(-100, 100); // Growth bounds for the integral term to prevent integral wind-up
+  myController.setBias(0);
+  myController.setWindUpLimits(-10, 10); // Growth bounds for the integral term to prevent integral wind-up
   myController.start();
   // myController.reset();               // Used for resetting the I and D terms - only use this if you know what you're doing
   // myController.stop();                // Turn off the PID controller (compute() will not do anything until start() is called)
@@ -325,7 +342,7 @@ void loop() {
     myController.begin(&input, &output, &setpoint, kp, ki, kd);
     myController.setOutputLimits(0, 255);
     myController.setBias(0);
-    myController.setWindUpLimits(-20, 20);
+    myController.setWindUpLimits(-10, 10);
     myController.start();
     resetParams = 0;
   }
@@ -338,9 +355,21 @@ void loop() {
   if (mpuUpdate) {
     phiAcc = phiKalmanFilter.updateEstimate(mpu.getAccX() - phiAccOffset);
     phiGyro = mpu.getEulerY() * 3.14;
-    double fusedPhi = 90.0 * phiAcc;// 0.95 * (90.0 * phiAcc) + 0.05 * phiGyro;
-    phiDotDot = (fusedPhi - phi) - phiDot;
-    phiDot = fusedPhi - phi;
+    double ratio = 0.05;
+    double fusedPhi = (1.0 - ratio) * (90.0 * phiAcc) + ratio * phiGyro;
+    
+//    // variate target angle
+//    double ANGLE_FIXRATE = 0.01;
+//    if (phi + variation < 0.0) {
+//      variation -= ANGLE_FIXRATE;
+//    }
+//    else {
+//      variation += ANGLE_FIXRATE;
+//    }
+    
+    phiDotDot = (mpu.getGyroY() - phiDotOffset) - phiDot;
+    // phiDot = fusedPhi - phi;
+    phiDot = mpu.getGyroY() - phiDotOffset;
     phi = fusedPhi;
 
     thetaAcc = thetaKalmanFilter.updateEstimate(mpu.getAccY() - thetaAccOffset);
@@ -349,16 +378,15 @@ void loop() {
       thetaGyro -= 360.0;
       thetaGyro /= 3.14;
     }
-    double fusedTheta = 0.05 * (90.0 * thetaAcc) * -0.95 * thetaGyro;;
-    thetaDotDot = (fusedTheta - theta) - thetaDot;
-    thetaDot = fusedTheta - theta;
+    double fusedTheta = 0.05 * (90.0 * thetaAcc) * -0.95 * thetaGyro;
     theta = fusedTheta;
 
-    setpoint = 0.0;
+    setpoint = 1.0;
     input = theta; // Replace with sensor feedback
     myController.compute();
 
-    hue = abs(theta) / safetyAngleTheta * 360.0;
+    // hue = abs(theta) / safetyAngleTheta * 360.0;
+    hue = (reading - minReading) / (maxReading - minReading) * 360.0;
     hsv hsvColor;
     hsvColor.h = hue;
     hsvColor.s = saturation;
@@ -371,12 +399,14 @@ void loop() {
     analogWrite(greenPin, dutyCycleGreen);
     analogWrite(bluePin, dutyCycleBlue);
 
+    double emf = (currentSensorState - minReading1) / (maxReading1 - minReading1);
+
     actuatorValue = max(0, min(255, abs(k1 * phi + k2 * phiDot + k3 * phiDotDot + k4 * velocity)));
     if (abs(phi) < safetyAnglePhi && abs(theta) < safetyAngleTheta) { // Added safety check for too large angles
       digitalWrite(enable12Pin, HIGH);
       digitalWrite(enable34Pin, HIGH);
 
-      if (phi >= 0) {
+      if (phi >= 0 || (phi + phiDot) >= 0) {
         dutyCycleThreeA = 0;
         dutyCycleFourA = actuatorValue;
       }
@@ -477,19 +507,19 @@ void loop() {
       EEBlue.print("kd*: "); EEBlue.print(kd); EEBlue.print(" ");
     }
     if (mode != 0) {
-      // EEBlue.print("phi: "); EEBlue.print(phiGyro); EEBlue.print(" ");
-      //EEBlue.print("phiOffset: "); EEBlue.print(phiGyro + phiGyroOffset); EEBlue.print(" ");
-      // EEBlue.print("theta: "); EEBlue.print(thetaGyro); EEBlue.print(" ");
-      //EEBlue.print("thetaOffset: "); EEBlue.print(thetaGyro + thetaGyroOffset); EEBlue.print(" ");
-      EEBlue.print("phi: "); EEBlue.print(phi); EEBlue.print(" ");
+      EEBlue.print("phiAcc: "); EEBlue.print(90.0 * phiAcc); EEBlue.print(" ");
+      EEBlue.print("phiGyro: "); EEBlue.print(-phiGyro); EEBlue.print(" ");
       EEBlue.print("phiDot: "); EEBlue.print(phiDot); EEBlue.print(" ");
-      EEBlue.print("phiDotDot: "); EEBlue.print(phiDotDot); EEBlue.print(" ");
-      EEBlue.print("theta: "); EEBlue.print(theta); EEBlue.print(" ");
-      EEBlue.print("thetaDot: "); EEBlue.print(thetaDot); EEBlue.print(" ");
-      EEBlue.print("thetaDotDot: "); EEBlue.print(thetaDotDot); EEBlue.print(" ");
-      EEBlue.print("velocity: "); EEBlue.print(velocity); EEBlue.print(" ");
-      EEBlue.print("actuatorValue: "); EEBlue.print(actuatorValue); EEBlue.print(" ");
-      EEBlue.print("output: "); EEBlue.print(output); EEBlue.print(" ");
+      EEBlue.print("thetaAcc: "); EEBlue.print(90.0 * thetaAcc); EEBlue.print(" ");
+      EEBlue.print("thetaGyro: "); EEBlue.print(thetaGyro); EEBlue.print(" ");
+      EEBlue.print("variation: "); EEBlue.print(variation); EEBlue.print(" ");
+      
+//      EEBlue.print("phi: "); EEBlue.print(phi); EEBlue.print(" ");
+//      EEBlue.print("phiDot: "); EEBlue.print(phiDot); EEBlue.print(" ");
+//      EEBlue.print("theta: "); EEBlue.print(theta); EEBlue.print(" ");
+//      EEBlue.print("velocity: "); EEBlue.print(velocity); EEBlue.print(" ");
+//      EEBlue.print("actuatorValue: "); EEBlue.print(actuatorValue); EEBlue.print(" ");
+//      EEBlue.print("output: "); EEBlue.print(output); EEBlue.print(" ");
       EEBlue.println("uT");
     }
   }
