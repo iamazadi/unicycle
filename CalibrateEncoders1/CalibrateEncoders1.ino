@@ -165,7 +165,7 @@ void setup() {
   // put your setup code here, to run once:
   // initialize serial communication at 9600 (or 115200) bits per second:
   Serial.begin(115200);
-  EEBlue.begin(9600); // Default communication rate of the Bluetooth module
+  Serial3.begin(9600); // Default communication rate of the Bluetooth module
 
   Wire.begin();
   delay(1000);
@@ -357,6 +357,7 @@ void loop() {
     phiGyro = mpu.getEulerY() * 3.14;
     double ratio = 0.05;
     double fusedPhi = (1.0 - ratio) * (90.0 * phiAcc) + ratio * phiGyro;
+    fusedPhi -= 1.0;
     
 //    // variate target angle
 //    double ANGLE_FIXRATE = 0.01;
@@ -506,13 +507,21 @@ void loop() {
       EEBlue.print("ki: "); EEBlue.print(ki); EEBlue.print(" ");
       EEBlue.print("kd*: "); EEBlue.print(kd); EEBlue.print(" ");
     }
-    if (mode != 0) {
-      EEBlue.print("phiAcc: "); EEBlue.print(90.0 * phiAcc); EEBlue.print(" ");
-      EEBlue.print("phiGyro: "); EEBlue.print(-phiGyro); EEBlue.print(" ");
-      EEBlue.print("phiDot: "); EEBlue.print(phiDot); EEBlue.print(" ");
-      EEBlue.print("thetaAcc: "); EEBlue.print(90.0 * thetaAcc); EEBlue.print(" ");
-      EEBlue.print("thetaGyro: "); EEBlue.print(thetaGyro); EEBlue.print(" ");
-      EEBlue.print("variation: "); EEBlue.print(variation); EEBlue.print(" ");
+    if (mode == 0) {
+      //Serial3.print("i: "); Serial3.print(input); Serial3.print(" ");
+      //Serial3.print("s: "); Serial3.print(setpoint); Serial3.print(" ");
+      //Serial3.print("o: "); Serial3.print(output); Serial3.print(" ");
+      Serial3.print("p: "); Serial3.print(k1 * phi); Serial3.print(" ");
+      Serial3.print("d: "); Serial3.print(k2 * phiDot); Serial3.print(" ");
+      Serial3.print("d: "); Serial3.print(k3 * phiDotDot); Serial3.print(" ");
+      Serial3.print("v: "); Serial3.print(k4 * velocity); Serial3.print(" ");
+      Serial3.print("o: "); Serial3.print(actuatorValue); Serial3.print(" ");
+      //EEBlue.print("phiAcc: "); EEBlue.print(90.0 * phiAcc); EEBlue.print(" ");
+      //EEBlue.print("phiGyro: "); EEBlue.print(-phiGyro); EEBlue.print(" ");
+      //EEBlue.print("phiDot: "); EEBlue.print(phiDot); EEBlue.print(" ");
+      //EEBlue.print("thetaAcc: "); EEBlue.print(90.0 * thetaAcc); EEBlue.print(" ");
+      //EEBlue.print("thetaGyro: "); EEBlue.print(thetaGyro); EEBlue.print(" ");
+      //EEBlue.print("variation: "); EEBlue.print(variation); EEBlue.print(" ");
       
 //      EEBlue.print("phi: "); EEBlue.print(phi); EEBlue.print(" ");
 //      EEBlue.print("phiDot: "); EEBlue.print(phiDot); EEBlue.print(" ");
@@ -520,7 +529,7 @@ void loop() {
 //      EEBlue.print("velocity: "); EEBlue.print(velocity); EEBlue.print(" ");
 //      EEBlue.print("actuatorValue: "); EEBlue.print(actuatorValue); EEBlue.print(" ");
 //      EEBlue.print("output: "); EEBlue.print(output); EEBlue.print(" ");
-      EEBlue.println("uT");
+      Serial3.println("uT");
     }
   }
 
