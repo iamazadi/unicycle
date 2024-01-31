@@ -1,16 +1,14 @@
 #include <arduino-timer.h>
-#include <FIR.h>
 #include <SimpleKalmanFilter.h>
-#include <Servo.h>
-#include "MPU9250.h"
 #include "ArduPID.h"
-#include <SoftwareSerial.h>
+#include "MPU9250.h"
 #include "Tools.cpp"
 
 // These constants won't change. They're used to give names to the pins used:
-const int button1Pin = 23;
-const int button2Pin = 25;
-const int button3Pin = 27;
+const int button1Pin = 22;
+const int button2Pin = 23;
+const int button3Pin = 24;
+const int button4Pin = 25;
 const int actuatorPin = 13;
 const int enable34Pin = 52;
 const int enable12Pin = 53;
@@ -21,9 +19,56 @@ const int fourAPin = 3;
 const int redPin = 6;
 const int greenPin = 5;
 const int bluePin = 4;
-const int period = 1000; // the time interval between sensor readings in microseconds
+const int period = 5000; // the time interval between sensor readings in microseconds
 
-int mpuUpdate = 0;
+Orientation phi = {
+  23.0, // safetyAngle
+  0.0, // angle
+  0.0, // dot
+  0.0, // dotDot
+  0.0, // acc
+  0.0, // euler
+  0.0, // gyro
+  0.0, // _acc
+  0.0, // _euler
+  0.0, // _gyro
+  90.0, // accScale
+  -0.32, // eulerScale (negative range)
+  -0.49, // eulerScale (positive range)
+  1.0, // gyroScale
+  0.0, // accOffset
+  0.0, // eulerOffset
+  0.0, // gyroOffset
+  1, // phi axis
+  10, // positivePin
+  11, // negativePin
+  false // updated
+};
+
+Orientation theta = {
+  23.0, // safetyAngle
+  0.0, // angle
+  0.0, // dot
+  0.0, // dotDot
+  0.0, // acc
+  0.0, // euler
+  0.0, // gyro
+  0.0, // _acc
+  0.0, // _euler
+  0.0, // _gyro
+  90.0, // accScale
+  0.39, // eulerScale (negative range)
+  0.38, // eulerScale (positive range)
+  -1.0, // gyroScale
+  0.0, // accOffset
+  0.0, // eulerOffset
+  0.0, // gyroOffset
+  2, // theta axis
+  13, // positivePin
+  12, // negativePin
+  false // updated
+};
+
 int dutyCycleOneA = 127;
 int dutyCycleTwoA = 127;
 int dutyCycleThreeA = 127;
@@ -31,18 +76,18 @@ int dutyCycleFourA = 127;
 int actuatorValue = 0;
 int sensorState = 0;
 int currentSensorState = 0; // connected to pin A1
-int counter = 0;
 int dutyCycleRed = 255;
 int dutyCycleGreen = 255;
 int dutyCycleBlue = 255;
 int button1State = 0; // variable for reading the pushbutton status
 int button2State = 0;
 int button3State = 0;
+int button4State = 0;
 int mode = 0;
 int buttonCounter = 0;
-int maxButtonCount = 3; // for delaying between successive pushes of the buttons
+int maxButtonCount = 5; // for delaying between successive pushes of the buttons
 int resetParams = 0;
-long unsigned int countPulses = 0;
+long unsigned motionCounter = 0;
 
 // variables will change:
 double reading;
@@ -50,81 +95,75 @@ double minReading = 1023.0;
 double maxReading = 0.0;
 double minReading1 = 1023.0;
 double maxReading1 = 0.0;
-double processedReading1 = 0.0;
-double processedReading2 = 0.0;
-double processedReading = 0.0;
-double processedReadingVelocity = 0.0;
-double processedReadingVelocity1 = 0.0;
-double processedReadingVelocity2 = 0.0;
-double variation = 0.0;
-double phi = 0.0;
-double phiDot = 0.0;
-double phiDotDot = 0.0;
-double theta = 0.0;
-double thetaDot = 0.0;
-double thetaDotDot = 0.0;
-double phiGyro = 0.0;
-double thetaGyro = 0.0;
 double velocity = 0.0;
 double acceleration = 0.0;
-double wheelSpeed = 0.0;
-double phiAccOffset = 0.0;
-double phiDotOffset = 1.6;
-double thetaAccOffset = 0.0;
-double phiGyroOffset = 0.0;
-double thetaGyroOffset = 0.0;
-double phiAcc = 0.0;
-double thetaAcc = 0.0;
 double lowReading = 0.0;
 double highReading = 1023.0;
 float saturation = 100.0;
 float brightness = 100.0;
 float hue = 0.0;
-float safetyAnglePhi = 20.0;
-float safetyAngleTheta = 20.0;
-double k1 = 18.0;
-double k2 = 45.0;
-double k3 = 45.0;
-double k4 = 10.0;
+double ratio = 0.05;
+double k1 = 15.0;
+double k2 = 25.0;
+double k3 = 20.0;
+double k4 = 5.0;
 
 ArduPID myController;
 double input;
 double output;
 // Arbitrary setpoint and gains - adjust these as fit for your project:
 double setpoint = 0.0;
-double kp = 35.0;
-double ki = 0.01;
-double kd = 0.001;
-
-SoftwareSerial EEBlue(15, 14); // RX | TX
+double kp = 0.0;
+double ki = 0.0;
+double kd = 0.0;
 
 MPU9250 mpu; // You can also use MPU9255 as is
 
 float e_mea = 0.01; // Measurement Uncertainty
 float e_est = 0.01; // Estimation Uncertainty
 float q = 0.01; // Process Noise
-SimpleKalmanFilter phiKalmanFilter(e_mea, e_est, q);
-SimpleKalmanFilter phiDotKalmanFilter(1.0, 1.0, q);
-SimpleKalmanFilter thetaKalmanFilter(e_mea, e_est, q);
+SimpleKalmanFilter phiFilter(e_mea, e_est, q);
+SimpleKalmanFilter thetaFilter(e_mea, e_est, q);
 
 // For reading sensors
 Timer<1, micros> timer; // create a timer with 1 task and microsecond resolution
 
-Servo myServo;  // create servo object to control a servo
-FIR<float, 4> fir;
-// FIR<float, 8> fir2;
+Orientation getOrientation(Orientation input, MPU9250 mpu, SimpleKalmanFilter filter, double ratio) {
+  Orientation output = input;
+  output.updated = mpu.update();
+  if (output.updated) {
+    if (output.axis == 1) {
+      output._acc = mpu.getAccX();
+      output._euler = mpu.getEulerY();
+      output._gyro = mpu.getGyroY();
+    }
+    if (output.axis == 2) {
+      output._acc = mpu.getAccY();
+      double euler = mpu.getEulerX();
+      // Apply reflections because of the orientation of the microchip
+      if (euler < 0)
+        output._euler = -(180.0 + euler);
+      else
+        output._euler = 180.0 - euler;
+      output._gyro = mpu.getGyroX();
+    }
+
+    output.acc = output.accScale * (output._acc - output.accOffset);
+    output.gyro = output.gyroScale * (output._gyro - output.gyroOffset);
+    output.dotDot = output.gyro - input.gyro;
+    output.dot = output.gyro;
+
+    if (output._euler < 0)
+      output.euler = output.eulerScaleNegative * (output._euler - output.eulerOffset);
+    else
+      output.euler = output.eulerScalePositive * (output._euler - output.eulerOffset);
+
+    output.angle = ratio * filter.updateEstimate(output.acc) + (1.0 - ratio) * output.euler;
+  }
+  return output;
+}
 
 bool readSensors(void *) {
-  // double reading = fir.processReading(analogRead(A0));
-  // double reading2 = fir2.processReading(analogRead(A1));
-  //processedReadingVelocity1 = reading1 - processedReading1;
-  // processedReadingVelocity2 = reading2 - processedReading2;
-  //processedReading = reading;
-  //processedReading2 = reading2;
-  // double reading = getPosition(processedReading1, processedReading2);
-
-  // processedReadingVelocity = reading - processedReading;
-  // processedReading = reading;
   double raw = analogRead(A0);
   acceleration = abs(raw - reading) - velocity;
   velocity = abs(raw - reading);
@@ -133,33 +172,36 @@ bool readSensors(void *) {
     maxReading = reading;
   if (reading < minReading)
     minReading = reading;
-    
+
   currentSensorState = analogRead(A2);
   if (currentSensorState > maxReading1)
     maxReading1 = currentSensorState;
   if (currentSensorState < minReading1)
     minReading1 = currentSensorState;
-  //  if (abs(reading - lowReading) < abs(reading - highReading)) {
-  //    lowReading = 0.5 * reading + 0.5 * lowReading;
-  //    sensorState = 0;
+  //  motionCounter++;
+  //  if (motionCounter > 5000000 / period) {
+  //    motionCounter = 0;
+  //    setpoint = 1.0;
+  //    myController.stop();
+  //    myController.reset();
+  //    myController.begin(&input, &output, &setpoint, kp, ki, kd);
+  //    myController.setOutputLimits(0, 255);
+  //    myController.setBias(0);
+  //    myController.setWindUpLimits(-10, 10);
+  //    myController.start();
   //  }
-  //  else {
-  //    highReading = 0.5 * reading + 0.5 * highReading;
-  //    if (sensorState == 0) {
-  //      sensorState = 1;
-  //      countPulses++;
-  //    }
-  //  }
-  //  counter++;
-  //  if (counter > 30) {
-  //    acceleration = velocity - countPulses;
-  //    velocity = countPulses;
-  //    counter = 0;
-  //    countPulses = 0;
+  //  if (motionCounter == 500000 / period) {
+  //    setpoint = 0.0;
+  //    myController.stop();
+  //    myController.reset();
+  //    myController.begin(&input, &output, &setpoint, kp, ki, kd);
+  //    myController.setOutputLimits(0, 255);
+  //    myController.setBias(0);
+  //    myController.setWindUpLimits(-10, 10);
+  //    myController.start();
   //  }
   return true; // repeat? true
 }
-
 
 void setup() {
   // put your setup code here, to run once:
@@ -167,7 +209,7 @@ void setup() {
   Serial.begin(115200);
   Serial3.begin(9600); // Default communication rate of the Bluetooth module
 
-  Wire.begin();
+  Wire.begin(); // for communicating with the IMU over I2C
   delay(1000);
 
   mpu.setup(0x68);  // change to your own address
@@ -189,13 +231,6 @@ void setup() {
   // print_calibration();
   mpu.verbose(false);
 
-  // For a moving average we want all of the coefficients to be unity.
-  float coef[8] = { 1., 1., 1., 1., 1., 1., 1., 1.};
-
-  // Set the coefficients
-  fir.setFilterCoeffs(coef);
-  // fir2.setFilterCoeffs(coef);
-
   // set ADC pins A0 and A1 as input
   pinMode(A0, INPUT);
   pinMode(A1, INPUT);
@@ -205,51 +240,51 @@ void setup() {
   pinMode(button1Pin, INPUT);
   pinMode(button2Pin, INPUT);
   pinMode(button3Pin, INPUT);
-  // digitalWrite(buttonPin, HIGH);
+  pinMode(button4Pin, INPUT);
+  digitalWrite(button4Pin, HIGH);
   // set pins 2 and 3 as outputs:
   pinMode(oneAPin, OUTPUT);
   pinMode(twoAPin, OUTPUT);
   pinMode(threeAPin, OUTPUT);
   pinMode(fourAPin, OUTPUT);
+  pinMode(phi.positivePin, OUTPUT);
+  pinMode(phi.negativePin, OUTPUT);
+  pinMode(theta.positivePin, OUTPUT);
+  pinMode(theta.negativePin, OUTPUT);
   // set pin 22 as output:
   pinMode(enable12Pin, OUTPUT);
   pinMode(enable34Pin, OUTPUT);
   pinMode(actuatorPin, OUTPUT);
 
   myController.begin(&input, &output, &setpoint, kp, ki, kd);
-  //myController.reverse();               // Uncomment if controller output is "reversed"
-  //myController.setSampleTime(7);      // OPTIONAL - will ensure at least 10ms have past between successful compute() calls
-  //myController.setOutputLimits(1000, 2000);
-  //myController.setBias(500);
   myController.setOutputLimits(0, 255);
   myController.setBias(0);
   myController.setWindUpLimits(-10, 10); // Growth bounds for the integral term to prevent integral wind-up
   myController.start();
-  // myController.reset();               // Used for resetting the I and D terms - only use this if you know what you're doing
-  // myController.stop();                // Turn off the PID controller (compute() will not do anything until start() is called)
 
-  //myServo.attach(actuatorPin);  // attaches the servo on actuatorPin1A to the servo object
-  //myServo.writeMicroseconds(actuatorValue); // sets the servo position according to the scaled value
-  // myServo.write(actuatorValue);
   delay(1000);
 
-  double counter = 0.0;
   int mpuUpdate = 0;
+  double counter = 0.0;
   for (int i = 0; i < 300; i++) {
-    mpuUpdate = mpu.update();
     delay(10);
+    mpuUpdate = mpu.update();
     if (mpuUpdate) {
       counter += 1.0;
-      phiAccOffset += mpu.getAccX();
-      thetaAccOffset += mpu.getAccY();
-      phiGyroOffset += mpu.getEulerY();
-      thetaGyroOffset += mpu.getEulerX();
+      phi.accOffset += mpu.getAccX();
+      phi.eulerOffset += mpu.getEulerY();
+      phi.gyroOffset += mpu.getGyroY();
+      theta.accOffset += mpu.getAccY();
+      theta.euler = mpu.getEulerX();
+      theta.gyroOffset += mpu.getGyroX();
     }
   }
-  phiAccOffset /= counter;
-  thetaAccOffset /= counter;
-  phiGyroOffset /= counter;
-  thetaGyroOffset /= counter;
+  phi.accOffset /= counter;
+  phi.eulerOffset /= counter;
+  phi.gyroOffset /= counter;
+  theta.accOffset /= counter;
+  theta.eulerOffset /= counter;
+  theta.gyroOffset /= counter;
 
   // call the calculate_velocity function every 100 micros (0.0001 second)
   timer.every(period, readSensors);
@@ -262,14 +297,15 @@ void loop() {
   button1State = digitalRead(button1Pin);
   button2State = digitalRead(button2Pin);
   button3State = digitalRead(button3Pin);
+  button4State = digitalRead(button4Pin);
   buttonCounter++;
-  if (button1State == HIGH && buttonCounter > maxButtonCount) {
+  if (button1State == LOW && buttonCounter > maxButtonCount) {
     buttonCounter = 0;
     mode++;
-    if (mode > 7)
+    if (mode > 10)
       mode = 0;
   }
-  if (button2State == HIGH && buttonCounter > maxButtonCount) {
+  if (button2State == LOW && buttonCounter > maxButtonCount) {
     buttonCounter = 0;
     if (mode == 1)
       k1 += 1.0;
@@ -302,7 +338,7 @@ void loop() {
     if (mode == 5 || mode == 6 || mode == 7)
       resetParams = 1;
   }
-  if (button3State == HIGH && buttonCounter > 10) {
+  if (button3State == LOW && buttonCounter > 10) {
     buttonCounter = 0;
     if (mode == 1)
       k1 -= 1.0;
@@ -347,188 +383,203 @@ void loop() {
     resetParams = 0;
   }
 
-  //  if (EEBlue.available() > 0) { // Checks whether data is comming from the serial port
-  //    state = EEBlue.read(); // Reads the data from the serial port
+  //  if (Serial3.available() > 0) { // Checks whether data is comming from the serial port
+  //    state = Serial3.read(); // Reads the data from the serial port
   //  }
 
-  mpuUpdate = mpu.update();
-  if (mpuUpdate) {
-    phiAcc = phiKalmanFilter.updateEstimate(mpu.getAccX() - phiAccOffset);
-    phiGyro = mpu.getEulerY() * 3.14;
-    double ratio = 0.05;
-    double fusedPhi = (1.0 - ratio) * (90.0 * phiAcc) + ratio * phiGyro;
-    fusedPhi -= 1.0;
-    
-//    // variate target angle
-//    double ANGLE_FIXRATE = 0.01;
-//    if (phi + variation < 0.0) {
-//      variation -= ANGLE_FIXRATE;
-//    }
-//    else {
-//      variation += ANGLE_FIXRATE;
-//    }
-    
-    phiDotDot = (mpu.getGyroY() - phiDotOffset) - phiDot;
-    // phiDot = fusedPhi - phi;
-    phiDot = mpu.getGyroY() - phiDotOffset;
-    phi = fusedPhi;
+  phi = getOrientation(phi, mpu, phiFilter, 1.0 - ratio);
+  theta = getOrientation(theta, mpu, thetaFilter, 1.0 - ratio);
 
-    thetaAcc = thetaKalmanFilter.updateEstimate(mpu.getAccY() - thetaAccOffset);
-    thetaGyro = 180.0 - mpu.getEulerX();
-    if (thetaGyro > 180) {
-      thetaGyro -= 360.0;
-      thetaGyro /= 3.14;
+  hue = (reading - minReading) / (maxReading - minReading) * 360.0;
+  Hsv hsvColor;
+  hsvColor.h = hue;
+  hsvColor.s = saturation;
+  hsvColor.v = brightness;
+  Rgb rgbColor = HSVtoRGB(hsvColor);
+  dutyCycleRed = 255 - rgbColor.r;
+  dutyCycleGreen = 255 - rgbColor.g;
+  dutyCycleBlue = 255 - rgbColor.b;
+  analogWrite(redPin, dutyCycleRed);
+  analogWrite(greenPin, dutyCycleGreen);
+  analogWrite(bluePin, dutyCycleBlue);
+
+  if (phi.updated) {
+    if (phi.angle >= 0.0) {
+      analogWrite(phi.positivePin, abs(phi.angle / phi.safetyAngle) * 255.0);
+      analogWrite(phi.negativePin, 0);
+    } else {
+      analogWrite(phi.positivePin, 0);
+      analogWrite(phi.negativePin, abs(phi.angle / phi.safetyAngle) * 255.0);
     }
-    double fusedTheta = 0.05 * (90.0 * thetaAcc) * -0.95 * thetaGyro;
-    theta = fusedTheta;
-
-    setpoint = 1.0;
-    input = theta; // Replace with sensor feedback
+    actuatorValue = max(0, min(255, abs(k1 * phi.angle + k2 * phi.dot + k3 * phi.dotDot) + k4 * velocity));
+  }
+  if (theta.updated) {
+    if (theta.angle >= 0.0) {
+      analogWrite(theta.positivePin, abs(theta.angle / theta.safetyAngle) * 255.0);
+      analogWrite(theta.negativePin, 0);
+    } else {
+      analogWrite(theta.positivePin, 0);
+      analogWrite(theta.negativePin, abs(theta.angle / theta.safetyAngle) * 255.0);
+    }
+    input = theta.angle; // Replace with sensor feedback
     myController.compute();
+  }
 
-    // hue = abs(theta) / safetyAngleTheta * 360.0;
-    hue = (reading - minReading) / (maxReading - minReading) * 360.0;
-    hsv hsvColor;
-    hsvColor.h = hue;
-    hsvColor.s = saturation;
-    hsvColor.v = brightness;
-    rgb rgbColor = HSVtoRGB(hsvColor);
-    dutyCycleRed = 255 - rgbColor.r;
-    dutyCycleGreen = 255 - rgbColor.g;
-    dutyCycleBlue = 255 - rgbColor.b;
-    analogWrite(redPin, dutyCycleRed);
-    analogWrite(greenPin, dutyCycleGreen);
-    analogWrite(bluePin, dutyCycleBlue);
+  if (abs(phi.angle) < phi.safetyAngle && abs(theta.angle) < theta.safetyAngle && button4State == LOW) { // Added safety check for too large angles
 
-    double emf = (currentSensorState - minReading1) / (maxReading1 - minReading1);
-
-    actuatorValue = max(0, min(255, abs(k1 * phi + k2 * phiDot + k3 * phiDotDot + k4 * velocity)));
-    if (abs(phi) < safetyAnglePhi && abs(theta) < safetyAngleTheta) { // Added safety check for too large angles
-      digitalWrite(enable12Pin, HIGH);
-      digitalWrite(enable34Pin, HIGH);
-
-      if (phi >= 0 || (phi + phiDot) >= 0) {
-        dutyCycleThreeA = 0;
-        dutyCycleFourA = actuatorValue;
-      }
-      else {
-        dutyCycleThreeA = actuatorValue;
-        dutyCycleFourA = 0;
-      }
-
-      dutyCycleOneA = 255 - output;
-      dutyCycleTwoA = output;
-
-      analogWrite(oneAPin, dutyCycleOneA);
-      analogWrite(twoAPin, dutyCycleTwoA);
-      analogWrite(threeAPin, dutyCycleThreeA);
-      analogWrite(fourAPin, dutyCycleFourA);
+    if (phi.angle >= 0) {
+      dutyCycleThreeA = 0;
+      dutyCycleFourA = actuatorValue;
     }
     else {
-      digitalWrite(enable12Pin, LOW);
-      digitalWrite(enable34Pin, LOW);
+      dutyCycleThreeA = actuatorValue;
+      dutyCycleFourA = 0;
     }
+
+    if (theta.angle >= 0) {
+      dutyCycleOneA = 255 - output;
+      dutyCycleTwoA = output;
+    }
+    else {
+      dutyCycleOneA = output;
+      dutyCycleTwoA = 255 - output;
+    }
+
+
+    digitalWrite(enable12Pin, HIGH);
+    digitalWrite(enable34Pin, HIGH);
+    analogWrite(oneAPin, dutyCycleOneA);
+    analogWrite(twoAPin, dutyCycleTwoA);
+    analogWrite(threeAPin, dutyCycleThreeA);
+    analogWrite(fourAPin, dutyCycleFourA);
+  }
+  else {
+    digitalWrite(enable12Pin, LOW);
+    digitalWrite(enable34Pin, LOW);
   }
 
   // print out the value you read:
-  if (mpuUpdate == 1) {
-    //    Serial.print("v0: "); Serial.print(analogRead(A0)); Serial.print(" ");
-    //    Serial.print("v1: "); Serial.print(value); Serial.print(" ");
-    //    Serial.print("v2: "); Serial.print(valueDot); Serial.print(" ");
-    //    Serial.print("v3: "); Serial.print(valueDotDot); Serial.print(" ");
-    //    Serial.print("v4: "); Serial.print(velocity); Serial.print(" ");
-    //    Serial.print("act: "); Serial.print(actuatorValue); Serial.print(" ");
-    //    Serial.print("pitch: "); Serial.print(value); Serial.print(" ");
-    //    Serial.print("pitchD: "); Serial.print(valueDot); Serial.print(" ");
-    //    Serial.print("enc: "); Serial.print(velocity); Serial.print(" ");
-    //    Serial.print("curr: "); Serial.print(currentSensorState); Serial.print(" ");
-    //    Serial.println("uT");
+  if (phi.updated || theta.updated) {
 
     if (mode == 1) {
-      EEBlue.print("k1*: "); EEBlue.print(k1); EEBlue.print(" ");
-      EEBlue.print("k2: "); EEBlue.print(k2); EEBlue.print(" ");
-      EEBlue.print("k3: "); EEBlue.print(k3); EEBlue.print(" ");
-      EEBlue.print("k4: "); EEBlue.print(k4); EEBlue.print(" ");
-      EEBlue.print("kp: "); EEBlue.print(kp); EEBlue.print(" ");
-      EEBlue.print("ki: "); EEBlue.print(ki); EEBlue.print(" ");
-      EEBlue.print("kd: "); EEBlue.print(kd); EEBlue.print(" ");
+      Serial3.print("k1*: "); Serial3.print(k1); Serial3.print(" ");
+      Serial3.print("k2: "); Serial3.print(k2); Serial3.print(" ");
+      Serial3.print("k3: "); Serial3.print(k3); Serial3.print(" ");
+      Serial3.print("k4: "); Serial3.print(k4); Serial3.print(" ");
+      Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
+      Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
+      Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
+      Serial3.println("uT");
     }
     if (mode == 2) {
-      EEBlue.print("k1: "); EEBlue.print(k1); EEBlue.print(" ");
-      EEBlue.print("k2*: "); EEBlue.print(k2); EEBlue.print(" ");
-      EEBlue.print("k3: "); EEBlue.print(k3); EEBlue.print(" ");
-      EEBlue.print("k4: "); EEBlue.print(k4); EEBlue.print(" ");
-      EEBlue.print("kp: "); EEBlue.print(kp); EEBlue.print(" ");
-      EEBlue.print("ki: "); EEBlue.print(ki); EEBlue.print(" ");
-      EEBlue.print("kd: "); EEBlue.print(kd); EEBlue.print(" ");
+      Serial3.print("k1: "); Serial3.print(k1); Serial3.print(" ");
+      Serial3.print("k2*: "); Serial3.print(k2); Serial3.print(" ");
+      Serial3.print("k3: "); Serial3.print(k3); Serial3.print(" ");
+      Serial3.print("k4: "); Serial3.print(k4); Serial3.print(" ");
+      Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
+      Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
+      Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
+      Serial3.println("uT");
     }
     if (mode == 3) {
-      EEBlue.print("k1: "); EEBlue.print(k1); EEBlue.print(" ");
-      EEBlue.print("k2: "); EEBlue.print(k2); EEBlue.print(" ");
-      EEBlue.print("k3*: "); EEBlue.print(k3); EEBlue.print(" ");
-      EEBlue.print("k4: "); EEBlue.print(k4); EEBlue.print(" ");
-      EEBlue.print("kp: "); EEBlue.print(kp); EEBlue.print(" ");
-      EEBlue.print("ki: "); EEBlue.print(ki); EEBlue.print(" ");
-      EEBlue.print("kd: "); EEBlue.print(kd); EEBlue.print(" ");
+      Serial3.print("k1: "); Serial3.print(k1); Serial3.print(" ");
+      Serial3.print("k2: "); Serial3.print(k2); Serial3.print(" ");
+      Serial3.print("k3*: "); Serial3.print(k3); Serial3.print(" ");
+      Serial3.print("k4: "); Serial3.print(k4); Serial3.print(" ");
+      Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
+      Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
+      Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
+      Serial3.println("uT");
     }
     if (mode == 4) {
-      EEBlue.print("k1: "); EEBlue.print(k1); EEBlue.print(" ");
-      EEBlue.print("k2: "); EEBlue.print(k2); EEBlue.print(" ");
-      EEBlue.print("k3: "); EEBlue.print(k3); EEBlue.print(" ");
-      EEBlue.print("k4*: "); EEBlue.print(k4); EEBlue.print(" ");
-      EEBlue.print("kp: "); EEBlue.print(kp); EEBlue.print(" ");
-      EEBlue.print("ki: "); EEBlue.print(ki); EEBlue.print(" ");
-      EEBlue.print("kd: "); EEBlue.print(kd); EEBlue.print(" ");
+      Serial3.print("k1: "); Serial3.print(k1); Serial3.print(" ");
+      Serial3.print("k2: "); Serial3.print(k2); Serial3.print(" ");
+      Serial3.print("k3: "); Serial3.print(k3); Serial3.print(" ");
+      Serial3.print("k4*: "); Serial3.print(k4); Serial3.print(" ");
+      Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
+      Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
+      Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
+      Serial3.println("uT");
     }
     if (mode == 5) {
-      EEBlue.print("k1: "); EEBlue.print(k1); EEBlue.print(" ");
-      EEBlue.print("k2: "); EEBlue.print(k2); EEBlue.print(" ");
-      EEBlue.print("k3: "); EEBlue.print(k3); EEBlue.print(" ");
-      EEBlue.print("k4: "); EEBlue.print(k4); EEBlue.print(" ");
-      EEBlue.print("kp*: "); EEBlue.print(kp); EEBlue.print(" ");
-      EEBlue.print("ki: "); EEBlue.print(ki); EEBlue.print(" ");
-      EEBlue.print("kd: "); EEBlue.print(kd); EEBlue.print(" ");
+      Serial3.print("k1: "); Serial3.print(k1); Serial3.print(" ");
+      Serial3.print("k2: "); Serial3.print(k2); Serial3.print(" ");
+      Serial3.print("k3: "); Serial3.print(k3); Serial3.print(" ");
+      Serial3.print("k4: "); Serial3.print(k4); Serial3.print(" ");
+      Serial3.print("kp*: "); Serial3.print(kp); Serial3.print(" ");
+      Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
+      Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
+      Serial3.println("uT");
     }
     if (mode == 6) {
-      EEBlue.print("k1: "); EEBlue.print(k1); EEBlue.print(" ");
-      EEBlue.print("k2: "); EEBlue.print(k2); EEBlue.print(" ");
-      EEBlue.print("k3: "); EEBlue.print(k3); EEBlue.print(" ");
-      EEBlue.print("k4: "); EEBlue.print(k4); EEBlue.print(" ");
-      EEBlue.print("kp: "); EEBlue.print(kp); EEBlue.print(" ");
-      EEBlue.print("ki*: "); EEBlue.print(ki); EEBlue.print(" ");
-      EEBlue.print("kd: "); EEBlue.print(kd); EEBlue.print(" ");
+      Serial3.print("k1: "); Serial3.print(k1); Serial3.print(" ");
+      Serial3.print("k2: "); Serial3.print(k2); Serial3.print(" ");
+      Serial3.print("k3: "); Serial3.print(k3); Serial3.print(" ");
+      Serial3.print("k4: "); Serial3.print(k4); Serial3.print(" ");
+      Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
+      Serial3.print("ki*: "); Serial3.print(ki); Serial3.print(" ");
+      Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
+      Serial3.println("uT");
     }
     if (mode == 7) {
-      EEBlue.print("k1: "); EEBlue.print(k1); EEBlue.print(" ");
-      EEBlue.print("k2: "); EEBlue.print(k2); EEBlue.print(" ");
-      EEBlue.print("k3: "); EEBlue.print(k3); EEBlue.print(" ");
-      EEBlue.print("k4: "); EEBlue.print(k4); EEBlue.print(" ");
-      EEBlue.print("kp: "); EEBlue.print(kp); EEBlue.print(" ");
-      EEBlue.print("ki: "); EEBlue.print(ki); EEBlue.print(" ");
-      EEBlue.print("kd*: "); EEBlue.print(kd); EEBlue.print(" ");
+      Serial3.print("k1: "); Serial3.print(k1); Serial3.print(" ");
+      Serial3.print("k2: "); Serial3.print(k2); Serial3.print(" ");
+      Serial3.print("k3: "); Serial3.print(k3); Serial3.print(" ");
+      Serial3.print("k4: "); Serial3.print(k4); Serial3.print(" ");
+      Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
+      Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
+      Serial3.print("kd*: "); Serial3.print(kd); Serial3.print(" ");
+      Serial3.println("uT");
     }
-    if (mode == 0) {
-      //Serial3.print("i: "); Serial3.print(input); Serial3.print(" ");
-      //Serial3.print("s: "); Serial3.print(setpoint); Serial3.print(" ");
-      //Serial3.print("o: "); Serial3.print(output); Serial3.print(" ");
-      Serial3.print("p: "); Serial3.print(k1 * phi); Serial3.print(" ");
-      Serial3.print("d: "); Serial3.print(k2 * phiDot); Serial3.print(" ");
-      Serial3.print("d: "); Serial3.print(k3 * phiDotDot); Serial3.print(" ");
-      Serial3.print("v: "); Serial3.print(k4 * velocity); Serial3.print(" ");
-      Serial3.print("o: "); Serial3.print(actuatorValue); Serial3.print(" ");
-      //EEBlue.print("phiAcc: "); EEBlue.print(90.0 * phiAcc); EEBlue.print(" ");
-      //EEBlue.print("phiGyro: "); EEBlue.print(-phiGyro); EEBlue.print(" ");
-      //EEBlue.print("phiDot: "); EEBlue.print(phiDot); EEBlue.print(" ");
-      //EEBlue.print("thetaAcc: "); EEBlue.print(90.0 * thetaAcc); EEBlue.print(" ");
-      //EEBlue.print("thetaGyro: "); EEBlue.print(thetaGyro); EEBlue.print(" ");
-      //EEBlue.print("variation: "); EEBlue.print(variation); EEBlue.print(" ");
-      
-//      EEBlue.print("phi: "); EEBlue.print(phi); EEBlue.print(" ");
-//      EEBlue.print("phiDot: "); EEBlue.print(phiDot); EEBlue.print(" ");
-//      EEBlue.print("theta: "); EEBlue.print(theta); EEBlue.print(" ");
-//      EEBlue.print("velocity: "); EEBlue.print(velocity); EEBlue.print(" ");
-//      EEBlue.print("actuatorValue: "); EEBlue.print(actuatorValue); EEBlue.print(" ");
-//      EEBlue.print("output: "); EEBlue.print(output); EEBlue.print(" ");
+    if (mode == 8) {
+
+      Serial3.print("acc: "); Serial3.print(phi.acc); Serial3.print(" ");
+      Serial3.print("_acc: "); Serial3.print(phi._acc); Serial3.print(" ");
+      Serial3.print("accOffset: "); Serial3.print(phi.accOffset); Serial3.print(" ");
+      Serial3.print("accScale: "); Serial3.print(phi.accScale); Serial3.print(" ");
+
+      Serial3.print("euler: "); Serial3.print(phi.euler); Serial3.print(" ");
+      Serial3.print("_euler: "); Serial3.print(phi._euler); Serial3.print(" ");
+      Serial3.print("eulerOffset: "); Serial3.print(phi.eulerOffset); Serial3.print(" ");
+      Serial3.print("eulerScaleNegative: "); Serial3.print(phi.eulerScaleNegative); Serial3.print(" ");
+      Serial3.print("eulerScalePositive: "); Serial3.print(phi.eulerScalePositive); Serial3.print(" ");
+
+      Serial3.print("gyro: "); Serial3.print(phi.gyro); Serial3.print(" ");
+      Serial3.print("_gyro: "); Serial3.print(phi._gyro); Serial3.print(" ");
+      Serial3.print("gyroOffset: "); Serial3.print(phi.gyroOffset); Serial3.print(" ");
+      Serial3.print("gyroScale: "); Serial3.print(phi.gyroScale); Serial3.print(" ");
+
+      Serial3.println("uT");
+    }
+    if (mode == 9) {
+
+      Serial3.print("acc: "); Serial3.print(theta.acc); Serial3.print(" ");
+      Serial3.print("_acc: "); Serial3.print(theta._acc); Serial3.print(" ");
+      Serial3.print("accOffset: "); Serial3.print(theta.accOffset); Serial3.print(" ");
+      Serial3.print("accScale: "); Serial3.print(theta.accScale); Serial3.print(" ");
+
+      Serial3.print("euler: "); Serial3.print(theta.euler); Serial3.print(" ");
+      Serial3.print("_euler: "); Serial3.print(theta._euler); Serial3.print(" ");
+      Serial3.print("eulerOffset: "); Serial3.print(theta.eulerOffset); Serial3.print(" ");
+      Serial3.print("eulerScaleNegative: "); Serial3.print(theta.eulerScaleNegative); Serial3.print(" ");
+      Serial3.print("eulerScalePositive: "); Serial3.print(theta.eulerScalePositive); Serial3.print(" ");
+
+      Serial3.print("gyro: "); Serial3.print(theta.gyro); Serial3.print(" ");
+      Serial3.print("_gyro: "); Serial3.print(theta._gyro); Serial3.print(" ");
+      Serial3.print("gyroOffset: "); Serial3.print(theta.gyroOffset); Serial3.print(" ");
+      Serial3.print("gyroScale: "); Serial3.print(theta.gyroScale); Serial3.print(" ");
+      Serial3.println("uT");
+    }
+    if (mode == 10) {
+      Serial3.print("phi: "); Serial3.print(phi.angle); Serial3.print(" ");
+      Serial3.print("phiDot: "); Serial3.print(phi.dot); Serial3.print(" ");
+      Serial3.print("phiDotDot: "); Serial3.print(phi.dotDot); Serial3.print(" ");
+      Serial3.print("theta: "); Serial3.print(theta.angle); Serial3.print(" ");
+      Serial3.print("thetaDot: "); Serial3.print(theta.dot); Serial3.print(" ");
+      Serial3.print("thetaDotDot: "); Serial3.print(theta.dotDot); Serial3.print(" ");
+      Serial3.print("velocity: "); Serial3.print(velocity); Serial3.print(" ");
+      Serial3.print("actuator: "); Serial3.print(actuatorValue); Serial3.print(" ");
+      Serial3.print("output: "); Serial3.print(output); Serial3.print(" ");
       Serial3.println("uT");
     }
   }
