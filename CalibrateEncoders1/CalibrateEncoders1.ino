@@ -9,16 +9,17 @@ const int button1Pin = 22;
 const int button2Pin = 23;
 const int button3Pin = 24;
 const int button4Pin = 25;
-const int actuatorPin = 13;
+const int out1Pin = 18; // for interrupts
+const int out2Pin = 19; // for interrupts
 const int enable34Pin = 52;
 const int enable12Pin = 53;
 const int oneAPin = 8;
 const int twoAPin = 9;
 const int threeAPin = 2;
 const int fourAPin = 3;
-const int redPin = 6;
-const int greenPin = 5;
-const int bluePin = 4;
+//const int redPin = 6;
+//const int greenPin = 5;
+//const int bluePin = 4;
 const int period = 5000; // the time interval between sensor readings in microseconds
 
 Orientation phi = {
@@ -33,8 +34,8 @@ Orientation phi = {
   0.0, // _euler
   0.0, // _gyro
   90.0, // accScale
-  -0.32, // eulerScale (negative range)
-  -0.49, // eulerScale (positive range)
+  -0.49, // eulerScale (negative range)
+  -0.32, // eulerScale (positive range)
   1.0, // gyroScale
   0.0, // accOffset
   0.0, // eulerOffset
@@ -57,8 +58,8 @@ Orientation theta = {
   0.0, // _euler
   0.0, // _gyro
   90.0, // accScale
-  0.39, // eulerScale (negative range)
-  0.38, // eulerScale (positive range)
+  0.38, // eulerScale (negative range)
+  0.39, // eulerScale (positive range)
   -1.0, // gyroScale
   0.0, // accOffset
   0.0, // eulerOffset
@@ -85,9 +86,16 @@ int button3State = 0;
 int button4State = 0;
 int mode = 0;
 int buttonCounter = 0;
-int maxButtonCount = 5; // for delaying between successive pushes of the buttons
+int maxButtonCount = 20; // for delaying between successive pushes of the buttons
 int resetParams = 0;
 long unsigned motionCounter = 0;
+volatile long pulse;
+unsigned long start;
+const uint16_t end = 100; // 0.1 second update time
+int pps,       // pulses per second
+    oldpps,
+    ppr = 26, // pulses per revolution
+    rpm;
 
 // variables will change:
 double reading;
@@ -103,34 +111,35 @@ float saturation = 100.0;
 float brightness = 100.0;
 float hue = 0.0;
 double ratio = 0.05;
-double k1 = 15.0;
-double k2 = 25.0;
-double k3 = 20.0;
-double k4 = 5.0;
+double k1 = 7.0;
+double k2 = 15.0;
+double k3 = 11.0;
+double k4 = 0.35;
+volatile double incrementValue = 0.1;
+volatile int printCounter = 0;
 
 ArduPID myController;
 double input;
 double output;
 // Arbitrary setpoint and gains - adjust these as fit for your project:
-double setpoint = 0.0;
-double kp = 0.0;
-double ki = 0.0;
-double kd = 0.0;
+double setpoint = 11.0;
+double kp = 9.0;
+double ki = 3.0;
+double kd = 0.3;
 
 MPU9250 mpu; // You can also use MPU9255 as is
 
-float e_mea = 0.01; // Measurement Uncertainty
-float e_est = 0.01; // Estimation Uncertainty
-float q = 0.01; // Process Noise
-SimpleKalmanFilter phiFilter(e_mea, e_est, q);
-SimpleKalmanFilter thetaFilter(e_mea, e_est, q);
+//float e_mea = 0.01; // Measurement Uncertainty
+//float e_est = 0.01; // Estimation Uncertainty
+//float q = 0.01; // Process Noise
+// SimpleKalmanFilter phiFilter(e_mea, e_est, q);
+// SimpleKalmanFilter thetaFilter(e_mea, e_est, q);
 
 // For reading sensors
-Timer<1, micros> timer; // create a timer with 1 task and microsecond resolution
+// Timer<1, micros> timer; // create a timer with 1 task and microsecond resolution
 
-Orientation getOrientation(Orientation input, MPU9250 mpu, SimpleKalmanFilter filter, double ratio) {
+Orientation getOrientation(Orientation input, MPU9250 mpu, double ratio) {
   Orientation output = input;
-  output.updated = mpu.update();
   if (output.updated) {
     if (output.axis == 1) {
       output._acc = mpu.getAccX();
@@ -139,12 +148,13 @@ Orientation getOrientation(Orientation input, MPU9250 mpu, SimpleKalmanFilter fi
     }
     if (output.axis == 2) {
       output._acc = mpu.getAccY();
-      double euler = mpu.getEulerX();
+      output._euler = mpu.getEulerX();
+      //double euler = mpu.getEulerX();
       // Apply reflections because of the orientation of the microchip
-      if (euler < 0)
-        output._euler = -(180.0 + euler);
-      else
-        output._euler = 180.0 - euler;
+      //if (euler < 0)
+      //  output._euler = euler - 270.0;
+      //else
+      //  output._euler = 225.0 + euler;
       output._gyro = mpu.getGyroX();
     }
 
@@ -158,7 +168,7 @@ Orientation getOrientation(Orientation input, MPU9250 mpu, SimpleKalmanFilter fi
     else
       output.euler = output.eulerScalePositive * (output._euler - output.eulerOffset);
 
-    output.angle = ratio * filter.updateEstimate(output.acc) + (1.0 - ratio) * output.euler;
+    output.angle = ratio * output.acc + (1.0 - ratio) * output.euler;
   }
   return output;
 }
@@ -232,16 +242,15 @@ void setup() {
   mpu.verbose(false);
 
   // set ADC pins A0 and A1 as input
-  pinMode(A0, INPUT);
-  pinMode(A1, INPUT);
-  digitalWrite(A0, HIGH);
-  digitalWrite(A1, HIGH);
+  pinMode(A0, INPUT_PULLUP);
+  pinMode(A1, INPUT_PULLUP);
+  pinMode(A2, INPUT_PULLUP);
+  pinMode(A3, INPUT_PULLUP);
   // set the button pin as input
-  pinMode(button1Pin, INPUT);
-  pinMode(button2Pin, INPUT);
-  pinMode(button3Pin, INPUT);
-  pinMode(button4Pin, INPUT);
-  digitalWrite(button4Pin, HIGH);
+  pinMode(button1Pin, INPUT_PULLUP);
+  pinMode(button2Pin, INPUT_PULLUP);
+  pinMode(button3Pin, INPUT_PULLUP);
+  pinMode(button4Pin, INPUT_PULLUP);
   // set pins 2 and 3 as outputs:
   pinMode(oneAPin, OUTPUT);
   pinMode(twoAPin, OUTPUT);
@@ -254,7 +263,10 @@ void setup() {
   // set pin 22 as output:
   pinMode(enable12Pin, OUTPUT);
   pinMode(enable34Pin, OUTPUT);
-  pinMode(actuatorPin, OUTPUT);
+
+  pinMode(out1Pin, INPUT_PULLUP);
+  pinMode(out2Pin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(out1Pin), readEncoder, FALLING);
 
   myController.begin(&input, &output, &setpoint, kp, ki, kd);
   myController.setOutputLimits(0, 255);
@@ -287,7 +299,7 @@ void setup() {
   theta.gyroOffset /= counter;
 
   // call the calculate_velocity function every 100 micros (0.0001 second)
-  timer.every(period, readSensors);
+  // timer.every(period, readSensors);
 }
 
 
@@ -308,19 +320,19 @@ void loop() {
   if (button2State == LOW && buttonCounter > maxButtonCount) {
     buttonCounter = 0;
     if (mode == 1)
-      k1 += 1.0;
+      k1 += incrementValue;
     if (mode == 2)
-      k2 += 1.0;
+      k2 += incrementValue;
     if (mode == 3)
-      k3 += 1.0;
+      k3 += incrementValue;
     if (mode == 4)
-      k4 += 1.0;
+      k4 += incrementValue;
     if (mode == 5)
-      kp += 1.0;
+      kp += incrementValue;
     if (mode == 6)
-      ki += 1.0;
+      ki += incrementValue;
     if (mode == 7)
-      kd += 1.0;
+      kd += incrementValue;
     if (k1 > 1000.0)
       k1 = 1000.0;
     if (k2 > 1000)
@@ -341,27 +353,27 @@ void loop() {
   if (button3State == LOW && buttonCounter > 10) {
     buttonCounter = 0;
     if (mode == 1)
-      k1 -= 1.0;
+      k1 -= incrementValue;
     if (mode == 2)
-      k2 -= 1.0;
+      k2 -= incrementValue;
     if (mode == 3)
-      k3 -= 1.0;
+      k3 -= incrementValue;
     if (mode == 4)
-      k4 -= 1.0;
+      k4 -= incrementValue;
     if (mode == 5)
-      kp -= 1.0;
+      kp -= incrementValue;
     if (mode == 6)
-      ki -= 1.0;
+      ki -= incrementValue;
     if (mode == 7)
-      kd -= 1.0;
+      kd -= incrementValue;
     if (k1 < 0)
-      k1 = 0;
+      k1 = 0.0;
     if (k2 < 0)
-      k2 = 0;
+      k2 = 0.0;
     if (k3 < 0)
-      k3 = 0;
+      k3 = 0.0;
     if (k4 < 0)
-      k4 = 0;
+      k4 = 0.0;
     if (kp < 0)
       kp = 0.0;
     if (ki < 0)
@@ -387,46 +399,45 @@ void loop() {
   //    state = Serial3.read(); // Reads the data from the serial port
   //  }
 
-  phi = getOrientation(phi, mpu, phiFilter, 1.0 - ratio);
-  theta = getOrientation(theta, mpu, thetaFilter, 1.0 - ratio);
+  phi.updated = mpu.update();
+  theta.updated = phi.updated;
+  phi = getOrientation(phi, mpu, 1.0 - ratio);
+  theta = getOrientation(theta, mpu, 1.0 - ratio);
 
-  hue = (reading - minReading) / (maxReading - minReading) * 360.0;
-  Hsv hsvColor;
-  hsvColor.h = hue;
-  hsvColor.s = saturation;
-  hsvColor.v = brightness;
-  Rgb rgbColor = HSVtoRGB(hsvColor);
-  dutyCycleRed = 255 - rgbColor.r;
-  dutyCycleGreen = 255 - rgbColor.g;
-  dutyCycleBlue = 255 - rgbColor.b;
-  analogWrite(redPin, dutyCycleRed);
-  analogWrite(greenPin, dutyCycleGreen);
-  analogWrite(bluePin, dutyCycleBlue);
+//  hue = (reading - minReading) / (maxReading - minReading) * 360.0;
+//  Hsv hsvColor;
+//  hsvColor.h = hue;
+//  hsvColor.s = saturation;
+//  hsvColor.v = brightness;
+//  Rgb rgbColor = HSVtoRGB(hsvColor);
+//  dutyCycleRed = 255 - rgbColor.r;
+//  dutyCycleGreen = 255 - rgbColor.g;
+//  dutyCycleBlue = 255 - rgbColor.b;
+//  analogWrite(redPin, dutyCycleRed);
+//  analogWrite(greenPin, dutyCycleGreen);
+//  analogWrite(bluePin, dutyCycleBlue);
 
+  if(millis() - start > end) {
+     start += end;
+     noInterrupts();
+     pps = pulse - oldpps;
+     oldpps = pulse;
+     interrupts();
+     rpm = abs(pps * 60L / ppr);
+  }
+
+  velocity = (float)rpm;
+
+  // ui state
   if (phi.updated) {
-    if (phi.angle >= 0.0) {
-      analogWrite(phi.positivePin, abs(phi.angle / phi.safetyAngle) * 255.0);
-      analogWrite(phi.negativePin, 0);
-    } else {
-      analogWrite(phi.positivePin, 0);
-      analogWrite(phi.negativePin, abs(phi.angle / phi.safetyAngle) * 255.0);
-    }
+//    if (phi.angle >= 0.0) {
+//      analogWrite(phi.positivePin, abs(phi.angle / phi.safetyAngle) * 255.0);
+//      analogWrite(phi.negativePin, 0);
+//    } else {
+//      analogWrite(phi.positivePin, 0);
+//      analogWrite(phi.negativePin, abs(phi.angle / phi.safetyAngle) * 255.0);
+//    }
     actuatorValue = max(0, min(255, abs(k1 * phi.angle + k2 * phi.dot + k3 * phi.dotDot) + k4 * velocity));
-  }
-  if (theta.updated) {
-    if (theta.angle >= 0.0) {
-      analogWrite(theta.positivePin, abs(theta.angle / theta.safetyAngle) * 255.0);
-      analogWrite(theta.negativePin, 0);
-    } else {
-      analogWrite(theta.positivePin, 0);
-      analogWrite(theta.negativePin, abs(theta.angle / theta.safetyAngle) * 255.0);
-    }
-    input = theta.angle; // Replace with sensor feedback
-    myController.compute();
-  }
-
-  if (abs(phi.angle) < phi.safetyAngle && abs(theta.angle) < theta.safetyAngle && button4State == LOW) { // Added safety check for too large angles
-
     if (phi.angle >= 0) {
       dutyCycleThreeA = 0;
       dutyCycleFourA = actuatorValue;
@@ -444,61 +455,98 @@ void loop() {
       dutyCycleOneA = output;
       dutyCycleTwoA = 255 - output;
     }
+  }
+  if (theta.updated) {
+//    if (theta.angle >= 0.0) {
+//      analogWrite(theta.positivePin, abs(theta.angle / theta.safetyAngle) * 255.0);
+//      analogWrite(theta.negativePin, 0);
+//    } else {
+//      analogWrite(theta.positivePin, 0);
+//      analogWrite(theta.negativePin, abs(theta.angle / theta.safetyAngle) * 255.0);
+//    }
+    input = theta.angle; // Replace with sensor feedback
+    myController.compute();
+    dutyCycleOneA = output;
+    dutyCycleTwoA = 255 - output;
+  }
 
-
-    digitalWrite(enable12Pin, HIGH);
-    digitalWrite(enable34Pin, HIGH);
+  // motor actions
+  if (abs(phi.angle) < phi.safetyAngle && abs(theta.angle) < theta.safetyAngle) { // Added safety check for too large angles
     analogWrite(oneAPin, dutyCycleOneA);
     analogWrite(twoAPin, dutyCycleTwoA);
     analogWrite(threeAPin, dutyCycleThreeA);
     analogWrite(fourAPin, dutyCycleFourA);
+    digitalWrite(enable12Pin, HIGH);
+    if (button4State == HIGH)
+      digitalWrite(enable34Pin, HIGH);
   }
   else {
     digitalWrite(enable12Pin, LOW);
     digitalWrite(enable34Pin, LOW);
   }
+  
 
+//  if (button4State == HIGH) {
+//    analogWrite(threeAPin, 128);
+//    analogWrite(fourAPin, 0);
+//    digitalWrite(enable34Pin, HIGH);
+//  } else {
+//    analogWrite(threeAPin, 0);
+//    analogWrite(fourAPin, 255);
+//    digitalWrite(enable34Pin, HIGH);
+//  }
+
+//  Serial3.print("output1: "); Serial3.print(analogRead(A0)); Serial3.print(" ");
+//  Serial3.print("output2: "); Serial3.print(analogRead(A1)); Serial3.print(" ");
+//  if (pps > 5) {
+//    Serial3.print("pulse: "); Serial3.print(pulse); Serial3.print(" ");
+//    Serial3.print("rpm: "); Serial3.print(rpm); Serial3.print(" ");
+//  }
+//  Serial3.print("button4State: "); Serial3.print(button4State); Serial3.print(" ");
+//  Serial3.println("uT");
+  ++printCounter;
   // print out the value you read:
-  if (phi.updated || theta.updated) {
+  if ((phi.updated || theta.updated) && ((printCounter % 5) == 0)) {
+    printCounter = 0;
 
     if (mode == 1) {
       Serial3.print("k1*: "); Serial3.print(k1); Serial3.print(" ");
-      Serial3.print("k2: "); Serial3.print(k2); Serial3.print(" ");
-      Serial3.print("k3: "); Serial3.print(k3); Serial3.print(" ");
-      Serial3.print("k4: "); Serial3.print(k4); Serial3.print(" ");
-      Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
-      Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
-      Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
+      //Serial3.print("k2: "); Serial3.print(k2); Serial3.print(" ");
+      //Serial3.print("k3: "); Serial3.print(k3); Serial3.print(" ");
+      //Serial3.print("k4: "); Serial3.print(k4); Serial3.print(" ");
+      //Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
+      //Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
+      //Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
       Serial3.println("uT");
     }
     if (mode == 2) {
-      Serial3.print("k1: "); Serial3.print(k1); Serial3.print(" ");
+      //Serial3.print("k1: "); Serial3.print(k1); Serial3.print(" ");
       Serial3.print("k2*: "); Serial3.print(k2); Serial3.print(" ");
-      Serial3.print("k3: "); Serial3.print(k3); Serial3.print(" ");
-      Serial3.print("k4: "); Serial3.print(k4); Serial3.print(" ");
-      Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
-      Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
-      Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
+      //Serial3.print("k3: "); Serial3.print(k3); Serial3.print(" ");
+      //Serial3.print("k4: "); Serial3.print(k4); Serial3.print(" ");
+//      Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
+//      Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
+//      Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
       Serial3.println("uT");
     }
     if (mode == 3) {
-      Serial3.print("k1: "); Serial3.print(k1); Serial3.print(" ");
-      Serial3.print("k2: "); Serial3.print(k2); Serial3.print(" ");
+      //Serial3.print("k1: "); Serial3.print(k1); Serial3.print(" ");
+      //Serial3.print("k2: "); Serial3.print(k2); Serial3.print(" ");
       Serial3.print("k3*: "); Serial3.print(k3); Serial3.print(" ");
-      Serial3.print("k4: "); Serial3.print(k4); Serial3.print(" ");
-      Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
-      Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
-      Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
+      //Serial3.print("k4: "); Serial3.print(k4); Serial3.print(" ");
+//      Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
+//      Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
+//      Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
       Serial3.println("uT");
     }
     if (mode == 4) {
-      Serial3.print("k1: "); Serial3.print(k1); Serial3.print(" ");
-      Serial3.print("k2: "); Serial3.print(k2); Serial3.print(" ");
-      Serial3.print("k3: "); Serial3.print(k3); Serial3.print(" ");
+//      Serial3.print("k1: "); Serial3.print(k1); Serial3.print(" ");
+//      Serial3.print("k2: "); Serial3.print(k2); Serial3.print(" ");
+//      Serial3.print("k3: "); Serial3.print(k3); Serial3.print(" ");
       Serial3.print("k4*: "); Serial3.print(k4); Serial3.print(" ");
-      Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
-      Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
-      Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
+//      Serial3.print("kp: "); Serial3.print(kp); Serial3.print(" ");
+//      Serial3.print("ki: "); Serial3.print(ki); Serial3.print(" ");
+//      Serial3.print("kd: "); Serial3.print(kd); Serial3.print(" ");
       Serial3.println("uT");
     }
     if (mode == 5) {
@@ -584,5 +632,10 @@ void loop() {
     }
   }
 
-  timer.tick(); // tick the timer
+  // timer.tick(); // tick the timer
 }
+
+void readEncoder() // ISR
+{
+  ++pulse; // rotation direction
+}  
