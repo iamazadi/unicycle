@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<BuildDb>
+    <Tool>
+        <Name>linker</Name>
+        <Parent>
+            <Path>C:\Users\MJAza\OneDrive\Documents\unicycle\EWARM\unicycle\Exe\unicycle.out</Path>
+            <Output>
+                <Path>C:\Users\MJAza\OneDrive\Documents\unicycle\EWARM\unicycle\List\unicycle.map</Path>
+            </Output>
+        </Parent>
+    </Tool>
+</BuildDb>
