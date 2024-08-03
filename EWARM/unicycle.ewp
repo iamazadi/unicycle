@@ -70,7 +70,7 @@
         </option>
         <option>
           <name>OGLastSavedByProductVersion</name>
-          <state>9.50.1.69462</state>
+          <state>9.50.2.71646</state>
         </option>
         <option>
           <name>OGChipSelectEditMenu</name>
@@ -685,7 +685,7 @@
       <data>
         <extensions></extensions>
         <cmdline>-u _printf_float</cmdline>
-        <hasPrio>240</hasPrio>
+        <hasPrio>1</hasPrio>
         <buildSequence>inputOutputBased</buildSequence>
       </data>
     </settings>

@@ -3,9 +3,9 @@
     <Tool>
         <Name>linker</Name>
         <Parent>
-            <Path>C:\Users\MJAza\OneDrive\Documents\unicycle\EWARM\unicycle\Exe\unicycle.out</Path>
+            <Path>D:\unicycle\EWARM\unicycle\Exe\unicycle.out</Path>
             <Output>
-                <Path>C:\Users\MJAza\OneDrive\Documents\unicycle\EWARM\unicycle\List\unicycle.map</Path>
+                <Path>D:\unicycle\EWARM\unicycle\List\unicycle.map</Path>
             </Output>
         </Parent>
     </Tool>

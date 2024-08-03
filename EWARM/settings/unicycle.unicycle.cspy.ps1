@@ -23,9 +23,9 @@
 
 if ($debugfile -eq "")
 {
-& "C:\Program Files\IAR Systems\Embedded Workbench 9.2\common\bin\cspybat" -f "C:\Users\MJAza\OneDrive\Documents\unicycle\EWARM\settings\unicycle.unicycle.general.xcl" --backend -f "C:\Users\MJAza\OneDrive\Documents\unicycle\EWARM\settings\unicycle.unicycle.driver.xcl" 
+& "C:\Program Files\IAR Systems\Embedded Workbench 9.2\common\bin\cspybat" -f "D:\unicycle\EWARM\settings\unicycle.unicycle.general.xcl" --backend -f "D:\unicycle\EWARM\settings\unicycle.unicycle.driver.xcl" 
 }
 else
 {
-& "C:\Program Files\IAR Systems\Embedded Workbench 9.2\common\bin\cspybat" -f "C:\Users\MJAza\OneDrive\Documents\unicycle\EWARM\settings\unicycle.unicycle.general.xcl" --debug_file=$debugfile --backend -f "C:\Users\MJAza\OneDrive\Documents\unicycle\EWARM\settings\unicycle.unicycle.driver.xcl" 
+& "C:\Program Files\IAR Systems\Embedded Workbench 9.2\common\bin\cspybat" -f "D:\unicycle\EWARM\settings\unicycle.unicycle.general.xcl" --debug_file=$debugfile --backend -f "D:\unicycle\EWARM\settings\unicycle.unicycle.driver.xcl" 
 }

@@ -43,6 +43,14 @@
 #define PWR_MGMT_1_REG 0x6B
 #define WHO_AM_I_REG 0x75
 
+#define MPU6050_ADDR2 0xD2
+
+// matrix dimensions so that we dont have to pass them as
+// parametersmat1[R1][C1] and mat2[R2][C2]
+#define R1 3 // number of rows in Matrix-1
+#define C1 3 // number of columns in Matrix-1
+#define R2 3 // number of rows in Matrix-2
+#define C2 3 // number of columns in Matrix-2
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -52,6 +60,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
+I2C_HandleTypeDef hi2c2;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
@@ -61,42 +70,31 @@ TIM_HandleTypeDef htim4;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-int hall_effect_sensor = 0;
+
 uint8_t UART1_rxBuffer[12] = {0};
 uint8_t UART1_txBuffer[12] = {0};
-int16_t Accel_X_RAW = 0;
-int16_t Accel_Y_RAW = 0;
-int16_t Accel_Z_RAW = 0;
 
-int16_t Gyro_X_RAW = 0;
-int16_t Gyro_Y_RAW = 0;
-int16_t Gyro_Z_RAW = 0;
-
-float Ax, Ay, Az, Gx, Gy, Gz;
-float Ax_offset, Ay_offset, Az_offset;
-float Gx_offset, Gy_offset, Gz_offset;
-float acc_roll, acc_pitch, acc_yaw;
-float gyr_roll, gyr_pitch, gyr_yaw;
-float roll_velocity, pitch_velocity, yaw_velocity;
-float roll_acceleration = 0.0;
-float roll, pitch, yaw;
-float _roll, _pitch, _yaw;
-float roll_fusion_ratio = 0.66;
-float pitch_fusion_ratio = 0.33;
 int samples = 500;
+float dt = 0.0;
+float log_dt = 0.0;
 char buf[4];
-uint8_t MSG[120] = {'\0'};
+uint8_t MSG[160] = {'\0'};
 int speed1 = 0;
 int speed2 = 0;
-const int LOG_CYCLES = 500;
+const float W = 0.3;
+const float PI = 3.14;
+const int LOG_CYCLES = 100;
 const int signals = 11; // encoder motor end 11 signals
 const float interval = 0.01;
-const float max_wheel_velocity = 50.0;
+const float K = 0.0175;
 int previous_count = 0;
 int log_counter;
 int transmit_logs = 0;
 float moving_average = 0.0;
 float hue = 0.0;
+float R_est_x = 0.0;
+float R_est_y = 0.0;
+float R_est_z = 0.0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -108,12 +106,65 @@ static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_TIM3_Init(void);
+static void MX_I2C2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+typedef struct {
+  float Ax_raw;
+  float Ay_raw;
+  float Az_raw;
+  float Gx_raw;
+  float Gy_raw;
+  float Gz_raw;
+  float Ax;
+  float Ay;
+  float Az;
+  float Gx;
+  float Gy;
+  float Gz;
+  float _Gx;
+  float _Gy;
+  float _Gz;
+  float Ax_scale;
+  float Ay_scale;
+  float Az_scale;
+  float Gx_scale;
+  float Gy_scale;
+  float Gz_scale;
+  float Ax_offset;
+  float Ay_offset;
+  float Az_offset;
+  float Gx_offset;
+  float Gy_offset;
+  float Gz_offset;
+  float phi;
+  float theta;
+  float psi;
+} Imu;
+
+typedef struct {
+  float R_est_x;
+  float R_est_y;
+  float R_est_z;
+  float _R_est_x;
+  float _R_est_y;
+  float _R_est_z;
+  float R_acc_x;
+  float R_acc_y;
+  float R_acc_z;
+  float R_gyro_x;
+  float R_gyro_y;
+  float R_gyro_z;
+  float magnitude;
+  float phi;
+  float theta;
+  float psi;
+} Acceleration;
 
 typedef struct {
   float r;       // a fraction between 0 and 1
@@ -177,40 +228,58 @@ Rgb HSVtoRGB(Hsv input) {
   return output;
 }
 
-void MPU6050_Init (void)
+void initialize(Imu *imu) {
+  imu->_Gx = 0.0;
+  imu->_Gy = 0.0;
+  imu->_Gz = 0.0;
+  imu->Ax_scale = 1.0;
+  imu->Ay_scale = 1.0;
+  imu->Az_scale = 1.0;
+  imu->Gx_scale = 1.0;
+  imu->Gy_scale = 1.0;
+  imu->Gz_scale = 1.0;
+  imu->Ax_offset = 0.0;
+  imu->Ay_offset = 0.0;
+  imu->Az_offset = 0.0;
+  imu->Gx_offset = 0.0;
+  imu->Gy_offset = 0.0;
+  imu->Gz_offset = 0.0;
+}
+
+void MPU6050_Init (I2C_HandleTypeDef hi2c, int address)
 {
 	uint8_t check;
 	uint8_t Data;
 
 	// check device ID WHO_AM_I
 
-	HAL_I2C_Mem_Read (&hi2c1, MPU6050_ADDR, WHO_AM_I_REG, 1, &check, 1, 1000);
+	HAL_I2C_Mem_Read (&hi2c, address, WHO_AM_I_REG, 1, &check, 1, 1000);
 
 	if (check == 104)  // 0x68 will be returned by the sensor if everything goes well
 	{
 		// power management register 0X6B we should write all 0's to wake the sensor up
 		Data = 0;
-		HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, PWR_MGMT_1_REG, 1,&Data, 1, 1000);
+		HAL_I2C_Mem_Write(&hi2c, address, PWR_MGMT_1_REG, 1,&Data, 1, 1000);
 
 		// Set DATA RATE of 1KHz by writing SMPLRT_DIV register
 		Data = 0x07;
-		HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, SMPLRT_DIV_REG, 1, &Data, 1, 1000);
+		HAL_I2C_Mem_Write(&hi2c, address, SMPLRT_DIV_REG, 1, &Data, 1, 1000);
 
 		// Set accelerometer configuration in ACCEL_CONFIG Register
 		// XA_ST=0,YA_ST=0,ZA_ST=0, FS_SEL=0 -> ± 2g
 		Data = 0x00;
-		HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, ACCEL_CONFIG_REG, 1, &Data, 1, 1000);
+		HAL_I2C_Mem_Write(&hi2c, address, ACCEL_CONFIG_REG, 1, &Data, 1, 1000);
 
 		// Set Gyroscopic configuration in GYRO_CONFIG Register
 		// XG_ST=0,YG_ST=0,ZG_ST=0, FS_SEL=0 -> ± 250 °/s
 		Data = 0x00;
-		HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDR, GYRO_CONFIG_REG, 1, &Data, 1, 1000);
+		HAL_I2C_Mem_Write(&hi2c, address, GYRO_CONFIG_REG, 1, &Data, 1, 1000);
 	}
 
 }
 
 
-void MPU6050_Read_Accel (void)
+void MPU6050_Read_Accel (Imu *imu1, Imu *imu2, Imu *imu3)
 {
 	uint8_t Rec_Data[6];
 
@@ -218,22 +287,56 @@ void MPU6050_Read_Accel (void)
 
 	HAL_I2C_Mem_Read (&hi2c1, MPU6050_ADDR, ACCEL_XOUT_H_REG, 1, Rec_Data, 6, 1000);
 
-	Accel_X_RAW = (int16_t)(Rec_Data[0] << 8 | Rec_Data [1]);
-	Accel_Y_RAW = (int16_t)(Rec_Data[2] << 8 | Rec_Data [3]);
-	Accel_Z_RAW = (int16_t)(Rec_Data[4] << 8 | Rec_Data [5]);
+	imu1->Ax_raw = (int16_t)(Rec_Data[0] << 8 | Rec_Data [1]);
+	imu1->Ay_raw = (int16_t)(Rec_Data[2] << 8 | Rec_Data [3]);
+	imu1->Az_raw = (int16_t)(Rec_Data[4] << 8 | Rec_Data [5]);
 
 	/*** convert the RAW values into acceleration in 'g'
 	     we have to divide according to the Full scale value set in FS_SEL
 	     I have configured FS_SEL = 0. So I am dividing by 16384.0
 	     for more details check ACCEL_CONFIG Register              ****/
 
-	Ax = Accel_X_RAW/16384.0;
-	Ay = Accel_Y_RAW/16384.0;
-	Az = Accel_Z_RAW/16384.0;
+	imu1->Ax = imu1->Ax_raw / 16384.0;
+	imu1->Ay = imu1->Ay_raw / 16384.0;
+	imu1->Az = imu1->Az_raw / 16384.0;
+
+	// Read 6 BYTES of data starting from ACCEL_XOUT_H register
+
+	HAL_I2C_Mem_Read (&hi2c2, MPU6050_ADDR, ACCEL_XOUT_H_REG, 1, Rec_Data, 6, 1000);
+
+	imu2->Ax_raw = (int16_t)(Rec_Data[0] << 8 | Rec_Data [1]);
+	imu2->Ay_raw = (int16_t)(Rec_Data[2] << 8 | Rec_Data [3]);
+	imu2->Az_raw = (int16_t)(Rec_Data[4] << 8 | Rec_Data [5]);
+
+	/*** convert the RAW values into acceleration in 'g'
+	     we have to divide according to the Full scale value set in FS_SEL
+	     I have configured FS_SEL = 0. So I am dividing by 16384.0
+	     for more details check ACCEL_CONFIG Register              ****/
+
+	imu2->Ax = imu2->Ax_raw / 16384.0;
+	imu2->Ay = imu2->Ay_raw / 16384.0;
+	imu2->Az = imu2->Az_raw / 16384.0;
+        
+        // Read 6 BYTES of data starting from ACCEL_XOUT_H register
+
+	HAL_I2C_Mem_Read (&hi2c1, MPU6050_ADDR2, ACCEL_XOUT_H_REG, 1, Rec_Data, 6, 1000);
+
+	imu3->Ax_raw = (int16_t)(Rec_Data[0] << 8 | Rec_Data [1]);
+	imu3->Ay_raw = (int16_t)(Rec_Data[2] << 8 | Rec_Data [3]);
+	imu3->Az_raw = (int16_t)(Rec_Data[4] << 8 | Rec_Data [5]);
+
+	/*** convert the RAW values into acceleration in 'g'
+	     we have to divide according to the Full scale value set in FS_SEL
+	     I have configured FS_SEL = 0. So I am dividing by 16384.0
+	     for more details check ACCEL_CONFIG Register              ****/
+
+	imu3->Ax = imu3->Ax_raw / 16384.0;
+	imu3->Ay = imu3->Ay_raw / 16384.0;
+	imu3->Az = imu3->Az_raw / 16384.0;
 }
 
 
-void MPU6050_Read_Gyro (void)
+void MPU6050_Read_Gyro (Imu *imu1, Imu *imu2, Imu *imu3)
 {
 	uint8_t Rec_Data[6];
 
@@ -241,18 +344,61 @@ void MPU6050_Read_Gyro (void)
 
 	HAL_I2C_Mem_Read (&hi2c1, MPU6050_ADDR, GYRO_XOUT_H_REG, 1, Rec_Data, 6, 1000);
 
-	Gyro_X_RAW = (int16_t)(Rec_Data[0] << 8 | Rec_Data [1]);
-	Gyro_Y_RAW = (int16_t)(Rec_Data[2] << 8 | Rec_Data [3]);
-	Gyro_Z_RAW = (int16_t)(Rec_Data[4] << 8 | Rec_Data [5]);
+	imu1->Gx_raw = (int16_t)(Rec_Data[0] << 8 | Rec_Data [1]);
+	imu1->Gy_raw = (int16_t)(Rec_Data[2] << 8 | Rec_Data [3]);
+	imu1->Gz_raw = (int16_t)(Rec_Data[4] << 8 | Rec_Data [5]);
 
 	/*** convert the RAW values into dps (°/s)
 	     we have to divide according to the Full scale value set in FS_SEL
 	     I have configured FS_SEL = 0. So I am dividing by 131.0
 	     for more details check GYRO_CONFIG Register              ****/
 
-	Gx = Gyro_X_RAW/131.0;
-	Gy = Gyro_Y_RAW/131.0;
-	Gz = Gyro_Z_RAW/131.0;
+        imu1->_Gx = imu1->Gx;
+        imu1->_Gy = imu1->Gy;
+        imu1->_Gz = imu1->Gz;
+	imu1->Gx = imu1->Gx_raw / 131.0;
+	imu1->Gy = imu1->Gy_raw / 131.0;
+	imu1->Gz = imu1->Gz_raw / 131.0;
+        
+        // Read 6 BYTES of data starting from GYRO_XOUT_H register
+
+	HAL_I2C_Mem_Read (&hi2c2, MPU6050_ADDR, GYRO_XOUT_H_REG, 1, Rec_Data, 6, 1000);
+
+	imu2->Gx_raw = (int16_t)(Rec_Data[0] << 8 | Rec_Data [1]);
+	imu2->Gy_raw = (int16_t)(Rec_Data[2] << 8 | Rec_Data [3]);
+	imu2->Gz_raw = (int16_t)(Rec_Data[4] << 8 | Rec_Data [5]);
+
+	/*** convert the RAW values into dps (°/s)
+	     we have to divide according to the Full scale value set in FS_SEL
+	     I have configured FS_SEL = 0. So I am dividing by 131.0
+	     for more details check GYRO_CONFIG Register              ****/
+
+        imu2->_Gx = imu2->Gx;
+        imu2->_Gy = imu2->Gy;
+        imu2->_Gz = imu2->Gz;
+	imu2->Gx = imu2->Gx_raw / 131.0;
+	imu2->Gy = imu2->Gy_raw / 131.0;
+	imu2->Gz = imu2->Gz_raw / 131.0;
+        
+        // Read 6 BYTES of data starting from GYRO_XOUT_H register
+
+	HAL_I2C_Mem_Read (&hi2c1, MPU6050_ADDR2, GYRO_XOUT_H_REG, 1, Rec_Data, 6, 1000);
+
+	imu3->Gx_raw = (int16_t)(Rec_Data[0] << 8 | Rec_Data [1]);
+	imu3->Gy_raw = (int16_t)(Rec_Data[2] << 8 | Rec_Data [3]);
+	imu3->Gz_raw = (int16_t)(Rec_Data[4] << 8 | Rec_Data [5]);
+
+	/*** convert the RAW values into dps (°/s)
+	     we have to divide according to the Full scale value set in FS_SEL
+	     I have configured FS_SEL = 0. So I am dividing by 131.0
+	     for more details check GYRO_CONFIG Register              ****/
+
+        imu3->_Gx = imu3->Gx;
+        imu3->_Gy = imu3->Gy;
+        imu3->_Gz = imu3->Gz;
+	imu3->Gx = imu3->Gx_raw / 131.0;
+	imu3->Gy = imu3->Gy_raw / 131.0;
+	imu3->Gz = imu3->Gz_raw / 131.0;
 }
 
 /* USER CODE END 0 */
@@ -266,24 +412,25 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
   unsigned long t1, t2, diff;
-  float dt = 0.0;
   float timer = 0.0;
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
   DWT->CYCCNT = 0;
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
   log_counter = LOG_CYCLES;
-  float angle_fixrate = 0.0001; // [deg/s]
   float roll_target_angle = 0.0;
-  float pitch_target_angle = 1.0;
+  float pitch_target_angle = 0.0;
   float main_wheel_integrator = 0.0;
-  float kp = 4.0;
-  float ki = 0.25;
-  float kd = 0.15;
-  float windup = 50.0;
-  float k1 = 15.5;
-  float k2 = 30.0;
-  float k3 = 50.0;
-  float safety_angle = 75.0;
+  float alpha = 0.1; // the exponential smoothing factor for controller output
+  float beta = 0.1; // the exponential smoothing factor for controller output
+  float kp = 100.0 * 10.0;
+  float ki = 5.0 * 10.0;
+  float kd = 10.0 * 10.0;
+  float windup = 10.0;
+  float k1 = 165.0 * 10.0;
+  float k2 = 70.0 * 10.0;
+  float k3 = 0.11;
+  float k4 = 120.0;
+  float safety_angle = 45.0;
   float wheel_velocity = 0.0;
   int frequency = 0; // the number of hall effect sensor pulses over one second
   int count = 0;
@@ -292,6 +439,16 @@ int main(void)
   hsvColor.h = hue;
   hsvColor.s = 100.0;
   hsvColor.v = 100.0;
+  Imu imu1, imu2, imu3;
+  Acceleration r_est1, r_est2, r_est3;
+  float roll = 0.0;
+  float pitch = 0.0;;
+  float _roll = 0.0;
+  float _pitch = 0.0;
+  float roll_velocity = 0.0;
+  float roll_acceleration = 0.0;
+  float pitch_velocity = 0.0;
+  float magnitude;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -318,6 +475,7 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM4_Init();
   MX_TIM3_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
@@ -328,83 +486,302 @@ int main(void)
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
   HAL_Delay (100);  // wait for a while
-  MPU6050_Init();
+  MPU6050_Init(hi2c1, MPU6050_ADDR);
+  MPU6050_Init(hi2c1, MPU6050_ADDR2);
+  MPU6050_Init(hi2c2, MPU6050_ADDR);
   HAL_Delay (3000);  // wait for a while
-  Ax_offset = 0.0;
-  Ay_offset = 0.0;
-  Az_offset = 0.0;
+  
+  initialize(&imu1);
+  initialize(&imu2);
+  initialize(&imu3);
   hue = 0.0;
-  for (int i = 0; i < samples; i++) {
-    MPU6050_Read_Accel();
-    MPU6050_Read_Gyro();
-    Ax_offset += Ax;
-    Ay_offset += Ay;
-    Az_offset += Az;
-    Gx_offset += Gx;
-    Gy_offset += Gy;
-    Gz_offset += Gz;
-    HAL_Delay (5);  // wait for a while
-    hue += 360.0 / (float)samples;
-    hsvColor.h = hue;
-    rgbColor = HSVtoRGB(hsvColor);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (int)rgbColor.b);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, (int)rgbColor.r);
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, (int)rgbColor.g * 255);
-  }
-  Ax_offset /= (float)samples;
-  Ay_offset /= (float)samples;
-  Az_offset /= (float)samples;
-  Gx_offset /= (float)samples;
-  Gy_offset /= (float)samples;
-  Gz_offset /= (float)samples;
+//  for (int i = 0; i < samples; i++) {
+//    MPU6050_Read_Accel(&imu1, &imu2, &imu3);
+//    MPU6050_Read_Gyro(&imu1, &imu2, &imu3);
+//    imu1.Ax_offset += imu1.Ax;
+//    imu1.Ay_offset += imu1.Ay;
+//    imu1.Az_offset += imu1.Az;
+//    imu1.Gx_offset += imu1.Gx;
+//    imu1.Gy_offset += imu1.Gy;
+//    imu1.Gz_offset += imu1.Gz;
+//    imu2.Ax_offset += imu2.Ax;
+//    imu2.Ay_offset += imu2.Ay;
+//    imu2.Az_offset += imu2.Az;
+//    imu2.Gx_offset += imu2.Gx;
+//    imu2.Gy_offset += imu2.Gy;
+//    imu2.Gz_offset += imu2.Gz;
+//    imu3.Ax_offset += imu3.Ax;
+//    imu3.Ay_offset += imu3.Ay;
+//    imu3.Az_offset += imu3.Az;
+//    imu3.Gx_offset += imu3.Gx;
+//    imu3.Gy_offset += imu3.Gy;
+//    imu3.Gz_offset += imu3.Gz;
+//    HAL_Delay (5);  // wait for a while
+//    hue += 360.0 / (float)samples;
+//    hsvColor.h = hue;
+//    rgbColor = HSVtoRGB(hsvColor);
+//    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (int)rgbColor.b);
+//    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, (int)rgbColor.r);
+//    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, (int)rgbColor.g * 255);
+//  }
+//  imu1.Ax_offset /= (float) samples;
+//  imu1.Ay_offset /= (float) samples;
+//  imu1.Az_offset /= (float) samples;
+//  imu1.Gx_offset /= (float) samples;
+//  imu1.Gy_offset /= (float) samples;
+//  imu1.Gz_offset /= (float) samples;
+//  imu2.Ax_offset /= (float) samples;
+//  imu2.Ay_offset /= (float) samples;
+//  imu2.Az_offset /= (float) samples;
+//  imu2.Gx_offset /= (float) samples;
+//  imu2.Gy_offset /= (float) samples;
+//  imu2.Gz_offset /= (float) samples;
+//  imu3.Ax_offset /= (float) samples;
+//  imu3.Ay_offset /= (float) samples;
+//  imu3.Az_offset /= (float) samples;
+//  imu3.Gx_offset /= (float) samples;
+//  imu3.Gy_offset /= (float) samples;
+//  imu3.Gz_offset /= (float) samples;
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  gyr_roll = 0.0;
-  gyr_pitch = 0.0;
-  gyr_yaw = 0.0;
-  roll_acceleration = 0.0;
-  roll_velocity = 0.0;
+  MPU6050_Read_Accel(&imu1, &imu2, &imu3);
+  r_est1._R_est_x = imu1.Ax_scale * (imu1.Ax - imu1.Ax_offset);
+  r_est1._R_est_y = imu1.Ay_scale * (imu1.Ay - imu1.Ay_offset);
+  r_est1._R_est_z = imu1.Az_scale * (imu1.Az - imu1.Az_offset);
+  r_est2._R_est_x = imu2.Ax_scale * (imu2.Ax - imu2.Ax_offset);
+  r_est2._R_est_y = imu2.Ay_scale * (imu2.Ay - imu2.Ay_offset);
+  r_est2._R_est_z = imu2.Az_scale * (imu2.Az - imu2.Az_offset);
+  r_est3._R_est_x = imu3.Ax_scale * (imu3.Ax - imu3.Ax_offset);
+  r_est3._R_est_y = imu3.Ay_scale * (imu3.Ay - imu3.Ay_offset);
+  r_est3._R_est_z = imu3.Az_scale * (imu3.Az - imu3.Az_offset);
+  MPU6050_Read_Accel(&imu1, &imu2, &imu3);
+  r_est1.R_est_x = imu1.Ax_scale * (imu1.Ax - imu1.Ax_offset);
+  r_est1.R_est_y = imu1.Ay_scale * (imu1.Ay - imu1.Ay_offset);
+  r_est1.R_est_z = imu1.Az_scale * (imu1.Az - imu1.Az_offset);
+  r_est2.R_est_x = imu2.Ax_scale * (imu2.Ax - imu2.Ax_offset);
+  r_est2.R_est_y = imu2.Ay_scale * (imu2.Ay - imu2.Ay_offset);
+  r_est2.R_est_z = imu2.Az_scale * (imu2.Az - imu2.Az_offset);
+  r_est3.R_est_x = imu3.Ax_scale * (imu3.Ax - imu3.Ax_offset);
+  r_est3.R_est_y = imu3.Ay_scale * (imu3.Ay - imu3.Ay_offset);
+  r_est3.R_est_z = imu3.Az_scale * (imu3.Az - imu3.Az_offset);
+  r_est1.phi = 0.0;
+  r_est1.theta = 0.0;
+  r_est1.psi = 0.0;
+  r_est2.phi = 0.0;
+  r_est2.theta = 0.0;
+  r_est2.psi = 0.0;
+  r_est3.phi = 0.0;
+  r_est3.theta = 0.0;
+  r_est3.psi = 0.0;
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    
     t1 = DWT->CYCCNT;
     
     // read the Accelerometer and Gyro values
-    MPU6050_Read_Accel();
-    MPU6050_Read_Gyro();
-
-    acc_roll = Ax - Ax_offset;
-    acc_pitch = Az - Az_offset;
-    acc_yaw = Ay - Ay_offset;
-    roll_velocity = -(Gz - Gz_offset);
-    pitch_velocity = Gx - Gx_offset;
-    yaw_velocity = Gy - Gy_offset;
-    gyr_roll += roll_velocity * dt;
-    gyr_pitch += pitch_velocity * dt;
-    gyr_yaw += yaw_velocity * dt;
+    MPU6050_Read_Accel(&imu1, &imu2, &imu3);
+    MPU6050_Read_Gyro(&imu1, &imu2, &imu3);
+    
+    r_est1.R_acc_x = imu1.Ax_scale * (imu1.Ax - imu1.Ax_offset);
+    r_est1.R_acc_y = imu1.Ay_scale * (imu1.Ay - imu1.Ay_offset);
+    r_est1.R_acc_z = imu1.Az_scale * (imu1.Az - imu1.Az_offset);
+    r_est2.R_acc_x = imu2.Ax_scale * (imu2.Ax - imu2.Ax_offset);
+    r_est2.R_acc_y = imu2.Ay_scale * (imu2.Ay - imu2.Ay_offset);
+    r_est2.R_acc_z = imu2.Az_scale * (imu2.Az - imu2.Az_offset);
+    r_est3.R_acc_x = imu3.Ax_scale * (imu3.Ax - imu3.Ax_offset);
+    r_est3.R_acc_y = imu3.Ay_scale * (imu3.Ay - imu3.Ay_offset);
+    r_est3.R_acc_z = imu3.Az_scale * (imu3.Az - imu3.Az_offset);
+    
+    r_est1.magnitude = sqrt(imu1.Ax * imu1.Ax + imu1.Ay * imu1.Ay + imu1.Az * imu1.Az);
+    if (r_est1.magnitude > 0.0001 || r_est1.magnitude < -0.0001) {
+      r_est1.R_acc_x /= r_est1.magnitude;
+      r_est1.R_acc_y /= r_est1.magnitude;
+      r_est1.R_acc_z /= r_est1.magnitude;
+    }
+    r_est2.magnitude = sqrt(imu2.Ax * imu2.Ax + imu2.Ay * imu2.Ay + imu2.Az * imu2.Az);
+    if (r_est2.magnitude > 0.0001 || r_est2.magnitude < -0.0001) {
+      r_est2.R_acc_x /= r_est2.magnitude;
+      r_est2.R_acc_y /= r_est2.magnitude;
+      r_est2.R_acc_z /= r_est2.magnitude;
+    }
+    r_est3.magnitude = sqrt(imu3.Ax * imu3.Ax + imu3.Ay * imu3.Ay + imu3.Az * imu3.Az);
+    if (r_est3.magnitude > 0.0001 || r_est3.magnitude < -0.0001) {
+      r_est3.R_acc_x /= r_est3.magnitude;
+      r_est3.R_acc_y /= r_est3.magnitude;
+      r_est3.R_acc_z /= r_est3.magnitude;
+    }
+    
+    r_est1.phi = K * dt * (imu1.Gx_scale * (imu1._Gx - imu1.Gx_offset) + imu1.Gx_scale * (imu1.Gx - imu1.Gx_offset)) / 2.0;
+    r_est1.theta = K * dt * (imu1.Gy_scale * (imu1._Gy - imu1.Gy_offset) + imu1.Gy_scale * (imu1.Gy - imu1.Gy_offset)) / 2.0;
+    r_est1.psi = K * dt * (imu1.Gz_scale * (imu1._Gz - imu1.Gz_offset) + imu1.Gz_scale * (imu1.Gz - imu1.Gz_offset)) / 2.0;
+    
+    r_est2.phi = K * dt * (imu2.Gx_scale * (imu2._Gx - imu2.Gx_offset) + imu2.Gx_scale * (imu2.Gx - imu2.Gx_offset)) / 2.0;
+    r_est2.theta = K * dt * (imu2.Gy_scale * (imu2._Gy - imu2.Gy_offset) + imu2.Gy_scale * (imu2.Gy - imu2.Gy_offset)) / 2.0;
+    r_est2.psi = K * dt * (imu2.Gz_scale * (imu2._Gz - imu2.Gz_offset) + imu2.Gz_scale * (imu2.Gz - imu2.Gz_offset)) / 2.0;
+    
+    r_est3.phi = K * dt * (imu3.Gx_scale * (imu3._Gx - imu3.Gx_offset) + imu3.Gx_scale * (imu3.Gx - imu3.Gx_offset)) / 2.0;
+    r_est3.theta = K * dt * (imu3.Gy_scale * (imu3._Gy - imu3.Gy_offset) + imu3.Gy_scale * (imu3.Gy - imu3.Gy_offset)) / 2.0;
+    r_est3.psi = K * dt * (imu3.Gz_scale * (imu3._Gz - imu3.Gz_offset) + imu3.Gz_scale * (imu3.Gz - imu3.Gz_offset)) / 2.0;
+    
+    r_est1.R_gyro_x = cos(r_est1.psi) * cos(r_est1.theta) * r_est1._R_est_x +
+      cos(r_est1.psi) * sin(r_est1.theta) * sin(r_est1.phi) * r_est1._R_est_y -
+        sin(r_est1.psi) * cos(r_est1.phi) * r_est1._R_est_y +
+          cos(r_est1.psi) * sin(r_est1.theta) * cos(r_est1.phi) * r_est1._R_est_z +
+            sin(r_est1.psi) * sin(r_est1.phi) * r_est1._R_est_z;
+   
+    r_est1.R_gyro_y = sin(r_est1.psi) * cos(r_est1.theta) * r_est1._R_est_x +
+      sin(r_est1.psi) * sin(r_est1.theta) * sin(r_est1.phi) * r_est1._R_est_y +
+        cos(r_est1.psi) * cos(r_est1.phi) * r_est1._R_est_y +
+          sin(r_est1.psi) * sin(r_est1.theta) * cos(r_est1.phi) * r_est1._R_est_z -
+            cos(r_est1.psi) * sin(r_est1.phi) * r_est1._R_est_z;
+    
+    r_est1.R_gyro_z = -sin(r_est1.theta) * r_est1._R_est_x + 
+      cos(r_est1.theta) * sin(r_est1.phi) * r_est1._R_est_y + 
+        cos(r_est1.theta) * cos(r_est1.phi) * r_est1._R_est_z;
+    
+    r_est2.R_gyro_x = cos(r_est2.psi) * cos(r_est2.theta) * r_est2._R_est_x +
+      cos(r_est2.psi) * sin(r_est2.theta) * sin(r_est2.phi) * r_est2._R_est_y -
+        sin(r_est2.psi) * cos(r_est2.phi) * r_est2._R_est_y +
+          cos(r_est2.psi) * sin(r_est2.theta) * cos(r_est2.phi) * r_est2._R_est_z +
+            sin(r_est2.psi) * sin(r_est2.phi) * r_est2._R_est_z;
+   
+    r_est2.R_gyro_y = sin(r_est2.psi) * cos(r_est2.theta) * r_est2._R_est_x +
+      sin(r_est2.psi) * sin(r_est2.theta) * sin(r_est2.phi) * r_est2._R_est_y +
+        cos(r_est2.psi) * cos(r_est2.phi) * r_est2._R_est_y +
+          sin(r_est2.psi) * sin(r_est2.theta) * cos(r_est2.phi) * r_est2._R_est_z -
+            cos(r_est2.psi) * sin(r_est2.phi) * r_est2._R_est_z;
+    
+    r_est2.R_gyro_z = -sin(r_est2.theta) * r_est2._R_est_x + 
+      cos(r_est2.theta) * sin(r_est2.phi) * r_est2._R_est_y + 
+        cos(r_est2.theta) * cos(r_est2.phi) * r_est2._R_est_z;
+    
+    r_est3.R_gyro_x = cos(r_est3.psi) * cos(r_est3.theta) * r_est3._R_est_x +
+      cos(r_est3.psi) * sin(r_est3.theta) * sin(r_est3.phi) * r_est3._R_est_y -
+        sin(r_est3.psi) * cos(r_est3.phi) * r_est3._R_est_y +
+          cos(r_est3.psi) * sin(r_est3.theta) * cos(r_est3.phi) * r_est3._R_est_z +
+            sin(r_est3.psi) * sin(r_est3.phi) * r_est3._R_est_z;
+   
+    r_est3.R_gyro_y = sin(r_est3.psi) * cos(r_est3.theta) * r_est3._R_est_x +
+      sin(r_est3.psi) * sin(r_est3.theta) * sin(r_est3.phi) * r_est3._R_est_y +
+        cos(r_est3.psi) * cos(r_est3.phi) * r_est3._R_est_y +
+          sin(r_est3.psi) * sin(r_est3.theta) * cos(r_est3.phi) * r_est3._R_est_z -
+            cos(r_est3.psi) * sin(r_est3.phi) * r_est3._R_est_z;
+    
+    r_est3.R_gyro_z = -sin(r_est3.theta) * r_est3._R_est_x + 
+      cos(r_est3.theta) * sin(r_est3.phi) * r_est3._R_est_y + 
+        cos(r_est3.theta) * cos(r_est3.phi) * r_est3._R_est_z;
+        
+//    r_est1.R_gyro_x = r_est1._R_est_x +
+//      r_est1.theta * r_est1.phi * r_est1._R_est_y -
+//        r_est1.psi * r_est1._R_est_y +
+//          r_est1.theta * r_est1._R_est_z +
+//            r_est1.psi * r_est1.phi * r_est1._R_est_z;
+//   
+//    r_est1.R_gyro_y = r_est1.psi * r_est1._R_est_x +
+//      r_est1.psi * r_est1.theta * r_est1.phi * r_est1._R_est_y +
+//        r_est1._R_est_y +
+//          r_est1.psi * r_est1.theta * r_est1._R_est_z -
+//            r_est1.phi * r_est1._R_est_z;
+//    
+//    r_est1.R_gyro_z = -r_est1.theta * r_est1._R_est_x + 
+//      r_est1.phi * r_est1._R_est_y + 
+//        r_est1._R_est_z;
+//    
+//    r_est2.R_gyro_x = r_est2._R_est_x +
+//      r_est2.theta * r_est2.phi * r_est2._R_est_y -
+//        r_est2.psi * r_est2._R_est_y +
+//          r_est2.theta * r_est2._R_est_z +
+//            r_est2.psi * r_est2.phi * r_est2._R_est_z;
+//   
+//    r_est2.R_gyro_y = r_est2.psi * r_est2._R_est_x +
+//      r_est2.psi * r_est2.theta * r_est2.phi * r_est2._R_est_y +
+//        r_est2._R_est_y +
+//          r_est2.psi * r_est2.theta * r_est2._R_est_z -
+//            r_est2.phi * r_est2._R_est_z;
+//    
+//    r_est2.R_gyro_z = -r_est2.theta * r_est2._R_est_x + 
+//      r_est2.phi * r_est2._R_est_y + 
+//        r_est2._R_est_z;
+//    
+//    r_est3.R_gyro_x = r_est3._R_est_x +
+//      r_est3.theta * r_est3.phi * r_est3._R_est_y -
+//        r_est3.psi * r_est3._R_est_y +
+//          r_est3.theta * r_est3._R_est_z +
+//            r_est3.psi * r_est3.phi * r_est3._R_est_z;
+//   
+//    r_est3.R_gyro_y = r_est3.psi * r_est3._R_est_x +
+//      r_est3.psi * r_est3.theta * r_est3.phi * r_est3._R_est_y +
+//        r_est3._R_est_y +
+//          r_est3.psi * r_est3.theta * r_est3._R_est_z -
+//            r_est3.phi * r_est3._R_est_z;
+//    
+//    r_est3.R_gyro_z = -r_est3.theta * r_est3._R_est_x + 
+//      r_est3.phi * r_est3._R_est_y + 
+//        r_est3._R_est_z;
+    
+    r_est1._R_est_x = r_est1.R_est_x;
+    r_est1._R_est_y = r_est1.R_est_y;
+    r_est1._R_est_z = r_est1.R_est_z;
+    r_est2._R_est_x = r_est2.R_est_x;
+    r_est2._R_est_y = r_est2.R_est_y;
+    r_est2._R_est_z = r_est2.R_est_z;
+    r_est3._R_est_x = r_est3.R_est_x;
+    r_est3._R_est_y = r_est3.R_est_y;
+    r_est3._R_est_z = r_est3.R_est_z;
+    
+    r_est1.R_est_x = W * r_est1.R_acc_x + (1.0 - W) * r_est1.R_gyro_x;
+    r_est1.R_est_y = W * r_est1.R_acc_y + (1.0 - W) * r_est1.R_gyro_y;
+    r_est1.R_est_z = W * r_est1.R_acc_z + (1.0 - W) * r_est1.R_gyro_z;
+    r_est2.R_est_x = W * r_est2.R_acc_x + (1.0 - W) * r_est2.R_gyro_x;
+    r_est2.R_est_y = W * r_est2.R_acc_y + (1.0 - W) * r_est2.R_gyro_y;
+    r_est2.R_est_z = W * r_est2.R_acc_z + (1.0 - W) * r_est2.R_gyro_z;
+    r_est3.R_est_x = W * r_est3.R_acc_x + (1.0 - W) * r_est3.R_gyro_x;
+    r_est3.R_est_y = W * r_est3.R_acc_y + (1.0 - W) * r_est3.R_gyro_y;
+    r_est3.R_est_z = W * r_est3.R_acc_z + (1.0 - W) * r_est3.R_gyro_z;
+    
+    r_est1.magnitude = sqrt(r_est1.R_est_x * r_est1.R_est_x + r_est1.R_est_y * r_est1.R_est_y + r_est1.R_est_z * r_est1.R_est_z);
+    if (r_est1.magnitude > 0.0001 || r_est1.magnitude < -0.0001) {
+      r_est1.R_est_x /= r_est1.magnitude;
+      r_est1.R_est_y /= r_est1.magnitude;
+      r_est1.R_est_z /= r_est1.magnitude;
+    }
+    r_est2.magnitude = sqrt(r_est2.R_est_x * r_est2.R_est_x + r_est2.R_est_y * r_est2.R_est_y + r_est2.R_est_z * r_est2.R_est_z);
+    if (r_est2.magnitude > 0.0001 || r_est2.magnitude < -0.0001) {
+      r_est2.R_est_x /= r_est2.magnitude;
+      r_est2.R_est_y /= r_est2.magnitude;
+      r_est2.R_est_z /= r_est2.magnitude;
+    }
+    r_est3.magnitude = sqrt(r_est3.R_est_x * r_est3.R_est_x + r_est3.R_est_y * r_est3.R_est_y + r_est3.R_est_z * r_est3.R_est_z);
+    if (r_est3.magnitude > 0.0001 || r_est3.magnitude < -0.0001) {
+      r_est3.R_est_x /= r_est3.magnitude;
+      r_est3.R_est_y /= r_est3.magnitude;
+      r_est3.R_est_z /= r_est3.magnitude;
+    }
+    
+    R_est_x = (r_est1.R_est_x - r_est2.R_est_x + r_est3.R_est_x) / 3.0;
+    R_est_y = (r_est1.R_est_z + r_est2.R_est_z - r_est3.R_est_y) / 3.0;
+    R_est_z = (r_est1.R_est_y - r_est2.R_est_y + r_est3.R_est_z) / 3.0;
+    magnitude = sqrt(R_est_x * R_est_x + R_est_y * R_est_y + R_est_z * R_est_z);
+    if (magnitude > 0.0001 || magnitude < -0.0001) {
+      R_est_x /= magnitude;
+      R_est_y /= magnitude;
+      R_est_z /= magnitude;
+    }
+    
     _roll = roll;
     _pitch = pitch;
-    _yaw = yaw;
-    roll = roll_fusion_ratio * 90.0 * acc_roll + (1.0 - roll_fusion_ratio) * gyr_roll; // have opposite signs
-    pitch = pitch_fusion_ratio * 90.0 * acc_pitch + (1.0 - pitch_fusion_ratio) * gyr_pitch;
+    roll = atan2(R_est_x, R_est_z);
+    pitch = atan2(R_est_y, R_est_z);
+    roll_acceleration = (roll - _roll) - roll_velocity;
+    roll_velocity = roll - _roll;
+    pitch_velocity = pitch - _pitch;
     
-    // variate target angle (dithering)
-    if (roll < roll_target_angle) {
-      roll_target_angle += angle_fixrate;
-    } else {
-      roll_target_angle -= angle_fixrate;
-    }
-    if (pitch < pitch_target_angle) {
-      pitch_target_angle += angle_fixrate;
-    } else {
-      pitch_target_angle -= angle_fixrate;
-    }
-    
-    speed1 = (int)fabs(k1 * acc_roll + k2 * (roll - _roll)) + (int)(k3 * fabs(wheel_velocity));
+    speed1 = (int)(beta * fabs(k1 * roll + k2 * roll_velocity + k3 * fabs(wheel_velocity) + k4 * roll_acceleration) + (1.0 - beta) * (float)speed1);
     if (speed1 > 255) {
       speed1 = 255;
     }
@@ -412,24 +789,22 @@ int main(void)
       speed1 = 0;
     }
     
-    main_wheel_integrator = main_wheel_integrator + (pitch * ki);
+    main_wheel_integrator = main_wheel_integrator + pitch * ki;
     if (main_wheel_integrator > windup) {
       main_wheel_integrator = windup;
     }
     if (main_wheel_integrator < -windup) {
       main_wheel_integrator = -windup;
     }
-    if ((pitch  > safety_angle) || (pitch < -safety_angle)) {
-      main_wheel_integrator = 0.0; // the integrator is active in -10~+10 deg range
-    }
-    speed2 = (int)fabs(kp * (pitch - pitch_target_angle) + kd * (pitch - _pitch) + main_wheel_integrator); //PID function
+
+    speed2 = (int)(alpha * fabs(kp * pitch + kd * pitch_velocity + main_wheel_integrator) + (1.0 - alpha) * (float)speed2); //PID function
     if (speed2 > 255) {
       speed2 = 255;
     }
     if (speed2 < 0) {
       speed2 = 0;
     }
-    if ((pitch  > safety_angle) || (pitch < -safety_angle) || (roll  > safety_angle) || (roll < -safety_angle)) {
+    if ((pitch > safety_angle) || (pitch < -safety_angle) || (roll > safety_angle) || (roll < -safety_angle)) {
       speed1 = 0;
       speed2 = 0; // the controller is active in -10~+10 deg range
     }
@@ -454,21 +829,13 @@ int main(void)
       __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, speed2);
     }
     
-    // print the Acceleration and Gyro values via the serial connection
-    // sprintf(MSG, "Ax = %0.2f, Ay = %0.2f, Az = %0.2f, Gx = %0.2f, Gy = %0.2f, Gz = %0.2f\r\n", Ax, Ay, Az, Gx, Gy, Gz);
+    // transmit the Acceleration and Gyro values via the serial connection
     if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4) == 0) {
       transmit_logs = 1;
     }
+    
     log_counter--;
-    if (log_counter <= 0) {
-      if (transmit_logs == 1) {
-        // sprintf(MSG, "roll = %0.2f, pitch = %0.2f, AR = %0.2f, AP = %0.2f, GR = %0.2f, GP = %0.2f, dt = %f\r\n", roll, pitch, acc_roll, acc_pitch, gyr_roll, gyr_pitch, dt);
-        sprintf(MSG, "roll = %0.2f, pitch = %0.2f, yaw = %0.2f, v1 = %d, v2 = %d, f = %d, w = %0.2f, h = %f\r\n", roll, pitch, yaw, speed1, speed2, frequency, wheel_velocity, hue);
-        //sprintf(MSG, "Ax = %0.2f, Ay = %0.2f, Az = %0.2f, Gx = %0.2f, Gy = %0.2f, Gz = %0.2f\r\n", Ax - Ax_offset, Ay - Ay_offset, Az - Az_offset, Gx - Gx_offset, Gy - Gy_offset, Gz - Gz_offset);
-        HAL_UART_Transmit(&huart1, MSG, sizeof(MSG), 100);
-      }
-      log_counter = LOG_CYCLES;
-    }
+    
     if (log_counter > 0) {
       t2 = DWT->CYCCNT;
       diff = t2 - t1;
@@ -493,7 +860,33 @@ int main(void)
         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, (int)rgbColor.r); // red
         __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, (int)rgbColor.g * 255); // green
       }
+    } else {
+      if (transmit_logs == 1) {
+        // sprintf(MSG, "Acc1: %0.2f, %0.2f, %0.2f, Acc2: %0.2f, %0.2f, %0.2f, Gyr1: %0.2f, %0.2f, %0.2f, Gyr2: %0.2f, %0.2f, %0.2f\r\n", acc_roll1, acc_pitch1, acc_yaw1, acc_roll2, acc_pitch2, acc_yaw2, gyr_roll1, gyr_pitch1, gyr_yaw1, gyr_roll2, gyr_pitch2, gyr_yaw2);
+        //sprintf(MSG, "AccRol: %0.2f, AccPit: %0.2f, GyrRol: %0.2f, GyrPit: %0.2f\r\n", acc_roll, acc_pitch, gyr_roll, gyr_pitch);
+        //sprintf(MSG, "k1: %0.2f, k2: %0.2f, k3: %0.2f\r\n", k1 * roll, k2 * roll_velocity, k3 * wheel_velocity);
+        //sprintf(MSG, "AR: %0.2f, AP: %0.2f, GR: %0.2f, GP: %0.2f, v1: %d, v2: %d\r\n", acc_roll, acc_pitch, gyr_roll, gyr_pitch, frequency, speed2);
+        // sprintf(MSG, "AR: %0.2f, %0.2f, %0.2f, AP: %0.2f, %0.2f, %0.2f, AY: %0.2f, %0.2f, %0.2f\r\n", acc_roll1, acc_roll2, acc_roll3, acc_pitch1, acc_pitch2, acc_pitch3, acc_yaw1, acc_yaw2, acc_yaw3);
+        sprintf(MSG, "R1: %0.2f, %0.2f, %0.2f, R2: %0.2f, %0.2f, %0.2f, R3: %0.2f, %0.2f, %0.2f, R: %0.2f, %0.2f, %0.2f, roll: %0.2f, pitch: %0.2f, dt = %f, log_dt = %f\r\n",
+                r_est1.R_est_x, r_est1.R_est_y, r_est1.R_est_z,
+                r_est2.R_est_x, r_est2.R_est_y, r_est2.R_est_z,
+                r_est3.R_est_x, r_est3.R_est_y, r_est3.R_est_z,
+                R_est_x, R_est_y, R_est_z,
+                roll, pitch,
+                dt, log_dt);
+        // sprintf(MSG, "GR: %0.2f, %0.2f, %0.2f, GP: %0.2f, %0.2f, %0.2f, GY: %0.2f, %0.2f, %0.2f\r\n", gyr_roll1, gyr_roll2, gyr_roll3, gyr_pitch1, gyr_pitch2, gyr_pitch3, gyr_yaw1, gyr_yaw2, gyr_yaw3);
+        
+        HAL_UART_Transmit(&huart1, MSG, sizeof(MSG), 160);
+      }
+      log_counter = LOG_CYCLES;
+    
+      t2 = DWT->CYCCNT;
+      diff = t2 - t1;
+      log_dt = (float) diff / 72000000.0;
+      timer += log_dt;
     }
+    // dt = 0.0018, ldt = 0.1330
+
     //HAL_Delay(1); // wait for a while
     
   }
@@ -570,6 +963,40 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief I2C2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C2_Init(void)
+{
+
+  /* USER CODE BEGIN I2C2_Init 0 */
+
+  /* USER CODE END I2C2_Init 0 */
+
+  /* USER CODE BEGIN I2C2_Init 1 */
+
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.ClockSpeed = 100000;
+  hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C2_Init 2 */
+
+  /* USER CODE END I2C2_Init 2 */
 
 }
 
