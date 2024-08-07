@@ -3,9 +3,9 @@
     <Tool>
         <Name>linker</Name>
         <Parent>
-            <Path>D:\unicycle\EWARM\unicycle\Exe\unicycle.out</Path>
+            <Path>D:\unicycle_version_control\unicycle\EWARM\unicycle\Exe\unicycle.out</Path>
             <Output>
-                <Path>D:\unicycle\EWARM\unicycle\List\unicycle.map</Path>
+                <Path>D:\unicycle_version_control\unicycle\EWARM\unicycle\List\unicycle.map</Path>
             </Output>
         </Parent>
     </Tool>

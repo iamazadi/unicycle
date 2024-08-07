@@ -44,13 +44,6 @@
 #define WHO_AM_I_REG 0x75
 
 #define MPU6050_ADDR2 0xD2
-
-// matrix dimensions so that we dont have to pass them as
-// parametersmat1[R1][C1] and mat2[R2][C2]
-#define R1 3 // number of rows in Matrix-1
-#define C1 3 // number of columns in Matrix-1
-#define R2 3 // number of rows in Matrix-2
-#define C2 3 // number of columns in Matrix-2
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -78,19 +71,18 @@ int samples = 500;
 float dt = 0.0;
 float log_dt = 0.0;
 char buf[4];
-uint8_t MSG[160] = {'\0'};
-int speed1 = 0;
-int speed2 = 0;
-const float W = 0.3;
+uint8_t MSG[170] = {'\0'};
+int reaction_wheel_speed = 0;
+int main_wheel_speed = 0;
+const float W = 0.28;
 const float PI = 3.14;
-const int LOG_CYCLES = 100;
-const int signals = 11; // encoder motor end 11 signals
+const int LOG_CYCLES = 20;
+const int main_wheel_pulse = 12; // encoder resolution 12 C/R
+const int reaction_wheel_pulse = 26; // encoder motor end 11 signals
 const float interval = 0.01;
 const float K = 0.0175;
-int previous_count = 0;
 int log_counter;
 int transmit_logs = 0;
-float moving_average = 0.0;
 float hue = 0.0;
 float R_est_x = 0.0;
 float R_est_y = 0.0;
@@ -422,18 +414,23 @@ int main(void)
   float main_wheel_integrator = 0.0;
   float alpha = 0.1; // the exponential smoothing factor for controller output
   float beta = 0.1; // the exponential smoothing factor for controller output
-  float kp = 100.0 * 10.0;
-  float ki = 5.0 * 10.0;
-  float kd = 10.0 * 10.0;
+  float kp = 140.0 * 10.0;
+  float ki = 1.0 * 10.0;
+  float kd = 3.0 * 10.0;
   float windup = 10.0;
-  float k1 = 165.0 * 10.0;
-  float k2 = 70.0 * 10.0;
-  float k3 = 0.11;
-  float k4 = 120.0;
-  float safety_angle = 45.0;
-  float wheel_velocity = 0.0;
-  int frequency = 0; // the number of hall effect sensor pulses over one second
-  int count = 0;
+  float k1 = 140.0 * 10.0;
+  float k2 = 280.0 * 10.0;
+  float k3 = 0.3;
+  float k4 = 30.0;
+  float safety_angle = 18.0 / 180.0 * PI;
+  float main_wheel_velocity = 0.0;
+  float reaction_wheel_velocity = 0.0;
+  int main_wheel_frequency = 0; // the number of encoder counts per ring
+  int main_wheel_previous_count = 0;
+  int main_wheel_count = 0;
+  int reaction_wheel_frequency = 0; // the number of hall effect sensor pulses over one second
+  int reaction_wheel_previous_count = 0;
+  int reaction_wheel_count = 0;
   Hsv hsvColor;
   Rgb rgbColor;
   hsvColor.h = hue;
@@ -477,13 +474,11 @@ int main(void)
   MX_TIM3_Init();
   MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
+  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
+  HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
   HAL_Delay (100);  // wait for a while
   MPU6050_Init(hi2c1, MPU6050_ADDR);
@@ -494,6 +489,26 @@ int main(void)
   initialize(&imu1);
   initialize(&imu2);
   initialize(&imu3);
+  imu1.Ax_offset = 0.0;
+  imu1.Ay_offset = 0.0;
+  imu1.Az_offset = 0.11;
+  imu1.Gx_offset = -1.8;
+  imu1.Gy_offset = -1.0;
+  imu1.Gz_offset = 0.11;
+  
+  imu2.Ax_offset = -0.11;
+  imu2.Ay_offset = 0.0;
+  imu2.Az_offset = -0.17;
+  imu2.Gx_offset = -10.7;
+  imu2.Gy_offset = 32.6;
+  imu2.Gz_offset = 2.1;
+  
+  imu3.Ax_offset = 0.0;
+  imu3.Ay_offset = 0.04;
+  imu3.Az_offset = 0.0;
+  imu3.Gx_offset = -0.2;
+  imu3.Gy_offset = 1.2;
+  imu3.Gz_offset = 0.6;
   hue = 0.0;
 //  for (int i = 0; i < samples; i++) {
 //    MPU6050_Read_Accel(&imu1, &imu2, &imu3);
@@ -597,19 +612,19 @@ int main(void)
     r_est3.R_acc_y = imu3.Ay_scale * (imu3.Ay - imu3.Ay_offset);
     r_est3.R_acc_z = imu3.Az_scale * (imu3.Az - imu3.Az_offset);
     
-    r_est1.magnitude = sqrt(imu1.Ax * imu1.Ax + imu1.Ay * imu1.Ay + imu1.Az * imu1.Az);
+    r_est1.magnitude = sqrt(pow(imu1.Ax - imu1.Ax_offset, 2) + pow(imu1.Ay - imu1.Ay_offset, 2) + pow(imu1.Az - imu1.Az_offset, 2));
     if (r_est1.magnitude > 0.0001 || r_est1.magnitude < -0.0001) {
       r_est1.R_acc_x /= r_est1.magnitude;
       r_est1.R_acc_y /= r_est1.magnitude;
       r_est1.R_acc_z /= r_est1.magnitude;
     }
-    r_est2.magnitude = sqrt(imu2.Ax * imu2.Ax + imu2.Ay * imu2.Ay + imu2.Az * imu2.Az);
+    r_est2.magnitude = sqrt(pow(imu2.Ax - imu2.Ax_offset, 2) + pow(imu2.Ay - imu2.Ay_offset, 2) + pow(imu2.Az - imu2.Az_offset, 2));
     if (r_est2.magnitude > 0.0001 || r_est2.magnitude < -0.0001) {
       r_est2.R_acc_x /= r_est2.magnitude;
       r_est2.R_acc_y /= r_est2.magnitude;
       r_est2.R_acc_z /= r_est2.magnitude;
     }
-    r_est3.magnitude = sqrt(imu3.Ax * imu3.Ax + imu3.Ay * imu3.Ay + imu3.Az * imu3.Az);
+    r_est3.magnitude = sqrt(pow(imu3.Ax - imu3.Ax_offset, 2) + pow(imu3.Ay - imu3.Ay_offset, 2) + pow(imu3.Az - imu3.Az_offset, 2));
     if (r_est3.magnitude > 0.0001 || r_est3.magnitude < -0.0001) {
       r_est3.R_acc_x /= r_est3.magnitude;
       r_est3.R_acc_y /= r_est3.magnitude;
@@ -781,12 +796,12 @@ int main(void)
     roll_velocity = roll - _roll;
     pitch_velocity = pitch - _pitch;
     
-    speed1 = (int)(beta * fabs(k1 * roll + k2 * roll_velocity + k3 * fabs(wheel_velocity) + k4 * roll_acceleration) + (1.0 - beta) * (float)speed1);
-    if (speed1 > 255) {
-      speed1 = 255;
+    reaction_wheel_speed = (int)(beta * fabs(k1 * roll + k2 * roll_velocity + k3 * fabs(reaction_wheel_velocity) + k4 * roll_acceleration) + (1.0 - beta) * (float)reaction_wheel_speed);
+    if (reaction_wheel_speed > 255) {
+      reaction_wheel_speed = 255;
     }
-    if (speed1 < 0) {
-      speed1 = 0;
+    if (reaction_wheel_speed < 0) {
+      reaction_wheel_speed = 0;
     }
     
     main_wheel_integrator = main_wheel_integrator + pitch * ki;
@@ -797,36 +812,36 @@ int main(void)
       main_wheel_integrator = -windup;
     }
 
-    speed2 = (int)(alpha * fabs(kp * pitch + kd * pitch_velocity + main_wheel_integrator) + (1.0 - alpha) * (float)speed2); //PID function
-    if (speed2 > 255) {
-      speed2 = 255;
+    main_wheel_speed = (int)(alpha * fabs(kp * pitch + kd * pitch_velocity + main_wheel_integrator) + (1.0 - alpha) * (float)main_wheel_speed); //PID function
+    if (main_wheel_speed > 255) {
+      main_wheel_speed = 255;
     }
-    if (speed2 < 0) {
-      speed2 = 0;
+    if (main_wheel_speed < 0) {
+      main_wheel_speed = 0;
     }
     if ((pitch > safety_angle) || (pitch < -safety_angle) || (roll > safety_angle) || (roll < -safety_angle)) {
-      speed1 = 0;
-      speed2 = 0; // the controller is active in -10~+10 deg range
+      main_wheel_speed = 0; // the controller is active in -10~+10 deg range
+      reaction_wheel_speed = 0;
     }
     // Enable/Disable the reaction motor for the calibration of the main motor
     if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_14) == 0) {
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_SET);
       if (roll > roll_target_angle) {
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, speed1);
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 0);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, reaction_wheel_speed);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0);
       } else {
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
-        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, speed1);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, reaction_wheel_speed);
       }
     } else {
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
     }
     if (pitch > pitch_target_angle) {
-      __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, speed2);
-      __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 0);
+      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 0);
+      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, main_wheel_speed * 255);
     } else {
-      __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 0);
-      __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, speed2);
+      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, main_wheel_speed * 255);
+      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 0);
     }
     
     // transmit the Acceleration and Gyro values via the serial connection
@@ -842,41 +857,52 @@ int main(void)
       dt = (float) diff / 72000000.0;
       timer += dt;
       if (timer > interval) {
-        previous_count = count;
-        count = (TIM3->CNT);
-        frequency = count - previous_count;
-        hue += frequency;
-        if (hue > 360.0) {
-          hue = 0.0;
-        }
-        if (hue < 0.0) {
-          hue = 360.0;
-        }
-        wheel_velocity = (float)abs(frequency) * 60.0 / (float)signals;
+        main_wheel_previous_count = main_wheel_count;
+        main_wheel_count = (TIM2->CNT);
+        main_wheel_frequency = main_wheel_count - main_wheel_previous_count;
+        main_wheel_velocity = (float)abs(main_wheel_frequency) * 60.0 / (float)main_wheel_pulse;
+        
+        reaction_wheel_previous_count = reaction_wheel_count;
+        reaction_wheel_count = (TIM3->CNT);
+        reaction_wheel_frequency = reaction_wheel_count - reaction_wheel_previous_count;
+        reaction_wheel_velocity = (float)abs(reaction_wheel_frequency) * 60.0 / (float)reaction_wheel_pulse;
+//        hue += frequency;
+//        if (hue > 360.0) {
+//          hue = 0.0;
+//        }
+//        if (hue < 0.0) {
+//          hue = 360.0;
+//        }
+        
         timer = 0.0;
-        hsvColor.h = hue;
-        rgbColor = HSVtoRGB(hsvColor);
-        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (int)rgbColor.b); // blue
-        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, (int)rgbColor.r); // red
-        __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, (int)rgbColor.g * 255); // green
+//        hsvColor.h = hue;
+//        rgbColor = HSVtoRGB(hsvColor);
+//        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (int)rgbColor.b); // blue
+//        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, (int)rgbColor.r); // red
+//        __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, (int)rgbColor.g * 255); // green
       }
     } else {
       if (transmit_logs == 1) {
         // sprintf(MSG, "Acc1: %0.2f, %0.2f, %0.2f, Acc2: %0.2f, %0.2f, %0.2f, Gyr1: %0.2f, %0.2f, %0.2f, Gyr2: %0.2f, %0.2f, %0.2f\r\n", acc_roll1, acc_pitch1, acc_yaw1, acc_roll2, acc_pitch2, acc_yaw2, gyr_roll1, gyr_pitch1, gyr_yaw1, gyr_roll2, gyr_pitch2, gyr_yaw2);
         //sprintf(MSG, "AccRol: %0.2f, AccPit: %0.2f, GyrRol: %0.2f, GyrPit: %0.2f\r\n", acc_roll, acc_pitch, gyr_roll, gyr_pitch);
         //sprintf(MSG, "k1: %0.2f, k2: %0.2f, k3: %0.2f\r\n", k1 * roll, k2 * roll_velocity, k3 * wheel_velocity);
-        //sprintf(MSG, "AR: %0.2f, AP: %0.2f, GR: %0.2f, GP: %0.2f, v1: %d, v2: %d\r\n", acc_roll, acc_pitch, gyr_roll, gyr_pitch, frequency, speed2);
+        //sprintf(MSG, "AR: %0.2f, AP: %0.2f, GR: %0.2f, GP: %0.2f, v1: %d, v2: %d\r\n", acc_roll, acc_pitch, gyr_roll, gyr_pitch, frequency, main_wheel_speed);
         // sprintf(MSG, "AR: %0.2f, %0.2f, %0.2f, AP: %0.2f, %0.2f, %0.2f, AY: %0.2f, %0.2f, %0.2f\r\n", acc_roll1, acc_roll2, acc_roll3, acc_pitch1, acc_pitch2, acc_pitch3, acc_yaw1, acc_yaw2, acc_yaw3);
-        sprintf(MSG, "R1: %0.2f, %0.2f, %0.2f, R2: %0.2f, %0.2f, %0.2f, R3: %0.2f, %0.2f, %0.2f, R: %0.2f, %0.2f, %0.2f, roll: %0.2f, pitch: %0.2f, dt = %f, log_dt = %f\r\n",
+        sprintf(MSG, "R1: %0.2f, %0.2f, %0.2f, R2: %0.2f, %0.2f, %0.2f, R3: %0.2f, %0.2f, %0.2f, R: %0.2f, %0.2f, %0.2f, roll: %0.2f, pitch: %0.2f, f1: %d, f2: %d, dt = %f, log_dt = %f\r\n",
                 r_est1.R_est_x, r_est1.R_est_y, r_est1.R_est_z,
                 r_est2.R_est_x, r_est2.R_est_y, r_est2.R_est_z,
                 r_est3.R_est_x, r_est3.R_est_y, r_est3.R_est_z,
                 R_est_x, R_est_y, R_est_z,
-                roll, pitch,
+                roll, pitch, main_wheel_frequency, reaction_wheel_frequency,
                 dt, log_dt);
+//        sprintf(MSG, "A2: %0.2f, %0.2f, %0.2f, G2: %0.2f, %0.2f, %0.2f, R2: %0.2f, %0.2f, %0.2f, roll: %0.2f, pitch: %0.2f, dt = %f, log_dt = %f\r\n",
+//                imu2.Ax - imu2.Ax_offset, imu2.Ay - imu2.Ay_offset, imu2.Az - imu2.Az_offset,
+//                imu2.Gx - imu2.Gx_offset, imu2.Gy - imu2.Gy_offset, imu2.Gz - imu2.Gz_offset,
+//                r_est2.R_est_x, r_est2.R_est_y, r_est2.R_est_z,
+//                atan2(r_est2.R_est_x, r_est2.R_est_z), atan2(r_est2.R_est_y, r_est2.R_est_z), dt, log_dt);
         // sprintf(MSG, "GR: %0.2f, %0.2f, %0.2f, GP: %0.2f, %0.2f, %0.2f, GY: %0.2f, %0.2f, %0.2f\r\n", gyr_roll1, gyr_roll2, gyr_roll3, gyr_pitch1, gyr_pitch2, gyr_pitch3, gyr_yaw1, gyr_yaw2, gyr_yaw3);
         
-        HAL_UART_Transmit(&huart1, MSG, sizeof(MSG), 160);
+        HAL_UART_Transmit(&huart1, MSG, sizeof(MSG), 170);
       }
       log_counter = LOG_CYCLES;
     
@@ -1091,9 +1117,8 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 0 */
 
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_Encoder_InitTypeDef sConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
 
   /* USER CODE BEGIN TIM2_Init 1 */
 
@@ -1101,19 +1126,19 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 255;
+  htim2.Init.Period = 65535;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 10;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 10;
+  if (HAL_TIM_Encoder_Init(&htim2, &sConfig) != HAL_OK)
   {
     Error_Handler();
   }
@@ -1123,30 +1148,9 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
-  {
-    Error_Handler();
-  }
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
-  HAL_TIM_MspPostInit(&htim2);
 
 }
 
@@ -1182,7 +1186,7 @@ static void MX_TIM3_Init(void)
   sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC2Filter = 0;
+  sConfig.IC2Filter = 10;
   if (HAL_TIM_Encoder_Init(&htim3, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -1251,6 +1255,10 @@ static void MX_TIM4_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN TIM4_Init 2 */
 
   /* USER CODE END TIM4_Init 2 */
@@ -1274,7 +1282,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 9600;
+  huart1.Init.BaudRate = 460800;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
