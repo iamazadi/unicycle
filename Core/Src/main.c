@@ -250,6 +250,9 @@ int main(void)
   initialize(&imu3);
   initialize(&imu4);
   int init1, init2, init3, init4;
+  int transmit = 0;
+  int log_counter = 0;
+  const int LOG_CYCLE = 5;
 
   /* USER CODE END 1 */
 
@@ -323,13 +326,18 @@ int main(void)
     rolling_wheel_count = (TIM2->CNT);
     reaction_wheel_count = (TIM3->CNT);
     
-    // sprintf(MSG, "A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, 1:%d, 2:%d, 3:%d, 4:%d, dt: %f\r\n",
-    //         imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az, rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
-    sprintf(MSG, "A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, dt: %0.6f\r\n",
-            imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az, rolling_wheel_count, reaction_wheel_count, dt);
-  
-    HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 150);
-
+    log_counter++;
+    if (log_counter > LOG_CYCLE) {
+      transmit = 1;
+    }
+    if (transmit == 1) {
+      transmit = 0;
+      log_counter = 0;
+      sprintf(MSG, "A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, dt: %0.6f\r\n",
+              imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az, rolling_wheel_count, reaction_wheel_count, dt);
+      HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 150);
+    }
+    
     t2 = DWT->CYCCNT;
     diff = t2 - t1;
     dt = (float) diff / CPU_CLOCK;
