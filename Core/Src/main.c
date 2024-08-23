@@ -333,8 +333,9 @@ int main(void)
     if (transmit == 1) {
       transmit = 0;
       log_counter = 0;
-      sprintf(MSG, "A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, dt: %0.6f\r\n",
-              imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az, rolling_wheel_count, reaction_wheel_count, dt);
+      sprintf(MSG, "A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d %d %d %d, dt: %0.6f\r\n",
+              imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az,
+              rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 150);
     }
     
@@ -409,7 +410,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 400000;
+  hi2c1.Init.ClockSpeed = 100000;
   hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
@@ -443,7 +444,7 @@ static void MX_I2C3_Init(void)
 
   /* USER CODE END I2C3_Init 1 */
   hi2c3.Instance = I2C3;
-  hi2c3.Init.ClockSpeed = 400000;
+  hi2c3.Init.ClockSpeed = 100000;
   hi2c3.Init.DutyCycle = I2C_DUTYCYCLE_2;
   hi2c3.Init.OwnAddress1 = 0;
   hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
