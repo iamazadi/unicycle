@@ -244,6 +244,7 @@ int main(void)
   int reaction_wheel_frequency = 0;
   float reaction_wheel_velocity = 0.0;
   int initialization_delay = 10;
+  int sensor_delay = 1;
   Imu imu1, imu2, imu3, imu4;
   initialize(&imu1);
   initialize(&imu2);
@@ -293,6 +294,7 @@ int main(void)
   init3 = MPU6050_Init(hi2c3, MPU6050_ADDR);
   HAL_Delay(initialization_delay);
   init4 = MPU6050_Init(hi2c3, MPU6050_ADDR2);
+  HAL_Delay(initialization_delay);
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
   /* USER CODE END 2 */
@@ -307,14 +309,15 @@ int main(void)
 
     t1 = DWT->CYCCNT;
 
+    HAL_Delay(sensor_delay);
     MPU6050_Read_Accel(hi2c1, MPU6050_ADDR, &imu1);
+    HAL_Delay(sensor_delay);
     MPU6050_Read_Accel(hi2c1, MPU6050_ADDR2, &imu2);
+    HAL_Delay(sensor_delay);
     MPU6050_Read_Accel(hi2c3, MPU6050_ADDR, &imu3);
+    HAL_Delay(sensor_delay);
     MPU6050_Read_Accel(hi2c3, MPU6050_ADDR2, &imu4);
-    MPU6050_Read_Gyro(hi2c1, MPU6050_ADDR, &imu1);
-    MPU6050_Read_Gyro(hi2c1, MPU6050_ADDR2, &imu2);
-    MPU6050_Read_Gyro(hi2c3, MPU6050_ADDR, &imu3);
-    MPU6050_Read_Gyro(hi2c3, MPU6050_ADDR2, &imu4);
+    HAL_Delay(sensor_delay);
     // Toggle the LED
     //HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
     
