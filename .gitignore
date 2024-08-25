@@ -50,3 +50,7 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# Ninja output
+build/Debug/.ninja_deps
+build/Debug/.ninja_log
