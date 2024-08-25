@@ -44,6 +44,8 @@
 #define GYRO_XOUT_H_REG 0x43
 #define PWR_MGMT_1_REG 0x6B
 #define WHO_AM_I_REG 0x75
+
+#define TRANSMIT_LENGTH 180
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -227,7 +229,7 @@ int main(void)
   DWT->CYCCNT = 0;
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-  uint8_t MSG[150] = {'\0'};
+  uint8_t MSG[TRANSMIT_LENGTH] = {'\0'};
   unsigned long t1 = 0;
   unsigned long t2 = 0;
   unsigned long diff = 0;
@@ -254,6 +256,56 @@ int main(void)
   int transmit = 0;
   int log_counter = 0;
   const int LOG_CYCLE = 5;
+
+  // the pivot point B̂ in the inertial frame Ô
+  float pivot[3] = {-0.097, -0.1, -0.032};
+  // the position of sensors mounted on the body in the body frame of reference
+  float p1[3] = {-0.035, -0.19, -0.04};
+  float p2[3] = {0.025, -0.144, -0.07};
+  float p3[3] = {-0.11, -0.01, 0.13};
+  float p4[3] = {-0.11, -0.19, 0.13};
+  // the vectors of the standard basis for the input space ℝ³
+  float e1[3] = {1.0, 0.0, 0.0};
+  float e2[3] = {0.0, 1.0, 0.0};
+  float e3[3] = {0.0, 0.0, 1.0};
+  // The rotation of the inertial frame Ô to the body frame B̂
+  float O_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
+  float B_O_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
+  // The rotation of the local frame of the sensor i to the robot frame B̂
+  float A1_B_R[3][3] = {{0.0, -1.0, 0.0}, {-1.0, 0.0, 0.0}, {0.0, 0.0, -1.0}}; // [-ê[2] -ê[1] -ê[3]]
+  float A2_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // [ê[1] ê[2] ê[3]]
+  float A3_B_R[3][3] = {{0.0, 1.0, 0.0}, {0.0, 0.0, -1.0}, {-1.0, 0.0, 0.0}}; // [-ê[3] ê[1] -ê[2]]
+  float A4_B_R[3][3] = {{0.0, -1.0, 0.0}, {0.0, 0.0, 1.0}, {-1.0, 0.0, 0.0}}; // [-ê[3] -ê[1] ê[2]]
+  float B_A1_R[3][3] = {{0.0, -1.0, 0.0}, {-1.0, 0.0, 0.0}, {0.0, 0.0, -1.0}}; // LinearAlgebra.inv(A1_B_R)
+  float B_A2_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // LinearAlgebra.inv(A2_B_R)
+  float B_A3_R[3][3] = {{0.0, 0.0, -1.0}, {1.0, 0.0, 0.0}, {0.0, -1.0, 0.0}}; // LinearAlgebra.inv(A3_B_R)
+  float B_A4_R[3][3] = {{0.0, 0.0, -1.0}, {-1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}}; // LinearAlgebra.inv(A4_B_R)
+
+  // The matrix of unknown parameters
+  float Q[3][4] = {{0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}};
+  // The matrix of sensor locations (known parameters)
+  float P[4][4] = {{1.0, 1.0, 1.0, 1.0}, {0.062, 0.122, -0.013, -0.013}, {-0.09, -0.044, 0.09, -0.09}, {-0.008, -0.038, 0.162, 0.162}}; // [[1.0; vec(p1 - pivot)] [1.0; vec(p2 - pivot)] [1.0; vec(p3 - pivot)] [1.0; vec(p4 - pivot)]]
+  // The optimal fusion matrix
+  float X[4][4] = {{2.4239, -25.1572, 0.0, -16.9811}, {-1.25031, 21.3836, 0.0, 9.43396}, {0.819525, -5.46471, 5.55556, -2.4109}, {-0.99311, 9.2383, -5.55556, 9.95807}}; // transpose(P) * LinearAlgebra.inv(P * transpose(P))
+
+  // sensor measurements in the local frame of the sensors
+  float R1[3] = {0.0, 0.0, 0.0};
+  float R2[3] = {0.0, 0.0, 0.0};
+  float R3[3] = {0.0, 0.0, 0.0};
+  float R4[3] = {0.0, 0.0, 0.0};
+  // sensor measurements in the robot body frame
+  float _R1[3] = {0.0, 0.0, 0.0};
+  float _R2[3] = {0.0, 0.0, 0.0};
+  float _R3[3] = {0.0, 0.0, 0.0};
+  float _R4[3] = {0.0, 0.0, 0.0};
+  // all sensor measurements combined
+  float M[3][4] = {{0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}};
+  // The gravity vector
+  float g[3] = {0.0, 0.0, 0.0};
+  // y-Euler angle (pitch)
+  float beta = 0.0;
+  // x-Euler angle (roll)
+  float gamma = 0.0;
 
   /* USER CODE END 1 */
 
@@ -309,15 +361,71 @@ int main(void)
 
     t1 = DWT->CYCCNT;
 
-    HAL_Delay(sensor_delay);
     MPU6050_Read_Accel(hi2c1, MPU6050_ADDR, &imu1);
     HAL_Delay(sensor_delay);
     MPU6050_Read_Accel(hi2c1, MPU6050_ADDR2, &imu2);
     HAL_Delay(sensor_delay);
     MPU6050_Read_Accel(hi2c3, MPU6050_ADDR, &imu3);
-    HAL_Delay(sensor_delay);
     MPU6050_Read_Accel(hi2c3, MPU6050_ADDR2, &imu4);
-    HAL_Delay(sensor_delay);
+
+    R1[0] = imu1.Ax;
+    R1[1] = imu1.Ay;
+    R1[2] = imu1.Az;
+    R2[0] = imu2.Ax;
+    R2[1] = imu2.Ay;
+    R2[2] = imu2.Az;
+    R3[0] = imu3.Ax;
+    R3[1] = imu3.Ay;
+    R3[2] = imu3.Az;
+    R4[0] = imu4.Ax;
+    R4[1] = imu4.Ay;
+    R4[2] = imu4.Az;
+
+    _R1[0] = 0.0;
+    _R1[1] = 0.0;
+    _R1[2] = 0.0;
+    _R2[0] = 0.0;
+    _R2[1] = 0.0;
+    _R2[2] = 0.0;
+    _R3[0] = 0.0;
+    _R3[1] = 0.0;
+    _R3[2] = 0.0;
+    _R4[0] = 0.0;
+    _R4[1] = 0.0;
+    _R4[2] = 0.0;
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) {
+        _R1[i] += B_A1_R[i][j] * R1[j];
+        _R2[i] += B_A2_R[i][j] * R2[j];
+        _R3[i] += B_A3_R[i][j] * R3[j];
+        _R4[i] += B_A4_R[i][j] * R4[j];
+      }
+    }
+
+    for (int i = 0; i < 3; i++) {
+      M[i][0] = _R1[i];
+      M[i][1] = _R2[i];
+      M[i][2] = _R3[i];
+      M[i][3] = _R4[i];
+    }
+
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 4; j++) {
+        Q[i][j] = 0.0;
+        for (int k = 0; k < 4; k++) {
+          Q[i][j] += M[i][k] * X[k][j];
+        }
+      }
+    }
+    g[0] = Q[0][0];
+    g[1] = Q[1][0];
+    g[2] = Q[2][0];
+    beta = atan2(-g[0], sqrt(pow(g[1], 2) + pow(g[2], 2)));
+    gamma = atan2(g[1], g[2]);
+
+    beta = beta / 3.14 * 180.0;
+    gamma = gamma / 3.14 * 180.0;
+
     // Toggle the LED
     //HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
     
@@ -336,10 +444,13 @@ int main(void)
     if (transmit == 1) {
       transmit = 0;
       log_counter = 0;
-      sprintf(MSG, "A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d %d %d %d, dt: %0.6f\r\n",
-              imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az,
+      // sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
+      //         beta, gamma, imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az,
+      //         rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
+      sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
+              beta, gamma, imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az,
               rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
-      HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 150);
+      HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), TRANSMIT_LENGTH);
     }
     
     t2 = DWT->CYCCNT;
