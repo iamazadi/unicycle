@@ -252,6 +252,18 @@ int main(void)
   initialize(&imu2);
   initialize(&imu3);
   initialize(&imu4);
+  imu1.Ax_offset = -0.02;
+  imu1.Ay_offset = 0.0;
+  imu1.Az_offset = 0.13;
+  imu2.Ax_offset = 0.0;
+  imu2.Ay_offset = -0.01;
+  imu2.Az_offset = 0.08;
+  imu3.Ax_offset = -0.06;
+  imu3.Ay_offset = 0.0;
+  imu3.Az_offset = -0.11;
+  imu4.Ax_offset = 0.0;
+  imu4.Ay_offset = 0.0;
+  imu4.Az_offset = -0.09;
   int init1, init2, init3, init4;
   int transmit = 0;
   int log_counter = 0;
@@ -368,18 +380,18 @@ int main(void)
     MPU6050_Read_Accel(hi2c3, MPU6050_ADDR, &imu3);
     MPU6050_Read_Accel(hi2c3, MPU6050_ADDR2, &imu4);
 
-    R1[0] = imu1.Ax;
-    R1[1] = imu1.Ay;
-    R1[2] = imu1.Az;
-    R2[0] = imu2.Ax;
-    R2[1] = imu2.Ay;
-    R2[2] = imu2.Az;
-    R3[0] = imu3.Ax;
-    R3[1] = imu3.Ay;
-    R3[2] = imu3.Az;
-    R4[0] = imu4.Ax;
-    R4[1] = imu4.Ay;
-    R4[2] = imu4.Az;
+    R1[0] = imu1.Ax + imu1.Ax_offset;
+    R1[1] = imu1.Ay + imu1.Ay_offset;
+    R1[2] = imu1.Az + imu1.Az_offset;
+    R2[0] = imu2.Ax + imu2.Ax_offset;
+    R2[1] = imu2.Ay + imu2.Ay_offset;
+    R2[2] = imu2.Az + imu2.Az_offset;
+    R3[0] = imu3.Ax + imu3.Ax_offset;
+    R3[1] = imu3.Ay + imu3.Ay_offset;
+    R3[2] = imu3.Az + imu3.Az_offset;
+    R4[0] = imu4.Ax + imu4.Ax_offset;
+    R4[1] = imu4.Ay + imu4.Ay_offset;
+    R4[2] = imu4.Az + imu4.Az_offset;
 
     _R1[0] = 0.0;
     _R1[1] = 0.0;
@@ -447,8 +459,8 @@ int main(void)
       // sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
       //         beta, gamma, imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az,
       //         rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
-      sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
-              beta, gamma, imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az,
+      sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, R1: %0.2f, %0.2f, %0.2f, R2: %0.2f, %0.2f, %0.2f, R3: %0.2f, %0.2f, %0.2f, R4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
+              beta, gamma, R1[0], R1[1], R1[2], R2[0], R2[1], R2[2], R3[0], R3[1], R3[2], R4[0], R4[1], R4[2],
               rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), TRANSMIT_LENGTH);
     }
