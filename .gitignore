@@ -54,3 +54,6 @@ dkms.conf
 # Ninja output
 build/Debug/.ninja_deps
 build/Debug/.ninja_log
+
+# cmake API
+build/Debug/.cmake
