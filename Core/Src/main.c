@@ -233,6 +233,7 @@ int main(void)
   unsigned long t1 = 0;
   unsigned long t2 = 0;
   unsigned long diff = 0;
+  // sampling time
   float dt = 0.0;
   const float CPU_CLOCK = 84000000.0;
   const float rolling_wheel_pulse = 17.0;
@@ -252,6 +253,7 @@ int main(void)
   initialize(&imu2);
   initialize(&imu3);
   initialize(&imu4);
+  // Accelerometers calibration (removing bias)
   imu1.Ax_offset = -0.02;
   imu1.Ay_offset = 0.0;
   imu1.Az_offset = 0.13;
@@ -264,6 +266,19 @@ int main(void)
   imu4.Ax_offset = 0.0;
   imu4.Ay_offset = 0.0;
   imu4.Az_offset = -0.09;
+  // Gyroscopes calibration
+  imu1.Gx_offset = 5.5;
+  imu1.Gy_offset = -1.3;
+  imu1.Gz_offset = 0.0;
+  imu2.Gx_offset = 0.3;
+  imu2.Gy_offset = -1.0;
+  imu2.Gz_offset = -0.7;
+  imu3.Gx_offset = 7.0;
+  imu3.Gy_offset = -0.1;
+  imu3.Gz_offset = 0.01;
+  imu4.Gx_offset = 2.0;
+  imu4.Gy_offset = 1.1;
+  imu4.Gz_offset = 0.6;
   int init1, init2, init3, init4;
   int transmit = 0;
   int log_counter = 0;
@@ -300,12 +315,12 @@ int main(void)
   // The optimal fusion matrix
   float X[4][4] = {{2.4239, -25.1572, 0.0, -16.9811}, {-1.25031, 21.3836, 0.0, 9.43396}, {0.819525, -5.46471, 5.55556, -2.4109}, {-0.99311, 9.2383, -5.55556, 9.95807}}; // transpose(P) * LinearAlgebra.inv(P * transpose(P))
 
-  // sensor measurements in the local frame of the sensors
+  // accelerometer sensor measurements in the local frame of the sensors
   float R1[3] = {0.0, 0.0, 0.0};
   float R2[3] = {0.0, 0.0, 0.0};
   float R3[3] = {0.0, 0.0, 0.0};
   float R4[3] = {0.0, 0.0, 0.0};
-  // sensor measurements in the robot body frame
+  // accelerometer sensor measurements in the robot body frame
   float _R1[3] = {0.0, 0.0, 0.0};
   float _R2[3] = {0.0, 0.0, 0.0};
   float _R3[3] = {0.0, 0.0, 0.0};
@@ -316,8 +331,31 @@ int main(void)
   float g[3] = {0.0, 0.0, 0.0};
   // y-Euler angle (pitch)
   float beta = 0.0;
+  float fused_beta = 0.0;
   // x-Euler angle (roll)
   float gamma = 0.0;
+  float fused_gamma = 0.0;
+  // tuning parameters to minimize estimate variance
+  float kappa1 = 0.1;
+  float kappa2 = 0.1;
+  // the average of the body angular rate from rate gyro
+  float r[3] = {0.0, 0.0, 0.0};
+  // the average of the body angular rate in Euler angles
+  float r_dot[3] = {0.0, 0.0, 0.0};
+  // gyro sensor measurements in the local frame of the sensors
+  float G1[3] = {0.0, 0.0, 0.0};
+  float G2[3] = {0.0, 0.0, 0.0};
+  float G3[3] = {0.0, 0.0, 0.0};
+  float G4[3] = {0.0, 0.0, 0.0};
+  // gyro sensor measurements in the robot body frame
+  float _G1[3] = {0.0, 0.0, 0.0};
+  float _G2[3] = {0.0, 0.0, 0.0};
+  float _G3[3] = {0.0, 0.0, 0.0};
+  float _G4[3] = {0.0, 0.0, 0.0};
+  // a matrix transfom from body rates to Euler angular rates
+  float E[3][3] = {{0.0, sin(gamma) / cos(beta), cos(gamma) / cos(beta)},
+                   {0.0, cos(gamma), -sin(gamma)},
+                   {1.0, sin(gamma) * tan(beta), cos(gamma) * tan(beta)}};
 
   /* USER CODE END 1 */
 
@@ -374,11 +412,15 @@ int main(void)
     t1 = DWT->CYCCNT;
 
     MPU6050_Read_Accel(hi2c1, MPU6050_ADDR, &imu1);
+    MPU6050_Read_Gyro(hi2c1, MPU6050_ADDR, &imu1);
     HAL_Delay(sensor_delay);
     MPU6050_Read_Accel(hi2c1, MPU6050_ADDR2, &imu2);
+    MPU6050_Read_Gyro(hi2c1, MPU6050_ADDR2, &imu2);
     HAL_Delay(sensor_delay);
     MPU6050_Read_Accel(hi2c3, MPU6050_ADDR, &imu3);
+    MPU6050_Read_Gyro(hi2c3, MPU6050_ADDR, &imu3);
     MPU6050_Read_Accel(hi2c3, MPU6050_ADDR2, &imu4);
+    MPU6050_Read_Gyro(hi2c3, MPU6050_ADDR2, &imu4);
 
     R1[0] = imu1.Ax + imu1.Ax_offset;
     R1[1] = imu1.Ay + imu1.Ay_offset;
@@ -438,11 +480,71 @@ int main(void)
     beta = beta / 3.14 * 180.0;
     gamma = gamma / 3.14 * 180.0;
 
+
+    G1[0] = imu1.Gx + imu1.Gx_offset;
+    G1[1] = imu1.Gy + imu1.Gy_offset;
+    G1[2] = imu1.Gz + imu1.Gz_offset;
+    G2[0] = imu2.Gx + imu2.Gx_offset;
+    G2[1] = imu2.Gy + imu2.Gy_offset;
+    G2[2] = imu2.Gz + imu2.Gz_offset;
+    G3[0] = imu3.Gx + imu3.Gx_offset;
+    G3[1] = imu3.Gy + imu3.Gy_offset;
+    G3[2] = imu3.Gz + imu3.Gz_offset;
+    G4[0] = imu4.Gx + imu4.Gx_offset;
+    G4[1] = imu4.Gy + imu4.Gy_offset;
+    G4[2] = imu4.Gz + imu4.Gz_offset;
+
+    _G1[0] = 0.0;
+    _G1[1] = 0.0;
+    _G1[2] = 0.0;
+    _G2[0] = 0.0;
+    _G2[1] = 0.0;
+    _G2[2] = 0.0;
+    _G3[0] = 0.0;
+    _G3[1] = 0.0;
+    _G3[2] = 0.0;
+    _G4[0] = 0.0;
+    _G4[1] = 0.0;
+    _G4[2] = 0.0;
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) {
+        _G1[i] += B_A1_R[i][j] * G1[j];
+        _G2[i] += B_A2_R[i][j] * G2[j];
+        _G3[i] += B_A3_R[i][j] * G3[j];
+        _G4[i] += B_A4_R[i][j] * G4[j];
+      }
+    }
+    for (int i = 0; i < 3; i++) {
+      r[i] = (_G1[i] + _G2[i] + _G3[i] + _G4[i]) / 4.0;
+    }
+
+    E[0][0] = 0.0;
+    E[0][1] = sin(gamma) / cos(beta);
+    E[0][2] = cos(gamma) / cos(beta);
+    E[1][0] = 0.0;
+    E[1][1] = cos(gamma);
+    E[1][2] = -sin(gamma);
+    E[2][0] = 1.0;
+    E[2][1] = sin(gamma) * tan(beta);
+    E[2][2] = cos(gamma) * tan(beta);
+
+    r_dot[0] = 0.0;
+    r_dot[1] = 0.0;
+    r_dot[2] = 0.0;
+    for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) {
+        r_dot[i] += E[i][j] * r[j];
+        r_dot[i] += E[i][j] * r[j];
+        r_dot[i] += E[i][j] * r[j];
+        r_dot[i] += E[i][j] * r[j];
+      }
+    }
+
+    fused_beta = kappa1 * beta + (1.0 - kappa1) * (fused_beta + dt * r_dot[1]);
+    fused_gamma = kappa2 * gamma + (1.0 - kappa2) * (fused_gamma + dt * r_dot[2]);
+
     // Toggle the LED
     //HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-    
-    /* Output a message on Hyperterminal using printf function */
-    // printf("\n\r UART Printf Example: retarget the C library printf function to the UART\n\r");
 
     // Wait for 1 ms
     // HAL_Delay(1);
@@ -456,11 +558,20 @@ int main(void)
     if (transmit == 1) {
       transmit = 0;
       log_counter = 0;
+      // use these log templates for software feature design
       // sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
       //         beta, gamma, imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az,
       //         rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
-      sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, R1: %0.2f, %0.2f, %0.2f, R2: %0.2f, %0.2f, %0.2f, R3: %0.2f, %0.2f, %0.2f, R4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
-              beta, gamma, R1[0], R1[1], R1[2], R2[0], R2[1], R2[2], R3[0], R3[1], R3[2], R4[0], R4[1], R4[2],
+      // sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, R1: %0.2f, %0.2f, %0.2f, R2: %0.2f, %0.2f, %0.2f, R3: %0.2f, %0.2f, %0.2f, R4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
+      //         beta, gamma, R1[0], R1[1], R1[2], R2[0], R2[1], R2[2], R3[0], R3[1], R3[2], R4[0], R4[1], R4[2],
+      //         rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
+      // sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, G1: %0.2f, %0.2f, %0.2f, G2: %0.2f, %0.2f, %0.2f, G3: %0.2f, %0.2f, %0.2f, G4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
+      //         beta, gamma, G1[0], G1[1], G1[2], G2[0], G2[1], G2[2], G3[0], G3[1], G3[2], G4[0], G4[1], G4[2],
+      //         rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
+      // sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, r: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
+      //         beta, gamma, r[0], r[1], r[2],
+      sprintf(MSG, "beta: %0.2f, fused beta: %0.2f, gamma: %0.2f, fused_gamma: %0.2f, r: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
+              beta, fused_beta, gamma, fused_gamma, r[0], r[1], r[2],
               rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), TRANSMIT_LENGTH);
     }
