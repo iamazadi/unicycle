@@ -45,7 +45,7 @@
 #define PWR_MGMT_1_REG 0x6B
 #define WHO_AM_I_REG 0x75
 
-#define TRANSMIT_LENGTH 180
+#define TRANSMIT_LENGTH 200
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -57,8 +57,10 @@
 I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c3;
 
+TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart6;
@@ -76,6 +78,8 @@ static void MX_I2C3_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_TIM1_Init(void);
+static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -282,7 +286,7 @@ int main(void)
   int init1, init2, init3, init4;
   int transmit = 0;
   int log_counter = 0;
-  const int LOG_CYCLE = 5;
+  const int LOG_CYCLE = 100;
 
   // the pivot point B̂ in the inertial frame Ô
   float pivot[3] = {-0.097, -0.1, -0.032};
@@ -336,8 +340,8 @@ int main(void)
   float gamma = 0.0;
   float fused_gamma = 0.0;
   // tuning parameters to minimize estimate variance
-  float kappa1 = 0.1;
-  float kappa2 = 0.1;
+  float kappa1 = 0.01;
+  float kappa2 = 0.01;
   // the average of the body angular rate from rate gyro
   float r[3] = {0.0, 0.0, 0.0};
   // the average of the body angular rate in Euler angles
@@ -357,6 +361,22 @@ int main(void)
                    {0.0, cos(gamma), -sin(gamma)},
                    {1.0, sin(gamma) * tan(beta), cos(gamma) * tan(beta)}};
 
+  float rolling_wheel_speed = 0.0;
+  float reaction_wheel_speed = 0.0;
+  float safety_angle = 180.0;
+  float pitch = 0.0;
+  float roll = 0.0;
+  float k1 = 30.0;
+  float k2 = 3.0;
+  float k3 = 1.5;
+  float kp = 80.0;
+  float ki = 0.3;
+  float kd = 0.5;
+  float smooth = 1.0;
+  float windup = 10.0;
+  float rolling_wheel_integrator = 0.0;
+  float pitch_velocity = 0.0;
+  float roll_velocity = 0.0;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -383,7 +403,13 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_USART2_UART_Init();
+  MX_TIM1_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
+  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_2);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_1);
@@ -397,8 +423,6 @@ int main(void)
   HAL_Delay(initialization_delay);
   init4 = MPU6050_Init(hi2c3, MPU6050_ADDR2);
   HAL_Delay(initialization_delay);
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -413,10 +437,10 @@ int main(void)
 
     MPU6050_Read_Accel(hi2c1, MPU6050_ADDR, &imu1);
     MPU6050_Read_Gyro(hi2c1, MPU6050_ADDR, &imu1);
-    HAL_Delay(sensor_delay);
+    // HAL_Delay(sensor_delay);
     MPU6050_Read_Accel(hi2c1, MPU6050_ADDR2, &imu2);
     MPU6050_Read_Gyro(hi2c1, MPU6050_ADDR2, &imu2);
-    HAL_Delay(sensor_delay);
+    // HAL_Delay(sensor_delay);
     MPU6050_Read_Accel(hi2c3, MPU6050_ADDR, &imu3);
     MPU6050_Read_Gyro(hi2c3, MPU6050_ADDR, &imu3);
     MPU6050_Read_Accel(hi2c3, MPU6050_ADDR2, &imu4);
@@ -477,8 +501,8 @@ int main(void)
     beta = atan2(-g[0], sqrt(pow(g[1], 2) + pow(g[2], 2)));
     gamma = atan2(g[1], g[2]);
 
-    beta = beta / 3.14 * 180.0;
-    gamma = gamma / 3.14 * 180.0;
+    // beta = beta / 3.14 * 180.0;
+    // gamma = gamma / 3.14 * 180.0;
 
 
     G1[0] = imu1.Gx + imu1.Gx_offset;
@@ -543,24 +567,87 @@ int main(void)
     fused_beta = kappa1 * beta + (1.0 - kappa1) * (fused_beta + dt * r_dot[1]);
     fused_gamma = kappa2 * gamma + (1.0 - kappa2) * (fused_gamma + dt * r_dot[2]);
 
+    pitch_velocity = fused_beta - pitch;
+    roll_velocity = fused_gamma - roll;
+    pitch = fused_beta;
+    roll = fused_gamma;
+
+    rolling_wheel_previous_count = rolling_wheel_count;
+    reaction_wheel_previous_count = reaction_wheel_count;
+    rolling_wheel_count = (TIM2->CNT);
+    reaction_wheel_count = (TIM3->CNT);
+
+    
+    rolling_wheel_frequency = rolling_wheel_count - rolling_wheel_previous_count;
+    reaction_wheel_frequency = reaction_wheel_count - reaction_wheel_previous_count;
+
+    if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_2) == 0) {
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_SET);
+    } else {
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_RESET);
+    }
+    if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_3) == 0) {
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, GPIO_PIN_SET);
+    } else {
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, GPIO_PIN_RESET);
+    }
+
+    reaction_wheel_speed = (int)(smooth * fabs(k1 * roll + k2 * r_dot[2] + k3 * fabs((float)reaction_wheel_frequency)) + (1.0 - smooth) * (float)reaction_wheel_speed);
+    if (reaction_wheel_speed > 255) {
+      reaction_wheel_speed = 255;
+    }
+
+
+    rolling_wheel_integrator = rolling_wheel_integrator + pitch * ki;
+    if (rolling_wheel_integrator > windup) {
+      rolling_wheel_integrator = windup;
+    }
+    if (rolling_wheel_integrator < -windup) {
+      rolling_wheel_integrator = -windup;
+    }
+
+    rolling_wheel_speed = (int)(smooth * fabs(kp * pitch + kd * r_dot[1] + rolling_wheel_integrator) + (1.0 - smooth) * (float)rolling_wheel_speed); //PID function
+    if (rolling_wheel_speed > 255) {
+      rolling_wheel_speed = 255;
+    }
+    if ((pitch > safety_angle) || (pitch < -safety_angle) || (roll > safety_angle) || (roll < -safety_angle)) {
+      rolling_wheel_speed = 0; // the controller is active in -10~+10 deg range
+      reaction_wheel_speed = 0;
+    }
+    if (pitch > 0.0) {
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 255 * rolling_wheel_speed);
+      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 0);
+    } else {
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0);
+      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 255 * rolling_wheel_speed);
+    }
+    if (roll > 0.0) {
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 255 * reaction_wheel_speed);
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+    } else {
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 255 * reaction_wheel_speed);
+    }
+
     // Toggle the LED
     //HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
 
     // Wait for 1 ms
     // HAL_Delay(1);
-    rolling_wheel_count = (TIM2->CNT);
-    reaction_wheel_count = (TIM3->CNT);
+    
     
     log_counter++;
     if (log_counter > LOG_CYCLE) {
-      transmit = 1;
+      // transmit = 1;
     }
     if (transmit == 1) {
       transmit = 0;
       log_counter = 0;
       // use these log templates for software feature design
-      // sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
-      //         beta, gamma, imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az,
+      sprintf(MSG, "beta: %0.2f, gamma: %0.2f, rolv: %0.2f, reav: %0.2f, f1: %d, init: %d%d%d%d, dt: %0.6f\r\n",
+              fused_beta, fused_gamma, rolling_wheel_speed, reaction_wheel_speed, reaction_wheel_frequency, init1, init2, init3, init4, dt);
+      // sprintf(MSG, "beta: %0.2f, gamma: %0.2f, rolv: %0.2f, reav: %0.2f, f1: %d, A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
+      //         fused_beta, fused_gamma, rolling_wheel_speed, reaction_wheel_speed, reaction_wheel_frequency, imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az,
       //         rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
       // sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, R1: %0.2f, %0.2f, %0.2f, R2: %0.2f, %0.2f, %0.2f, R3: %0.2f, %0.2f, %0.2f, R4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
       //         beta, gamma, R1[0], R1[1], R1[2], R2[0], R2[1], R2[2], R3[0], R3[1], R3[2], R4[0], R4[1], R4[2],
@@ -570,9 +657,9 @@ int main(void)
       //         rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
       // sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, r: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
       //         beta, gamma, r[0], r[1], r[2],
-      sprintf(MSG, "beta: %0.2f, fused beta: %0.2f, gamma: %0.2f, fused_gamma: %0.2f, r: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
-              beta, fused_beta, gamma, fused_gamma, r[0], r[1], r[2],
-              rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
+      // sprintf(MSG, "beta: %0.2f, fused beta: %0.2f, gamma: %0.2f, fused_gamma: %0.2f, r: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
+      //         beta, fused_beta, gamma, fused_gamma, r[0], r[1], r[2],
+      //         rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), TRANSMIT_LENGTH);
     }
     
@@ -700,6 +787,89 @@ static void MX_I2C3_Init(void)
 }
 
 /**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 0;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 65535;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+  HAL_TIM_MspPostInit(&htim1);
+
+}
+
+/**
   * @brief TIM2 Initialization Function
   * @param None
   * @retval None
@@ -798,6 +968,65 @@ static void MX_TIM3_Init(void)
 }
 
 /**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 0;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 65535;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
+  HAL_TIM_MspPostInit(&htim4);
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -881,10 +1110,10 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2|GPIO_PIN_3, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2|GPIO_PIN_10, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -894,9 +1123,8 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pins : PC2 PC3 */
   GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_3;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : LD2_Pin */
@@ -905,6 +1133,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB2 PB10 */
+  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
