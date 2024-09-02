@@ -45,7 +45,7 @@
 #define PWR_MGMT_1_REG 0x6B
 #define WHO_AM_I_REG 0x75
 
-#define TRANSMIT_LENGTH 200
+#define TRANSMIT_LENGTH 220
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -286,7 +286,7 @@ int main(void)
   int init1, init2, init3, init4;
   int transmit = 0;
   int log_counter = 0;
-  const int LOG_CYCLE = 100;
+  const int LOG_CYCLE = 20;
 
   // the pivot point B̂ in the inertial frame Ô
   float pivot[3] = {-0.097, -0.1, -0.032};
@@ -340,8 +340,8 @@ int main(void)
   float gamma = 0.0;
   float fused_gamma = 0.0;
   // tuning parameters to minimize estimate variance
-  float kappa1 = 0.01;
-  float kappa2 = 0.01;
+  float kappa1 = 0.05;
+  float kappa2 = 0.05;
   // the average of the body angular rate from rate gyro
   float r[3] = {0.0, 0.0, 0.0};
   // the average of the body angular rate in Euler angles
@@ -364,19 +364,42 @@ int main(void)
   float rolling_wheel_speed = 0.0;
   float reaction_wheel_speed = 0.0;
   float safety_angle = 180.0;
-  float pitch = 0.0;
   float roll = 0.0;
-  float k1 = 30.0;
-  float k2 = 3.0;
-  float k3 = 1.5;
+  float pitch = 0.0;
+  float yaw = 0.0;
+  float k1 = 155.0;
+  float k2 = 300.0;
+  float k3 = 500.0;
+  float k4 = 3.0;
   float kp = 80.0;
-  float ki = 0.3;
-  float kd = 0.5;
+  float ki = 3.0;
+  float kd = 5.0;
   float smooth = 1.0;
   float windup = 10.0;
   float rolling_wheel_integrator = 0.0;
   float pitch_velocity = 0.0;
   float roll_velocity = 0.0;
+  float roll_acceleration = 0.0;
+  float q1 = 0.0; // roll angle
+  float q2 = 0.0; // pitch angle
+  float q3 = 0.0; // yaw angle
+  float q4 = 0.0; // rolling wheel angle
+  float q5 = 0.0; // reaction wheel angle
+  float q1_dotdot = 0.0;
+  float q1_dot = 0.0;
+  float q3_dot = 0.0;
+  float q3_dotdot = 0.0;
+  float r_w = 75.0; // +-0.1mm
+  float B_g[3] = {0.0, 0.0, 0.0}; // gravitational acceleration
+  float O_pwc[3] = {0.0, 0.0, 0.0}; // acceleration from contact point to the rolling wheel center in inertial frame O
+  float B_pwc[3] = {0.0, 0.0, 0.0}; // acceleration from contact point to the rolling wheel center in the body frame B
+  // the rotation matrix that takes vectors from the inertial frame to the body frame through a matrix-vector multiplication
+  float R_x_T_R_y_T[3][3] = {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
+  // full state estmation with encoders
+  float encoder_beta = 0.0;
+  float encoder_gamma = 0.0;
+  float pitch_target_angle = 0.0;
+  float roll_target_angle = 0.0;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -414,6 +437,7 @@ int main(void)
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_2);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_1);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_2);
+  HAL_Delay(1000);
   HAL_Delay(initialization_delay);
   init1 = MPU6050_Init(hi2c1, MPU6050_ADDR);
   HAL_Delay(initialization_delay);
@@ -558,16 +582,13 @@ int main(void)
     for (int i = 0; i < 3; i++) {
       for (int j = 0; j < 3; j++) {
         r_dot[i] += E[i][j] * r[j];
-        r_dot[i] += E[i][j] * r[j];
-        r_dot[i] += E[i][j] * r[j];
-        r_dot[i] += E[i][j] * r[j];
       }
     }
 
     fused_beta = kappa1 * beta + (1.0 - kappa1) * (fused_beta + dt * r_dot[1]);
     fused_gamma = kappa2 * gamma + (1.0 - kappa2) * (fused_gamma + dt * r_dot[2]);
 
-    pitch_velocity = fused_beta - pitch;
+    roll_acceleration = (fused_gamma - roll) - roll_velocity;
     roll_velocity = fused_gamma - roll;
     pitch = fused_beta;
     roll = fused_gamma;
@@ -576,10 +597,48 @@ int main(void)
     reaction_wheel_previous_count = reaction_wheel_count;
     rolling_wheel_count = (TIM2->CNT);
     reaction_wheel_count = (TIM3->CNT);
-
     
     rolling_wheel_frequency = rolling_wheel_count - rolling_wheel_previous_count;
     reaction_wheel_frequency = reaction_wheel_count - reaction_wheel_previous_count;
+
+    // q1_dotdot = (roll - q1) - q1_dot;
+    // q1_dot = roll - q1;
+    // q1 = atan2(g[1], sqrt(pow(g[0], 2) + pow(g[2], 2)));
+    // q2 = atan2(-g[1], g[2]);
+    // q3_dotdot = (yaw - q3) - q3_dot;
+    // q3_dot = yaw - q3;
+    // q3 = dt * r_dot[0];
+    // q4 = (float)rolling_wheel_count / 300.0 * 2.0 * 3.14;
+    // q5 = (float)reaction_wheel_count / 1800.0 * 2.0 * 3.14;
+
+    // B_g[0] = -cos(q1) * sin(q2);
+    // B_g[1] = sin(q1);
+    // B_g[2] = cos(q1) * cos(q2);
+
+    // O_pwc[0] = 2.0 * r_w * cos(q1) * q1_dot * q3_dot + r_w * sin(q1) * q3_dotdot;
+    // O_pwc[1] = r_w * sin(q1) * (pow(q1_dot, 2) + pow(q3_dot, 2)) - r_w * cos(q1) * q1_dotdot;
+    // O_pwc[2] = -r_w * cos(q1) * pow(q1_dot, 2) - r_w * sin(q1) * q1_dotdot;
+    // R_x_T_R_y_T[0][0] = cos(beta);
+    // R_x_T_R_y_T[0][1] = 0.0;
+    // R_x_T_R_y_T[0][2] = -sin(beta);
+    // R_x_T_R_y_T[1][0] = sin(beta) * sin(gamma);
+    // R_x_T_R_y_T[1][1] = cos(gamma);
+    // R_x_T_R_y_T[1][2] = sin(gamma) * cos(beta);
+    // R_x_T_R_y_T[2][0] = cos(gamma) * sin(beta);
+    // R_x_T_R_y_T[2][1] = -sin(gamma);
+    // R_x_T_R_y_T[2][2] = cos(gamma) * cos(beta);
+    // B_pwc[0] = 0.0;
+    // B_pwc[1] = 0.0;
+    // B_pwc[2] = 0.0;
+    // for (int i = 0; i < 3; i++) {
+    //   for (int j = 0; j < 3; j++) {
+    //     B_pwc[i] += R_x_T_R_y_T[i][j] * O_pwc[j];
+    //   }
+    // }
+
+    // encoder_beta = atan2(-B_pwc[0], sqrt(pow(B_pwc[1], 2) + pow(B_pwc[2], 2)));
+    // encoder_gamma = atan2(B_pwc[1], B_pwc[2]);
+
 
     if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_2) == 0) {
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_SET);
@@ -592,7 +651,7 @@ int main(void)
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, GPIO_PIN_RESET);
     }
 
-    reaction_wheel_speed = (int)(smooth * fabs(k1 * roll + k2 * r_dot[2] + k3 * fabs((float)reaction_wheel_frequency)) + (1.0 - smooth) * (float)reaction_wheel_speed);
+    reaction_wheel_speed = (int)(smooth * fabs(k1 * roll + k2 * roll_velocity + k3 * roll_acceleration + k4 * fabs((float)reaction_wheel_frequency)) + (1.0 - smooth) * (float)reaction_wheel_speed);
     if (reaction_wheel_speed > 255) {
       reaction_wheel_speed = 255;
     }
@@ -614,14 +673,14 @@ int main(void)
       rolling_wheel_speed = 0; // the controller is active in -10~+10 deg range
       reaction_wheel_speed = 0;
     }
-    if (pitch > 0.0) {
+    if (pitch > pitch_target_angle) {
       __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 255 * rolling_wheel_speed);
       __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 0);
     } else {
       __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0);
       __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 255 * rolling_wheel_speed);
     }
-    if (roll > 0.0) {
+    if (roll > roll_target_angle) {
       __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 255 * reaction_wheel_speed);
       __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
     } else {
@@ -638,16 +697,19 @@ int main(void)
     
     log_counter++;
     if (log_counter > LOG_CYCLE) {
-      // transmit = 1;
+      transmit = 1;
     }
     if (transmit == 1) {
-      transmit = 0;
+      // transmit = 0;
       log_counter = 0;
       // use these log templates for software feature design
-      sprintf(MSG, "beta: %0.2f, gamma: %0.2f, rolv: %0.2f, reav: %0.2f, f1: %d, init: %d%d%d%d, dt: %0.6f\r\n",
-              fused_beta, fused_gamma, rolling_wheel_speed, reaction_wheel_speed, reaction_wheel_frequency, init1, init2, init3, init4, dt);
-      // sprintf(MSG, "beta: %0.2f, gamma: %0.2f, rolv: %0.2f, reav: %0.2f, f1: %d, A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
-      //         fused_beta, fused_gamma, rolling_wheel_speed, reaction_wheel_speed, reaction_wheel_frequency, imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az,
+      sprintf(MSG, "beta: %0.2f, gamma: %0.2f, k1*roll: %0.2f, k2*droll: %0.2f, k3*ddroll: %0.2f, k4*f2: %0.2f, speed: %0.2f, init: %d%d%d%d, dt: %0.6f\r\n",
+              fused_beta, fused_gamma, k1 * roll, k2 * roll_velocity, k3 * roll_acceleration, k4 * fabs((float)reaction_wheel_frequency),
+              fabs(k1 * roll + k2 * roll_velocity + k3 * roll_acceleration + k4 * fabs((float)reaction_wheel_frequency)), init1, init2, init3, init4, dt);
+      // sprintf(MSG, "beta: %0.2f, gamma: %0.2f, rolv: %0.2f, reav: %0.2f, f1: %d, init: %d%d%d%d, dt: %0.6f\r\n",
+      //         fused_beta, fused_gamma, rolling_wheel_speed, reaction_wheel_speed, reaction_wheel_frequency, init1, init2, init3, init4, dt);
+      // sprintf(MSG, "beta: %0.2f, gamma: %0.2f, A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
+      //         fused_beta, fused_gamma, imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az,
       //         rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
       // sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, R1: %0.2f, %0.2f, %0.2f, R2: %0.2f, %0.2f, %0.2f, R3: %0.2f, %0.2f, %0.2f, R4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
       //         beta, gamma, R1[0], R1[1], R1[2], R2[0], R2[1], R2[2], R3[0], R3[1], R3[2], R4[0], R4[1], R4[2],
@@ -897,11 +959,11 @@ static void MX_TIM2_Init(void)
   sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC1Filter = 15;
-  sConfig.IC2Polarity = TIM_ICPOLARITY_FALLING;
+  sConfig.IC1Filter = 10;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC2Filter = 15;
+  sConfig.IC2Filter = 10;
   if (HAL_TIM_Encoder_Init(&htim2, &sConfig) != HAL_OK)
   {
     Error_Handler();
