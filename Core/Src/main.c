@@ -249,7 +249,8 @@ int main(void)
   int reaction_wheel_previous_count = 0;
   int reaction_wheel_count = 0;
   int reaction_wheel_frequency = 0;
-  float reaction_wheel_velocity = 0.0;
+  float reactionwheel_acceleration = 0.0;
+  float reactionwheel_velocity = 0.0;
   int initialization_delay = 10;
   int sensor_delay = 1;
   Imu imu1, imu2, imu3, imu4;
@@ -340,8 +341,8 @@ int main(void)
   float gamma = 0.0;
   float fused_gamma = 0.0;
   // tuning parameters to minimize estimate variance
-  float kappa1 = 0.05;
-  float kappa2 = 0.05;
+  float kappa1 = 0.02;
+  float kappa2 = 0.02;
   // the average of the body angular rate from rate gyro
   float r[3] = {0.0, 0.0, 0.0};
   // the average of the body angular rate in Euler angles
@@ -367,11 +368,11 @@ int main(void)
   float roll = 0.0;
   float pitch = 0.0;
   float yaw = 0.0;
-  float k1 = 155.0;
-  float k2 = 300.0;
-  float k3 = 500.0;
-  float k4 = 3.0;
-  float kp = 80.0;
+  float k1 = 290.0;
+  float k2 = 500.0;
+  float k3 = 4.0;
+  float k4 = 4.0;
+  float kp = 100.0;
   float ki = 3.0;
   float kd = 5.0;
   float smooth = 1.0;
@@ -590,6 +591,7 @@ int main(void)
 
     roll_acceleration = (fused_gamma - roll) - roll_velocity;
     roll_velocity = fused_gamma - roll;
+    pitch_velocity = fused_beta - pitch;
     pitch = fused_beta;
     roll = fused_gamma;
 
@@ -599,7 +601,8 @@ int main(void)
     reaction_wheel_count = (TIM3->CNT);
     
     rolling_wheel_frequency = rolling_wheel_count - rolling_wheel_previous_count;
-    reaction_wheel_frequency = reaction_wheel_count - reaction_wheel_previous_count;
+    reactionwheel_acceleration = (reaction_wheel_count - reaction_wheel_previous_count) - reactionwheel_velocity;
+    reactionwheel_velocity = reaction_wheel_count - reaction_wheel_previous_count;
 
     // q1_dotdot = (roll - q1) - q1_dot;
     // q1_dot = roll - q1;
@@ -651,7 +654,7 @@ int main(void)
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, GPIO_PIN_RESET);
     }
 
-    reaction_wheel_speed = (int)(smooth * fabs(k1 * roll + k2 * roll_velocity + k3 * roll_acceleration + k4 * fabs((float)reaction_wheel_frequency)) + (1.0 - smooth) * (float)reaction_wheel_speed);
+    reaction_wheel_speed = (int)(smooth * fabs(k1 * roll + k2 * roll_velocity + k3 * fabs(reactionwheel_velocity) + k4 * fabs(reactionwheel_acceleration)) + (1.0 - smooth) * (float)reaction_wheel_speed);
     if (reaction_wheel_speed > 255) {
       reaction_wheel_speed = 255;
     }
@@ -665,7 +668,7 @@ int main(void)
       rolling_wheel_integrator = -windup;
     }
 
-    rolling_wheel_speed = (int)(smooth * fabs(kp * pitch + kd * r_dot[1] + rolling_wheel_integrator) + (1.0 - smooth) * (float)rolling_wheel_speed); //PID function
+    rolling_wheel_speed = (int)(smooth * fabs(kp * pitch + kd * pitch_velocity + rolling_wheel_integrator) + (1.0 - smooth) * (float)rolling_wheel_speed); //PID function
     if (rolling_wheel_speed > 255) {
       rolling_wheel_speed = 255;
     }
@@ -700,17 +703,17 @@ int main(void)
       transmit = 1;
     }
     if (transmit == 1) {
-      // transmit = 0;
+      transmit = 0;
       log_counter = 0;
       // use these log templates for software feature design
-      sprintf(MSG, "beta: %0.2f, gamma: %0.2f, k1*roll: %0.2f, k2*droll: %0.2f, k3*ddroll: %0.2f, k4*f2: %0.2f, speed: %0.2f, init: %d%d%d%d, dt: %0.6f\r\n",
-              fused_beta, fused_gamma, k1 * roll, k2 * roll_velocity, k3 * roll_acceleration, k4 * fabs((float)reaction_wheel_frequency),
-              fabs(k1 * roll + k2 * roll_velocity + k3 * roll_acceleration + k4 * fabs((float)reaction_wheel_frequency)), init1, init2, init3, init4, dt);
+      // sprintf(MSG, "beta: %0.2f, gamma: %0.2f, k1*roll: %0.2f, k2*droll: %0.2f, k3*ddroll: %0.2f, k4*f2: %0.2f, speed: %0.2f, init: %d%d%d%d, dt: %0.6f\r\n",
+      //         fused_beta, fused_gamma, k1 * roll, k2 * roll_velocity, k3 * roll_acceleration, k4 * fabs((float)reaction_wheel_frequency),
+      //         fabs(k1 * roll + k2 * roll_velocity + k3 * roll_acceleration + k4 * fabs((float)reaction_wheel_frequency)), init1, init2, init3, init4, dt);
       // sprintf(MSG, "beta: %0.2f, gamma: %0.2f, rolv: %0.2f, reav: %0.2f, f1: %d, init: %d%d%d%d, dt: %0.6f\r\n",
       //         fused_beta, fused_gamma, rolling_wheel_speed, reaction_wheel_speed, reaction_wheel_frequency, init1, init2, init3, init4, dt);
-      // sprintf(MSG, "beta: %0.2f, gamma: %0.2f, A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
-      //         fused_beta, fused_gamma, imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az,
-      //         rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
+      sprintf(MSG, "beta: %0.2f, gamma: %0.2f, A1: %0.2f, %0.2f, %0.2f, A2: %0.2f, %0.2f, %0.2f, A3: %0.2f, %0.2f, %0.2f, A4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
+              fused_beta, fused_gamma, imu1.Ax, imu1.Ay, imu1.Az, imu2.Ax, imu2.Ay, imu2.Az, imu3.Ax, imu3.Ay, imu3.Az, imu4.Ax, imu4.Ay, imu4.Az,
+              rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
       // sprintf(MSG, "Pitch: %0.2f, Roll: %0.2f, R1: %0.2f, %0.2f, %0.2f, R2: %0.2f, %0.2f, %0.2f, R3: %0.2f, %0.2f, %0.2f, R4: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
       //         beta, gamma, R1[0], R1[1], R1[2], R2[0], R2[1], R2[2], R3[0], R3[1], R3[2], R4[0], R4[1], R4[2],
       //         rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
