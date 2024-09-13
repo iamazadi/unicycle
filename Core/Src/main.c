@@ -369,14 +369,14 @@ int main(void)
   float pitch = 0.0;
   float yaw = 0.0;
   float k1 = 290.0;
-  float k2 = 500.0;
+  float k2 = 100.0;
   float k3 = 4.0;
   float k4 = 4.0;
   float kp = 100.0;
   float ki = 3.0;
   float kd = 5.0;
   float smooth = 1.0;
-  float windup = 10.0;
+  float windup = 20.0;
   float rolling_wheel_integrator = 0.0;
   float pitch_velocity = 0.0;
   float roll_velocity = 0.0;
