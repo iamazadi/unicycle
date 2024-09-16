@@ -244,13 +244,13 @@ int main(void)
   const float reaction_wheel_pulse = 26.0;
   int rolling_wheel_previous_count = 0;
   int rolling_wheel_count = 0;
-  int rolling_wheel_frequency = 0;
+  float rolling_wheel_frequency = 0;
   float rolling_wheel_velocity = 0.0;
   int reaction_wheel_previous_count = 0;
   int reaction_wheel_count = 0;
   int reaction_wheel_frequency = 0;
-  float reactionwheel_acceleration = 0.0;
-  float reactionwheel_velocity = 0.0;
+  float reaction_wheel_acceleration = 0.0;
+  float reaction_wheel_velocity = 0.0;
   int initialization_delay = 10;
   int sensor_delay = 1;
   Imu imu1, imu2, imu3, imu4;
@@ -287,7 +287,7 @@ int main(void)
   int init1, init2, init3, init4;
   int transmit = 0;
   int log_counter = 0;
-  const int LOG_CYCLE = 20;
+  const int LOG_CYCLE = 135;
 
   // the pivot point B̂ in the inertial frame Ô
   float pivot[3] = {-0.097, -0.1, -0.032};
@@ -341,8 +341,8 @@ int main(void)
   float gamma = 0.0;
   float fused_gamma = 0.0;
   // tuning parameters to minimize estimate variance
-  float kappa1 = 0.02;
-  float kappa2 = 0.02;
+  float kappa1 = 0.01;
+  float kappa2 = 0.01;
   // the average of the body angular rate from rate gyro
   float r[3] = {0.0, 0.0, 0.0};
   // the average of the body angular rate in Euler angles
@@ -362,22 +362,31 @@ int main(void)
                    {0.0, cos(gamma), -sin(gamma)},
                    {1.0, sin(gamma) * tan(beta), cos(gamma) * tan(beta)}};
 
+  int initialized = 0;
   float rolling_wheel_speed = 0.0;
   float reaction_wheel_speed = 0.0;
-  float safety_angle = 180.0;
-  float roll = 0.0;
+  float safety_angle = 10.0 / 180.0 * 3.14;
+  float pitch_average = 0.0;
+  float roll_average = 0.0;
   float pitch = 0.0;
+  float roll = 0.0;
+  float gyro_pitch = 0.0;
+  float gyro_roll = 0.0;
   float yaw = 0.0;
-  float k1 = 290.0;
-  float k2 = 100.0;
-  float k3 = 4.0;
-  float k4 = 4.0;
-  float kp = 100.0;
-  float ki = 3.0;
-  float kd = 5.0;
+  float reaction_wheel_ki = 1.0;
+  float k1 = 3000.0;
+  float k2 = 10000.0;
+  float k3 = 2000.0;
+  float k4 = 2000.0;
+  float k5 = 10000.0;
+  float kp = 5000.0;
+  float ki = 50.0;
+  float kd = 30.0;
   float smooth = 1.0;
-  float windup = 20.0;
+  float windup = 32.0;
+  float reaction_wheel_windup = 16.0;
   float rolling_wheel_integrator = 0.0;
+  float reaction_wheel_integrator = 0.0;
   float pitch_velocity = 0.0;
   float roll_velocity = 0.0;
   float roll_acceleration = 0.0;
@@ -399,8 +408,8 @@ int main(void)
   // full state estmation with encoders
   float encoder_beta = 0.0;
   float encoder_gamma = 0.0;
-  float pitch_target_angle = 0.0;
-  float roll_target_angle = 0.0;
+  float pitch_target_angle = 1.5 / 180.0 * 3.14;
+  float roll_target_angle = -4.0 / 180.0 * 3.14;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -438,7 +447,7 @@ int main(void)
   HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_2);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_1);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_2);
-  HAL_Delay(1000);
+  HAL_Delay(3000);
   HAL_Delay(initialization_delay);
   init1 = MPU6050_Init(hi2c1, MPU6050_ADDR);
   HAL_Delay(initialization_delay);
@@ -526,22 +535,18 @@ int main(void)
     beta = atan2(-g[0], sqrt(pow(g[1], 2) + pow(g[2], 2)));
     gamma = atan2(g[1], g[2]);
 
-    // beta = beta / 3.14 * 180.0;
-    // gamma = gamma / 3.14 * 180.0;
-
-
-    G1[0] = imu1.Gx + imu1.Gx_offset;
-    G1[1] = imu1.Gy + imu1.Gy_offset;
-    G1[2] = imu1.Gz + imu1.Gz_offset;
-    G2[0] = imu2.Gx + imu2.Gx_offset;
-    G2[1] = imu2.Gy + imu2.Gy_offset;
-    G2[2] = imu2.Gz + imu2.Gz_offset;
-    G3[0] = imu3.Gx + imu3.Gx_offset;
-    G3[1] = imu3.Gy + imu3.Gy_offset;
-    G3[2] = imu3.Gz + imu3.Gz_offset;
-    G4[0] = imu4.Gx + imu4.Gx_offset;
-    G4[1] = imu4.Gy + imu4.Gy_offset;
-    G4[2] = imu4.Gz + imu4.Gz_offset;
+    G1[0] = (imu1.Gx + imu1.Gx_offset) / 180.0 * 3.14;
+    G1[1] = (imu1.Gy + imu1.Gy_offset) / 180.0 * 3.14;
+    G1[2] = (imu1.Gz + imu1.Gz_offset) / 180.0 * 3.14;
+    G2[0] = (imu2.Gx + imu2.Gx_offset) / 180.0 * 3.14;
+    G2[1] = (imu2.Gy + imu2.Gy_offset) / 180.0 * 3.14;
+    G2[2] = (imu2.Gz + imu2.Gz_offset) / 180.0 * 3.14;
+    G3[0] = (imu3.Gx + imu3.Gx_offset) / 180.0 * 3.14;
+    G3[1] = (imu3.Gy + imu3.Gy_offset) / 180.0 * 3.14;
+    G3[2] = (imu3.Gz + imu3.Gz_offset) / 180.0 * 3.14;
+    G4[0] = (imu4.Gx + imu4.Gx_offset) / 180.0 * 3.14;
+    G4[1] = (imu4.Gy + imu4.Gy_offset) / 180.0 * 3.14;
+    G4[2] = (imu4.Gz + imu4.Gz_offset) / 180.0 * 3.14;
 
     _G1[0] = 0.0;
     _G1[1] = 0.0;
@@ -568,14 +573,14 @@ int main(void)
     }
 
     E[0][0] = 0.0;
-    E[0][1] = sin(gamma) / cos(beta);
-    E[0][2] = cos(gamma) / cos(beta);
+    E[0][1] = sin(fused_gamma) / cos(fused_beta);
+    E[0][2] = cos(fused_gamma) / cos(fused_beta);
     E[1][0] = 0.0;
-    E[1][1] = cos(gamma);
-    E[1][2] = -sin(gamma);
+    E[1][1] = cos(fused_gamma);
+    E[1][2] = -sin(fused_gamma);
     E[2][0] = 1.0;
-    E[2][1] = sin(gamma) * tan(beta);
-    E[2][2] = cos(gamma) * tan(beta);
+    E[2][1] = sin(fused_gamma) * tan(fused_beta);
+    E[2][2] = cos(fused_gamma) * tan(fused_beta);
 
     r_dot[0] = 0.0;
     r_dot[1] = 0.0;
@@ -586,23 +591,37 @@ int main(void)
       }
     }
 
-    fused_beta = kappa1 * beta + (1.0 - kappa1) * (fused_beta + dt * r_dot[1]);
-    fused_gamma = kappa2 * gamma + (1.0 - kappa2) * (fused_gamma + dt * r_dot[2]);
+    if (initialized == 1) {
+      gyro_pitch += dt * (0.8 * r_dot[1] + 0.2 * pitch_velocity);
+      gyro_roll += dt * (0.8 * r_dot[2] + 0.2 * roll_velocity);
+    } else {
+      gyro_pitch = beta;
+      gyro_roll = gamma;
+      initialized = 1;
+    }
+    
+    fused_beta = kappa1 * beta + (1.0 - kappa1) * gyro_pitch;
+    fused_gamma = kappa2 * gamma + (1.0 - kappa2) * gyro_roll;
+    // fused_beta = kappa1 * beta + (1.0 - kappa1) * (fused_beta + dt * r_dot[1]);
+    // fused_gamma = kappa2 * gamma + (1.0 - kappa2) * (fused_gamma + dt * r_dot[2]);
 
     roll_acceleration = (fused_gamma - roll) - roll_velocity;
     roll_velocity = fused_gamma - roll;
+    roll = fused_gamma;
     pitch_velocity = fused_beta - pitch;
     pitch = fused_beta;
-    roll = fused_gamma;
+
+    pitch_average = 0.99 * pitch_average + 0.01 * pitch;
+    roll_average = 0.99 * roll_average + 0.01 * roll;
 
     rolling_wheel_previous_count = rolling_wheel_count;
     reaction_wheel_previous_count = reaction_wheel_count;
     rolling_wheel_count = (TIM2->CNT);
     reaction_wheel_count = (TIM3->CNT);
     
-    rolling_wheel_frequency = rolling_wheel_count - rolling_wheel_previous_count;
-    reactionwheel_acceleration = (reaction_wheel_count - reaction_wheel_previous_count) - reactionwheel_velocity;
-    reactionwheel_velocity = reaction_wheel_count - reaction_wheel_previous_count;
+    rolling_wheel_frequency = (float) (rolling_wheel_count - rolling_wheel_previous_count) / 1750.0 * 2.0 * 3.14 * dt;
+    reaction_wheel_acceleration = rolling_wheel_frequency - reaction_wheel_velocity;
+    reaction_wheel_velocity = rolling_wheel_frequency ; // in radian per second
 
     // q1_dotdot = (roll - q1) - q1_dot;
     // q1_dot = roll - q1;
@@ -654,13 +673,21 @@ int main(void)
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, GPIO_PIN_RESET);
     }
 
-    reaction_wheel_speed = (int)(smooth * fabs(k1 * roll + k2 * roll_velocity + k3 * fabs(reactionwheel_velocity) + k4 * fabs(reactionwheel_acceleration)) + (1.0 - smooth) * (float)reaction_wheel_speed);
+    reaction_wheel_integrator = reaction_wheel_integrator + (roll - roll_target_angle) * reaction_wheel_ki;
+    if (reaction_wheel_integrator > reaction_wheel_windup) {
+      reaction_wheel_integrator = reaction_wheel_windup;
+    }
+    if (reaction_wheel_integrator < -reaction_wheel_windup) {
+      reaction_wheel_integrator = -reaction_wheel_windup;
+    }
+
+    reaction_wheel_speed = (int)(smooth * (fabs(k1 * (roll - roll_target_angle) + k2 * roll_velocity + k3 * roll_acceleration + reaction_wheel_integrator + k4 * fabs(reaction_wheel_velocity) + k5 * fabs(reaction_wheel_acceleration))) + (1.0 - smooth) * (float)reaction_wheel_speed);
     if (reaction_wheel_speed > 255) {
       reaction_wheel_speed = 255;
     }
 
 
-    rolling_wheel_integrator = rolling_wheel_integrator + pitch * ki;
+    rolling_wheel_integrator = rolling_wheel_integrator + (pitch - pitch_target_angle) * ki;
     if (rolling_wheel_integrator > windup) {
       rolling_wheel_integrator = windup;
     }
@@ -668,11 +695,11 @@ int main(void)
       rolling_wheel_integrator = -windup;
     }
 
-    rolling_wheel_speed = (int)(smooth * fabs(kp * pitch + kd * pitch_velocity + rolling_wheel_integrator) + (1.0 - smooth) * (float)rolling_wheel_speed); //PID function
+    rolling_wheel_speed = (int)(smooth * fabs(kp * (pitch - pitch_target_angle) + kd * pitch_velocity + rolling_wheel_integrator) + (1.0 - smooth) * (float)rolling_wheel_speed); //PID function
     if (rolling_wheel_speed > 255) {
       rolling_wheel_speed = 255;
     }
-    if ((pitch > safety_angle) || (pitch < -safety_angle) || (roll > safety_angle) || (roll < -safety_angle)) {
+    if ((pitch_average > safety_angle) || (pitch_average < -safety_angle) || (roll_average > safety_angle) || (roll_average < -safety_angle)) {
       rolling_wheel_speed = 0; // the controller is active in -10~+10 deg range
       reaction_wheel_speed = 0;
     }
@@ -691,9 +718,6 @@ int main(void)
       __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 255 * reaction_wheel_speed);
     }
 
-    // Toggle the LED
-    //HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-
     // Wait for 1 ms
     // HAL_Delay(1);
     
@@ -705,6 +729,8 @@ int main(void)
     if (transmit == 1) {
       transmit = 0;
       log_counter = 0;
+      // Toggle the LED
+      HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
       // use these log templates for software feature design
       // sprintf(MSG, "beta: %0.2f, gamma: %0.2f, k1*roll: %0.2f, k2*droll: %0.2f, k3*ddroll: %0.2f, k4*f2: %0.2f, speed: %0.2f, init: %d%d%d%d, dt: %0.6f\r\n",
       //         fused_beta, fused_gamma, k1 * roll, k2 * roll_velocity, k3 * roll_acceleration, k4 * fabs((float)reaction_wheel_frequency),
@@ -725,7 +751,7 @@ int main(void)
       // sprintf(MSG, "beta: %0.2f, fused beta: %0.2f, gamma: %0.2f, fused_gamma: %0.2f, r: %0.2f, %0.2f, %0.2f, c1: %d, c2: %d, init: %d%d%d%d, dt: %0.6f\r\n",
       //         beta, fused_beta, gamma, fused_gamma, r[0], r[1], r[2],
       //         rolling_wheel_count, reaction_wheel_count, init1, init2, init3, init4, dt);
-      HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), TRANSMIT_LENGTH);
+      HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 1000);
     }
     
     t2 = DWT->CYCCNT;
