@@ -373,18 +373,18 @@ int main(void)
   float gyro_pitch = 0.0;
   float gyro_roll = 0.0;
   float yaw = 0.0;
-  float reaction_wheel_ki = 1.0;
+  float reaction_wheel_ki = 1000.0;
   float k1 = 3000.0;
   float k2 = 10000.0;
-  float k3 = 2000.0;
+  float k3 = 2500.0;
   float k4 = 2000.0;
   float k5 = 10000.0;
-  float kp = 5000.0;
+  float kp = 6000.0;
   float ki = 50.0;
   float kd = 30.0;
   float smooth = 1.0;
   float windup = 32.0;
-  float reaction_wheel_windup = 16.0;
+  float reaction_wheel_windup = 64.0;
   float rolling_wheel_integrator = 0.0;
   float reaction_wheel_integrator = 0.0;
   float pitch_velocity = 0.0;
@@ -702,6 +702,7 @@ int main(void)
     if ((pitch_average > safety_angle) || (pitch_average < -safety_angle) || (roll_average > safety_angle) || (roll_average < -safety_angle)) {
       rolling_wheel_speed = 0; // the controller is active in -10~+10 deg range
       reaction_wheel_speed = 0;
+      initialized = 0;
     }
     if (pitch > pitch_target_angle) {
       __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 255 * rolling_wheel_speed);
