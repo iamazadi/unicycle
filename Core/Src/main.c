@@ -77,16 +77,7 @@ int receive_ok = 0;
 int configured = 0;
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    // if (configured == 1)
-    // {
-    HAL_UART_Receive_DMA(&huart, UART1_rxBuffer, RECEIVE_FRAME_LENGTH);
-    HAL_UART_Transmit(&huart, UART1_txBuffer, TRANSMIT_FRAME_LENGTH, 100);
-  // }
-  // else
-  // {
-  //   HAL_UART_Transmit(&huart, UART1_txBuffer_cfg, TRANSMIT_FRAME_LENGTH, 100);
-  //   HAL_UART_Receive_DMA(&huart, UART1_rxBuffer, TRANSMIT_FRAME_LENGTH);
-  // }
+  HAL_UART_Receive_DMA(&huart, UART1_rxBuffer, RECEIVE_FRAME_LENGTH);
   receive_ok = 1;
 }
 typedef struct
@@ -100,6 +91,18 @@ typedef struct
   int16_t roll;
   int16_t pitch;
   int16_t yaw;
+  float calibrated_acc_x;
+  float calibrated_acc_y;
+  float calibrated_acc_z;
+  float calibrated_gyro_x;
+  float calibrated_gyro_y;
+  float calibrated_gyro_z;
+  float acc_x_offset;
+  float acc_y_offset;
+  float acc_z_offset;
+  float gyro_x_offset;
+  float gyro_y_offset;
+  float gyro_z_offset;
 } gy;
 void setServoAngle(uint32_t angle)
 {
@@ -113,9 +116,9 @@ void setServoAngle(uint32_t angle)
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief  The application entry point.
+ * @retval int
+ */
 int main(void)
 {
 
@@ -136,21 +139,23 @@ int main(void)
   int log_counter = 0;
   const int LOG_CYCLE = 1;
   uint8_t sum = 0, i = 0;
-  gy my_25t = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+  gy my_25t = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
   uint8_t printstr[2 * RECEIVE_FRAME_LENGTH + 1] = {0};
-  int counter = 0;
-  int maxcount = 360;
-  float k1 = 1.0;
-  float k2 = 30.0;
-  float roll_acc = 0.0;
-  float roll_gyro = 0.0;
+  float k1 = 4.5;
+  float k2 = 20.0;
+  float k3 = -20.0;
+  float roll = 0.0;
   float roll_velocity = 0.0;
+  float roll_velocity1 = 0.0;
+  float roll_velocity2 = 0.0;
+  float roll_acceleration = 0.0;
   float controller_output = 0.0;
-  float controller_coeficient1 = 9.0;
-  float controller_coeficient2 = 4.5;
+  float controller_coeficient1 = 2.0;
+  float controller_coeficient2 = 1.0;
   const float alpha = 0.5;
   const float safety_angle = 10.0;
-  float theta = 60.0 / 180.0 * 3.14;
+  float theta = -30.0 / 180.0 * 3.14;
+  int controller_active = 1;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -222,18 +227,19 @@ int main(void)
       HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
     }
 
-    roll_velocity = roll_acc - (float)my_25t.acc_x / 100.0f;
-    roll_acc = (float)my_25t.acc_x / 100.0f;
-    roll_gyro = (float)my_25t.gyro_x / 100.0f;
-    if (fabs(roll_acc) < safety_angle)
+    if (controller_active == 1)
     {
-      controller_output = fabs(k1 * roll_acc + k2 * roll_velocity);
-      setServoAngle(roll_acc > 0.0 ? controller_coeficient1 * controller_output : controller_coeficient2 * controller_output + 90);
-    }
-    else
-    {
-      controller_output = 90.0;
-      setServoAngle(controller_output);
+      if (fabs(roll) < safety_angle)
+      {
+        controller_output = fabs(k1 * roll + k2 * roll_velocity + k3 * roll_acceleration);
+        controller_output = fmin(45.0, controller_output);
+        setServoAngle(roll > 0.0 ? controller_coeficient1 * controller_output : controller_coeficient2 * controller_output + 90);
+      }
+      else
+      {
+        controller_output = 90.0;
+        setServoAngle(controller_output);
+      }
     }
 
     log_counter++;
@@ -273,18 +279,35 @@ int main(void)
           my_25t.gyro_x = (UART1_rxBuffer[10] << 8) | UART1_rxBuffer[11];
           my_25t.gyro_y = (UART1_rxBuffer[12] << 8) | UART1_rxBuffer[13];
           my_25t.gyro_z = (UART1_rxBuffer[14] << 8) | UART1_rxBuffer[15];
-          my_25t.roll = (UART1_rxBuffer[16] << 8) | UART1_rxBuffer[17];
-          my_25t.pitch = (UART1_rxBuffer[18] << 8) | UART1_rxBuffer[19];
-          my_25t.yaw = (UART1_rxBuffer[20] << 8) | UART1_rxBuffer[21];
-          my_25t.acc_x = cos(theta) * my_25t.acc_x + -sin(theta) * my_25t.acc_y;
-          my_25t.acc_y = sin(theta) * my_25t.acc_x + cos(theta) * my_25t.acc_y;
-          my_25t.gyro_x = cos(theta) * my_25t.gyro_x + -sin(theta) * my_25t.gyro_y;
-          my_25t.gyro_y = sin(theta) * my_25t.gyro_x + cos(theta) * my_25t.gyro_y;
-          sprintf(MSG, "ID:%d, ACC_X:%0.2f, ACC_Y:%0.2f, ACC_Z:%0.2f, GYRO_X:%0.2f, GYRO_Y:%0.2f, GYRO_Z:%0.2f, ROLL:%.2f, PITCH:%.2f, YAW:%.2f, count:%d, dt: %0.6f\r\n",
-                  UART1_rxBuffer[0],
-                  (float)my_25t.acc_x / 100.0f, (float)my_25t.acc_y / 100.0f, (float)my_25t.acc_z / 100.0f,
-                  (float)my_25t.gyro_x / 100.0f, (float)my_25t.gyro_y / 100.0f, (float)my_25t.gyro_z / 100.0f,
-                  (float)my_25t.roll / 100.0f, (float)my_25t.pitch / 100.0f, (float)my_25t.yaw / 100, UART1_rxBuffer[3] + 4, dt);
+          my_25t.calibrated_acc_x = (float)my_25t.acc_x / 100.0f - my_25t.acc_x_offset;
+          my_25t.calibrated_acc_y = (float)my_25t.acc_y / 100.0f - my_25t.acc_y_offset;
+          my_25t.calibrated_acc_z = (float)my_25t.acc_z / 100.0f - my_25t.acc_z_offset;
+          my_25t.calibrated_gyro_x = (float)my_25t.gyro_x / 100.0f - my_25t.gyro_x_offset;
+          my_25t.calibrated_gyro_y = (float)my_25t.gyro_y / 100.0f - my_25t.gyro_y_offset;
+          my_25t.calibrated_gyro_z = (float)my_25t.gyro_z / 100.0f - my_25t.gyro_z_offset;
+          my_25t.calibrated_acc_x = cos(theta) * my_25t.calibrated_acc_x + -sin(theta) * my_25t.calibrated_acc_y;
+          my_25t.calibrated_acc_y = sin(theta) * my_25t.calibrated_acc_x + cos(theta) * my_25t.calibrated_acc_y;
+          my_25t.calibrated_gyro_x = cos(theta) * my_25t.calibrated_gyro_x + -sin(theta) * my_25t.calibrated_gyro_y;
+          my_25t.calibrated_gyro_y = sin(theta) * my_25t.calibrated_gyro_x + cos(theta) * my_25t.calibrated_gyro_y;
+
+          roll_velocity1 = roll_velocity2;
+          roll_velocity2 = my_25t.calibrated_gyro_y;
+          roll_acceleration = roll_velocity2 - roll_velocity1;
+          roll_velocity = my_25t.calibrated_acc_y - roll;
+          roll = my_25t.calibrated_acc_y;
+
+          // sprintf(MSG, "ID:%d, ACC_X:%0.2f, ACC_Y:%0.2f, ACC_Z:%0.2f, GYRO_X:%0.2f, GYRO_Y:%0.2f, GYRO_Z:%0.2f, count:%d, dt: %0.6f\r\n",
+          //         UART1_rxBuffer[0],
+          //         (float)my_25t.acc_x / 100.0f, (float)my_25t.acc_y / 100.0f, (float)my_25t.acc_z / 100.0f,
+          //         (float)my_25t.gyro_x / 100.0f, (float)my_25t.gyro_y / 100.0f, (float)my_25t.gyro_z / 100.0f, UART1_rxBuffer[3] + 4, dt);
+          // sprintf(MSG, "ID:%d, ACC_X:%0.2f, ACC_Y:%0.2f, ACC_Z:%0.2f, GYRO_X:%0.2f, GYRO_Y:%0.2f, GYRO_Z:%0.2f, count:%d, dt: %0.6f\r\n",
+          //         UART1_rxBuffer[0],
+          //         my_25t.calibrated_acc_x, my_25t.calibrated_acc_y, my_25t.calibrated_acc_z,
+          //         my_25t.calibrated_gyro_x, my_25t.calibrated_gyro_y, my_25t.calibrated_gyro_z, UART1_rxBuffer[3] + 4, dt);
+          sprintf(MSG, "ID:%d, roll:%0.3f, velocity:%0.6f, acceleration:%0.6f, ACC_X:%0.2f, ACC_Y:%0.2f, GYRO_X:%0.2f, GYRO_Y:%0.2f, count:%d, dt: %0.6f\r\n",
+                  UART1_rxBuffer[0], roll, roll_velocity, roll_acceleration,
+                  my_25t.calibrated_acc_x, my_25t.calibrated_acc_y,
+                  my_25t.calibrated_gyro_x, my_25t.calibrated_gyro_y, UART1_rxBuffer[3] + 4, dt);
           receive_ok = 0;
           // Toggle the LED
           HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
@@ -312,22 +335,22 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
+ * @brief System Clock Configuration
+ * @retval None
+ */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-  */
+   */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+   * in the RCC_OscInitTypeDef structure.
+   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -343,9 +366,8 @@ void SystemClock_Config(void)
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+   */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
@@ -358,10 +380,10 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief TIM2 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief TIM2 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_TIM2_Init(void)
 {
 
@@ -377,9 +399,9 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 84-1;
+  htim2.Init.Prescaler = 84 - 1;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 20000-1;
+  htim2.Init.Period = 20000 - 1;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -413,14 +435,13 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 2 */
   HAL_TIM_MspPostInit(&htim2);
-
 }
 
 /**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART1_UART_Init(void)
 {
 
@@ -446,14 +467,13 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
-
 }
 
 /**
-  * @brief USART6 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART6 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART6_UART_Init(void)
 {
 
@@ -479,12 +499,11 @@ static void MX_USART6_UART_Init(void)
   /* USER CODE BEGIN USART6_Init 2 */
 
   /* USER CODE END USART6_Init 2 */
-
 }
 
 /**
-  * Enable DMA controller clock
-  */
+ * Enable DMA controller clock
+ */
 static void MX_DMA_Init(void)
 {
 
@@ -495,19 +514,18 @@ static void MX_DMA_Init(void)
   /* DMA2_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
-
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-/* USER CODE BEGIN MX_GPIO_Init_1 */
-/* USER CODE END MX_GPIO_Init_1 */
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+  /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -525,7 +543,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : USART_TX_Pin USART_RX_Pin */
-  GPIO_InitStruct.Pin = USART_TX_Pin|USART_RX_Pin;
+  GPIO_InitStruct.Pin = USART_TX_Pin | USART_RX_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -539,8 +557,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
-/* USER CODE BEGIN MX_GPIO_Init_2 */
-/* USER CODE END MX_GPIO_Init_2 */
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -548,9 +566,9 @@ static void MX_GPIO_Init(void)
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -562,14 +580,14 @@ void Error_Handler(void)
   /* USER CODE END Error_Handler_Debug */
 }
 
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
