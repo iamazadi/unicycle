@@ -45,6 +45,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+TIM_HandleTypeDef htim2;
+
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart6;
 DMA_HandleTypeDef hdma_usart1_rx;
@@ -59,6 +61,7 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART6_UART_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -67,14 +70,24 @@ static void MX_USART6_UART_Init(void);
 /* USER CODE BEGIN 0 */
 uint8_t UART1_rxBuffer[RECEIVE_FRAME_LENGTH] = {0};
 uint8_t UART1_txBuffer[TRANSMIT_FRAME_LENGTH] = {0xA4, 0x03, 0x08, 0x12, 0xC1};
+uint8_t UART1_txBuffer_cfg[TRANSMIT_FRAME_LENGTH] = {0xA4, 0x06, 0x01, 0x06, 0xB1};
 // response: a4030812f93dfbcf002a000100010001ddb416bafffa48
 // response: a4030812f93dfbce0028000100010002ddae16b9ffe227
 int receive_ok = 0;
+int configured = 0;
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-  HAL_UART_Receive_DMA(&huart, UART1_rxBuffer, RECEIVE_FRAME_LENGTH);
+    // if (configured == 1)
+    // {
+    HAL_UART_Receive_DMA(&huart, UART1_rxBuffer, RECEIVE_FRAME_LENGTH);
+    HAL_UART_Transmit(&huart, UART1_txBuffer, TRANSMIT_FRAME_LENGTH, 100);
+  // }
+  // else
+  // {
+  //   HAL_UART_Transmit(&huart, UART1_txBuffer_cfg, TRANSMIT_FRAME_LENGTH, 100);
+  //   HAL_UART_Receive_DMA(&huart, UART1_rxBuffer, TRANSMIT_FRAME_LENGTH);
+  // }
   receive_ok = 1;
-  HAL_UART_Transmit(&huart, UART1_txBuffer, TRANSMIT_FRAME_LENGTH, 100);
 }
 typedef struct
 {
@@ -88,12 +101,21 @@ typedef struct
   int16_t pitch;
   int16_t yaw;
 } gy;
+void setServoAngle(uint32_t angle)
+{
+  if (angle > 180)
+    angle = 180;
+  uint32_t minPulseWidth = 1000; // 1ms pulse width at a 1MHz clock
+  uint32_t maxPulseWidth = 2000; // 2ms pulse width
+  uint32_t pulse = ((angle * (maxPulseWidth - minPulseWidth)) / 180) + minPulseWidth;
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, pulse); // Changed to TIM2, Channel 1
+}
 /* USER CODE END 0 */
 
 /**
- * @brief  The application entry point.
- * @retval int
- */
+  * @brief  The application entry point.
+  * @retval int
+  */
 int main(void)
 {
 
@@ -112,10 +134,23 @@ int main(void)
   const float CPU_CLOCK = 84000000.0;
   int transmit = 0;
   int log_counter = 0;
-  const int LOG_CYCLE = 100;
+  const int LOG_CYCLE = 1;
   uint8_t sum = 0, i = 0;
   gy my_25t = {0, 0, 0, 0, 0, 0, 0, 0, 0};
   uint8_t printstr[2 * RECEIVE_FRAME_LENGTH + 1] = {0};
+  int counter = 0;
+  int maxcount = 360;
+  float k1 = 1.0;
+  float k2 = 30.0;
+  float roll_acc = 0.0;
+  float roll_gyro = 0.0;
+  float roll_velocity = 0.0;
+  float controller_output = 0.0;
+  float controller_coeficient1 = 9.0;
+  float controller_coeficient2 = 4.5;
+  const float alpha = 0.5;
+  const float safety_angle = 10.0;
+  float theta = 60.0 / 180.0 * 3.14;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -139,12 +174,16 @@ int main(void)
   MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_USART6_UART_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
   HAL_Delay(30);
   HAL_UART_Receive_DMA(&huart1, UART1_rxBuffer, RECEIVE_FRAME_LENGTH);
-  HAL_Delay(3000);
+  HAL_Delay(1000);
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+  HAL_Delay(30);
+  setServoAngle(90.0);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -159,6 +198,20 @@ int main(void)
 
     // Wait for 1 ms
     // HAL_Delay(1);
+    // 0-90 clockwise
+    // 90-135 anti-clockwise
+    // Move from 0 to 180 degrees
+    // for (uint32_t angle = 90; angle <= 135; angle++) {
+    // 	 setServoAngle(angle);
+    // 	 HAL_Delay(100); // Adjust delay for speed control
+    //  }
+    // HAL_Delay(2000);
+    // // Move from 180 to 0 degrees
+    // for (uint32_t angle = 135; angle > 90; angle--) {
+    // 	 setServoAngle(angle);
+    // 	 HAL_Delay(100); // Adjust delay for speed control
+    //  }
+    // HAL_Delay(2000);
 
     if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == 0)
     {
@@ -167,6 +220,20 @@ int main(void)
     else
     {
       HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+    }
+
+    roll_velocity = roll_acc - (float)my_25t.acc_x / 100.0f;
+    roll_acc = (float)my_25t.acc_x / 100.0f;
+    roll_gyro = (float)my_25t.gyro_x / 100.0f;
+    if (fabs(roll_acc) < safety_angle)
+    {
+      controller_output = fabs(k1 * roll_acc + k2 * roll_velocity);
+      setServoAngle(roll_acc > 0.0 ? controller_coeficient1 * controller_output : controller_coeficient2 * controller_output + 90);
+    }
+    else
+    {
+      controller_output = 90.0;
+      setServoAngle(controller_output);
     }
 
     log_counter++;
@@ -179,13 +246,26 @@ int main(void)
       transmit = 0;
       log_counter = 0;
 
+      // if (configured == 0)
+      // {
+      //   if (receive_ok == 1)
+      //   {
+      //     if (UART1_rxBuffer[0] == UART1_txBuffer_cfg[0] && UART1_rxBuffer[1] == UART1_txBuffer_cfg[1] &&
+      //         UART1_rxBuffer[2] == UART1_txBuffer_cfg[2] && UART1_rxBuffer[3] == UART1_txBuffer_cfg[3] &&
+      //         UART1_rxBuffer[4] == UART1_txBuffer_cfg[4])
+      //     {
+      //       configured = 1;
+      //     }
+      //   }
+      // }
+
       if (receive_ok == 1)
       {
         for (sum = 0, i = 0; i < (UART1_rxBuffer[3] + 4); i++)
         {
           sum += UART1_rxBuffer[i];
         }
-        if (sum == UART1_rxBuffer[i])
+        if (sum == UART1_rxBuffer[i] && UART1_rxBuffer[0] == 164)
         {
           my_25t.acc_x = (UART1_rxBuffer[4] << 8) | UART1_rxBuffer[5];
           my_25t.acc_y = (UART1_rxBuffer[6] << 8) | UART1_rxBuffer[7];
@@ -196,6 +276,10 @@ int main(void)
           my_25t.roll = (UART1_rxBuffer[16] << 8) | UART1_rxBuffer[17];
           my_25t.pitch = (UART1_rxBuffer[18] << 8) | UART1_rxBuffer[19];
           my_25t.yaw = (UART1_rxBuffer[20] << 8) | UART1_rxBuffer[21];
+          my_25t.acc_x = cos(theta) * my_25t.acc_x + -sin(theta) * my_25t.acc_y;
+          my_25t.acc_y = sin(theta) * my_25t.acc_x + cos(theta) * my_25t.acc_y;
+          my_25t.gyro_x = cos(theta) * my_25t.gyro_x + -sin(theta) * my_25t.gyro_y;
+          my_25t.gyro_y = sin(theta) * my_25t.gyro_x + cos(theta) * my_25t.gyro_y;
           sprintf(MSG, "ID:%d, ACC_X:%0.2f, ACC_Y:%0.2f, ACC_Z:%0.2f, GYRO_X:%0.2f, GYRO_Y:%0.2f, GYRO_Z:%0.2f, ROLL:%.2f, PITCH:%.2f, YAW:%.2f, count:%d, dt: %0.6f\r\n",
                   UART1_rxBuffer[0],
                   (float)my_25t.acc_x / 100.0f, (float)my_25t.acc_y / 100.0f, (float)my_25t.acc_z / 100.0f,
@@ -228,22 +312,22 @@ int main(void)
 }
 
 /**
- * @brief System Clock Configuration
- * @retval None
- */
+  * @brief System Clock Configuration
+  * @retval None
+  */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-   */
+  */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-   * in the RCC_OscInitTypeDef structure.
-   */
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -259,8 +343,9 @@ void SystemClock_Config(void)
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-   */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
@@ -273,10 +358,69 @@ void SystemClock_Config(void)
 }
 
 /**
- * @brief USART1 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 84-1;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 20000-1;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+  HAL_TIM_MspPostInit(&htim2);
+
+}
+
+/**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART1_UART_Init(void)
 {
 
@@ -302,13 +446,14 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
+
 }
 
 /**
- * @brief USART6 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief USART6 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART6_UART_Init(void)
 {
 
@@ -334,11 +479,12 @@ static void MX_USART6_UART_Init(void)
   /* USER CODE BEGIN USART6_Init 2 */
 
   /* USER CODE END USART6_Init 2 */
+
 }
 
 /**
- * Enable DMA controller clock
- */
+  * Enable DMA controller clock
+  */
 static void MX_DMA_Init(void)
 {
 
@@ -349,18 +495,19 @@ static void MX_DMA_Init(void)
   /* DMA2_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
+
 }
 
 /**
- * @brief GPIO Initialization Function
- * @param None
- * @retval None
- */
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
-  /* USER CODE END MX_GPIO_Init_1 */
+/* USER CODE BEGIN MX_GPIO_Init_1 */
+/* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -378,7 +525,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : USART_TX_Pin USART_RX_Pin */
-  GPIO_InitStruct.Pin = USART_TX_Pin | USART_RX_Pin;
+  GPIO_InitStruct.Pin = USART_TX_Pin|USART_RX_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -392,8 +539,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-  /* USER CODE END MX_GPIO_Init_2 */
+/* USER CODE BEGIN MX_GPIO_Init_2 */
+/* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -401,9 +548,9 @@ static void MX_GPIO_Init(void)
 /* USER CODE END 4 */
 
 /**
- * @brief  This function is executed in case of error occurrence.
- * @retval None
- */
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -415,14 +562,14 @@ void Error_Handler(void)
   /* USER CODE END Error_Handler_Debug */
 }
 
-#ifdef USE_FULL_ASSERT
+#ifdef  USE_FULL_ASSERT
 /**
- * @brief  Reports the name of the source file and the source line number
- *         where the assert_param error has occurred.
- * @param  file: pointer to the source file name
- * @param  line: assert_param error line source number
- * @retval None
- */
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
