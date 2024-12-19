@@ -178,7 +178,7 @@ int main(void)
 
   uint8_t MSG[TRANSMIT_LENGTH] = {'\0'};
   const float CPU_CLOCK = 84000000.0;
-  const int LOG_CYCLE = 1000;
+  const int LOG_CYCLE = 100;
   const float alpha = 0.95;                  // for alpha-smoothing of the controller output
   const float theta = -30.0 / 180.0 * 3.14; // sensor frame rotation in X-Y plane
   const float reaction_dithering_angle = 2.0;
@@ -411,8 +411,8 @@ int main(void)
       transmit = 0;
       log_counter = 0;
 
-      sprintf(MSG, "roll: %0.2f, pitch: %0.2f, roll_vel: %0.2f, pitch_vel: %0.2f, setpoint: %0.2f, integrator:%0.2f, output: %0.2f, accum: %0.2f, dt: %0.6f\r\n",
-              roll, pitch, roll_velocity, pitch_velocity, rolling_ctrl.setpoint, rolling_ctrl.integrator, rolling_ctrl.output, reaction_accumulator, dt);
+      sprintf(MSG, "roll: %0.2f, pitch: %0.2f, v1: %0.2f, v2: %0.2f, dt: %0.6f\r\n",
+              roll, pitch, reaction_ctrl.output, rolling_ctrl.output, dt);
       // sprintf(MSG, "ID:%d, ACC_X:%0.2f, ACC_Y:%0.2f, ACC_Z:%0.2f, GYRO_X:%0.2f, GYRO_Y:%0.2f, GYRO_Z:%0.2f, count:%d, dt: %0.6f\r\n",
       //         UART1_rxBuffer[0],
       //         my_25t.calibrated_acc_x, my_25t.calibrated_acc_y, my_25t.calibrated_acc_z,
