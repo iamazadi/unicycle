@@ -46,6 +46,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
@@ -65,6 +66,7 @@ static void MX_USART1_UART_Init(void);
 static void MX_USART6_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -117,6 +119,19 @@ typedef struct
   float gyro_y_offset;
   float gyro_z_offset;
 } gy;
+typedef struct
+{
+  float kp;
+  float ki;
+  float kd;
+  float windup;
+  float safety_angle;
+  float target_angle;
+  float setpoint;
+  float integrator;
+  float output;
+  int active;
+} controller;
 void setServoAngle(uint32_t angle)
 {
   if (angle > 180)
@@ -162,44 +177,40 @@ int main(void)
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
   uint8_t MSG[TRANSMIT_LENGTH] = {'\0'};
+  const float CPU_CLOCK = 84000000.0;
+  const int LOG_CYCLE = 1000;
+  const float alpha = 0.95;                  // for alpha-smoothing of the controller output
+  const float theta = -30.0 / 180.0 * 3.14; // sensor frame rotation in X-Y plane
+  const float reaction_dithering_angle = 2.0;
+  const float reaction_dithering_scale = 1.0 / 10.0;
+  const float max_reaction_speed = 40.0;
+  const float max_rolling_speed = 250.0;
+  // sampling time
+  float dt = 0.0;
+  int transmit = 0;
+  int log_counter = 0;
   unsigned long t1 = 0;
   unsigned long t2 = 0;
   unsigned long diff = 0;
-  // sampling time
-  float dt = 0.0;
-  const float CPU_CLOCK = 84000000.0;
-  int transmit = 0;
-  int log_counter = 0;
-  const int LOG_CYCLE = 1000;
   uint8_t sum = 0, i = 0;
+  // fields: acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, roll, pitch, yaw,
+  //         calibrated_acc_x, calibrated_acc_y, calibrated_acc_z,
+  //         calibrated_gyro_x, calibrated_gyro_y, calibrated_gyro_z,
+  //         acc_x_offset, acc_y_offset, acc_z_offset,
+  //         gyro_x_offset, gyro_y_offset, gyro_z_offset.
   gy my_25t1 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
   gy my_25t2 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   uint8_t printstr[2 * RECEIVE_FRAME_LENGTH + 1] = {0};
-  float k1 = 4.5;
-  float k2 = 20.0;
-  float k3 = -20.0;
+  // fields: p, i, d, windup, safety angle, target angle, setpoint, integrator, output and active.
+  controller reaction_ctrl = {5.0, 20.0, 1.0, 10.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0};
+  controller rolling_ctrl = {9.0, 20.0, 1.0, 29.0, 12.0, 0.0, 0.0, 0.0, 0.0, 0};
   float roll = 0.0;
   float roll_velocity = 0.0;
-  float roll_velocity1 = 0.0;
-  float roll_velocity2 = 0.0;
-  float roll_acceleration = 0.0;
-  float controller_coeficient1 = 1.0;
-  float controller_coeficient2 = 1.0;
-  const float alpha = 0.95;
-  const float safety_angle = 10.0;
-  float theta = -30.0 / 180.0 * 3.14;
-  int controller_active = 1;
-  float integrator = 0.0;
-  float roll_target_angle = 0.0;
-  float kp = 5.0;
-  float ki = 10.0;
-  float kd = 1.0;
-  float windup = 10.0;
-  float speed = 0.0;
-  float accumulator = 0.0;
-  float setpoint = 0.0;
-  float servoangle = 0.0;
-  const float ditheringangle = 2.0;
+  float pitch = 0.0;
+  float pitch_velocity = 0.0;
+  float reaction_accumulator = 0.0;
+  float reaction_servoangle = 0.0;
+  int sensor_updated = 0;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -222,20 +233,23 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_USART1_UART_Init();
-  MX_USART2_UART_Init();
   MX_USART6_UART_Init();
   MX_TIM2_Init();
+  MX_USART2_UART_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
   HAL_Delay(10);
   HAL_UART_Receive_DMA(&huart1, UART1_rxBuffer, RECEIVE_FRAME_LENGTH);
-  HAL_Delay(10);
-  HAL_UART_Receive_DMA(&huart2, UART2_rxBuffer, RECEIVE_FRAME_LENGTH);
+  // HAL_Delay(10);
+  // HAL_UART_Receive_DMA(&huart2, UART2_rxBuffer, RECEIVE_FRAME_LENGTH);
   HAL_Delay(1000);
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
   HAL_Delay(30);
   setServoAngle(90.0);
+  HAL_Delay(100);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -248,60 +262,6 @@ int main(void)
 
     t1 = DWT->CYCCNT;
 
-    // Wait for 1 ms
-    // HAL_Delay(1);
-    // 0-90 clockwise
-    // 90-135 anti-clockwise
-    // Move from 0 to 180 degrees
-    // for (uint32_t angle = 90; angle <= 135; angle++) {
-    // 	 setServoAngle(angle);
-    // 	 HAL_Delay(100); // Adjust delay for speed control
-    //  }
-    // HAL_Delay(2000);
-    // // Move from 180 to 0 degrees
-    // for (uint32_t angle = 135; angle > 90; angle--) {
-    // 	 setServoAngle(angle);
-    // 	 HAL_Delay(100); // Adjust delay for speed control
-    //  }
-    // HAL_Delay(2000);
-
-    if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == 0)
-    {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-    }
-    else
-    {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-    }
-
-    if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == 0)
-    {
-      controller_active = 1;
-    }
-    else
-    {
-      controller_active = 0;
-      setServoAngle(90.0);
-    }
-
-    setpoint = roll_target_angle - accumulator;
-    accumulator = accumulator + (speed / 50.0);
-    accumulator = fmin(ditheringangle, accumulator);
-    accumulator = fmax(-ditheringangle, accumulator);
-
-    if (controller_active == 1)
-    {
-      if (fabs(roll) < safety_angle)
-      {
-        servoangle = alpha * servoangle + (1.0 - alpha) * speed;
-        setServoAngle(servoangle < 0 ? fabs(servoangle) : fabs(servoangle) + 90.0);
-      }
-      else
-      {
-        setServoAngle(90.0);
-      }
-    }
-
     if (receive_ok1 == 1)
     {
       for (sum = 0, i = 0; i < (UART1_rxBuffer[3] + 4); i++)
@@ -313,6 +273,7 @@ int main(void)
       {
         my_25t1 = parsedata(my_25t1, theta, UART1_rxBuffer);
         receive_ok1 = 0;
+        sensor_updated = 1;
       }
     }
 
@@ -331,22 +292,114 @@ int main(void)
       }
     }
 
-    roll_velocity = my_25t1.calibrated_acc_y - roll;
-    roll = my_25t1.calibrated_acc_y;
-
-    integrator = integrator + (roll - setpoint) * ki;
-    if (integrator > windup)
+    if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == 0)
     {
-      integrator = windup;
+      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
     }
-    if (integrator < -windup)
+    else
     {
-      integrator = -windup;
+      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
     }
 
-    speed = kp * (roll - setpoint) + kd * roll_velocity + integrator; // PID function
-    speed = fmin(45.0, speed);
-    speed = fmax(-45.0, speed);
+    if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == 0)
+    {
+      reaction_ctrl.active = 1;
+    }
+    else
+    {
+      reaction_ctrl.active = 0;
+      setServoAngle(90.0);
+    }
+
+    if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == 0)
+    {
+      rolling_ctrl.active = 1;
+    }
+    else
+    {
+      rolling_ctrl.active = 0;
+    }
+
+    if (sensor_updated == 1)
+    {
+      roll_velocity = my_25t1.calibrated_acc_y - roll;
+      roll = my_25t1.calibrated_acc_y;
+      pitch_velocity = my_25t1.calibrated_acc_x - pitch;
+      pitch = my_25t1.calibrated_acc_x;
+
+      reaction_ctrl.setpoint = reaction_ctrl.target_angle + reaction_accumulator;
+      reaction_accumulator = reaction_accumulator - (reaction_ctrl.output * reaction_dithering_scale);
+      reaction_accumulator = fmin(reaction_dithering_angle, reaction_accumulator);
+      reaction_accumulator = fmax(-reaction_dithering_angle, reaction_accumulator);
+
+      reaction_ctrl.integrator = reaction_ctrl.integrator + (roll - reaction_ctrl.setpoint) * reaction_ctrl.ki;
+      if (reaction_ctrl.integrator > reaction_ctrl.windup)
+      {
+        reaction_ctrl.integrator = reaction_ctrl.windup;
+      }
+      if (reaction_ctrl.integrator < -reaction_ctrl.windup)
+      {
+        reaction_ctrl.integrator = -reaction_ctrl.windup;
+      }
+      // PID function
+      reaction_ctrl.output = reaction_ctrl.kp * (roll - reaction_ctrl.setpoint) + reaction_ctrl.kd * roll_velocity + reaction_ctrl.integrator;
+      reaction_ctrl.output = fmin(max_reaction_speed, reaction_ctrl.output);
+      reaction_ctrl.output = fmax(-max_reaction_speed, reaction_ctrl.output);
+
+      rolling_ctrl.integrator = rolling_ctrl.integrator + (pitch - rolling_ctrl.setpoint) * rolling_ctrl.ki;
+      if (rolling_ctrl.integrator > rolling_ctrl.windup)
+      {
+        rolling_ctrl.integrator = rolling_ctrl.windup;
+      }
+      if (rolling_ctrl.integrator < -rolling_ctrl.windup)
+      {
+        rolling_ctrl.integrator = -rolling_ctrl.windup;
+      }
+      // PID function
+      rolling_ctrl.output = rolling_ctrl.kp * (pitch - rolling_ctrl.setpoint) + rolling_ctrl.kd * pitch_velocity + rolling_ctrl.integrator;
+      rolling_ctrl.output = fmin(max_rolling_speed, rolling_ctrl.output);
+      rolling_ctrl.output = fmax(-max_rolling_speed, rolling_ctrl.output);
+
+      sensor_updated = 0;
+    }
+
+    if (reaction_ctrl.active == 1)
+    {
+      if (fabs(roll) < reaction_ctrl.safety_angle)
+      {
+        // 0-90 clockwise
+        // 90-135 anti-clockwise
+        reaction_servoangle = alpha * reaction_servoangle + (1.0 - alpha) * reaction_ctrl.output;
+        setServoAngle(reaction_servoangle < 0 ? 90.0 + 2.0 * reaction_servoangle : reaction_servoangle + 90.0);
+      }
+      else
+      {
+        setServoAngle(90.0);
+      }
+    }
+
+    if (rolling_ctrl.active == 1)
+    {
+      if (fabs(pitch) < rolling_ctrl.safety_angle)
+      {
+        if (rolling_ctrl.output < 0)
+        {
+          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
+          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
+          __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 255 * (int)fabs(rolling_ctrl.output));
+        }
+        else
+        {
+          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
+          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
+          __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 255 * (int)fabs(rolling_ctrl.output));
+        }
+      }
+      else
+      {
+        __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 0);
+      }
+    }
 
     log_counter++;
     if (log_counter > LOG_CYCLE)
@@ -358,10 +411,8 @@ int main(void)
       transmit = 0;
       log_counter = 0;
 
-      sprintf(MSG, "ID:%d,%d, accumulator:%0.2f, accx:%0.2f,%0.2f, accy:%0.2f,%0.2f, accz:%0.2f,%0.2f, count:%d,%d, dt: %0.6f\r\n",
-              UART1_rxBuffer[0], UART2_rxBuffer[0], accumulator,
-              my_25t1.calibrated_acc_x, my_25t2.calibrated_acc_x, my_25t1.calibrated_acc_y, my_25t2.calibrated_acc_y,
-              my_25t1.calibrated_acc_z, my_25t2.calibrated_acc_z, UART1_rxBuffer[3] + 4, UART2_rxBuffer[3] + 4, dt);
+      sprintf(MSG, "roll: %0.2f, pitch: %0.2f, roll_vel: %0.2f, pitch_vel: %0.2f, setpoint: %0.2f, integrator:%0.2f, output: %0.2f, accum: %0.2f, dt: %0.6f\r\n",
+              roll, pitch, roll_velocity, pitch_velocity, rolling_ctrl.setpoint, rolling_ctrl.integrator, rolling_ctrl.output, reaction_accumulator, dt);
       // sprintf(MSG, "ID:%d, ACC_X:%0.2f, ACC_Y:%0.2f, ACC_Z:%0.2f, GYRO_X:%0.2f, GYRO_Y:%0.2f, GYRO_Z:%0.2f, count:%d, dt: %0.6f\r\n",
       //         UART1_rxBuffer[0],
       //         my_25t.calibrated_acc_x, my_25t.calibrated_acc_y, my_25t.calibrated_acc_z,
@@ -372,7 +423,7 @@ int main(void)
       //         my_25t1.calibrated_gyro_x, my_25t1.calibrated_gyro_y, UART1_rxBuffer[3] + 4, dt);
 
       // Toggle the LED
-      HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+      // HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
       // for (int x = 0; x < RECEIVE_FRAME_LENGTH; x++)
       // {
       //   sprintf(printstr + (x * 2), "%02x", UART1_rxBuffer[x]);
@@ -496,6 +547,64 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 2 */
   HAL_TIM_MspPostInit(&htim2);
+}
+
+/**
+ * @brief TIM4 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 0;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 65535;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
+  HAL_TIM_MspPostInit(&htim4);
 }
 
 /**
@@ -631,6 +740,9 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2 | GPIO_PIN_3, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
@@ -639,10 +751,17 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PC0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  /*Configure GPIO pins : PC0 PC1 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PC2 PC3 */
+  GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_3;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : LD2_Pin */
