@@ -423,15 +423,15 @@ int main(void)
       transmit = 0;
       log_counter = 0;
 
-    states.x1k1 = states.x1k;
-    states.x2k1 = states.x2k;
-    states.u1k1 = states.u1k;
-    states.u2k1 = states.u2k;
-    states.x1k = roll;
-    states.x2k = pitch;
-    states.u1k = reaction_ctrl.output;
-    states.u2k = rolling_ctrl.output;
-
+    states.x1k = states.x1k1;
+    states.x2k = states.x2k1;
+    states.u1k = states.u1k1;
+    states.u2k = states.u2k1;
+    states.x1k1 = roll;
+    states.x2k1 = pitch;
+    states.u1k1 = reaction_ctrl.output;
+    states.u2k1 = rolling_ctrl.output;
+    
       sprintf(MSG, "x1k: %0.2f, x2k: %0.2f, u1k: %0.2f, u2k: %0.2f, x1k+: %0.2f, x2k+: %0.2f, u1k+: %0.2f, u2k+: %0.2f, dt: %0.6f\r\n",
         states.x1k, states.x2k, states.u1k, states.u2k, states.x1k1, states.x2k1, states.u1k1, states.u2k1, dt);
       // sprintf(MSG, "ID:%d, ACC_X:%0.2f, ACC_Y:%0.2f, ACC_Z:%0.2f, GYRO_X:%0.2f, GYRO_Y:%0.2f, GYRO_Z:%0.2f, count:%d, dt: %0.6f\r\n",
