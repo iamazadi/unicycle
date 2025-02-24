@@ -132,6 +132,17 @@ typedef struct
   float output;
   int active;
 } controller;
+typedef struct
+{
+  float x1k;
+  float x2k;
+  float u1k;
+  float u2k;
+  float x1k1;
+  float x2k1;
+  float u1k1;
+  float u2k1;
+} systemStates;
 void setServoAngle(uint32_t angle)
 {
   if (angle > 180)
@@ -204,6 +215,7 @@ int main(void)
   // fields: p, i, d, windup, safety angle, target angle, setpoint, integrator, output and active.
   controller reaction_ctrl = {5.0, 20.0, 1.0, 10.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0};
   controller rolling_ctrl = {9.0, 20.0, 1.0, 29.0, 12.0, 0.0, 0.0, 0.0, 0.0, 0};
+  systemStates states = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   float roll = 0.0;
   float roll_velocity = 0.0;
   float pitch = 0.0;
@@ -411,8 +423,17 @@ int main(void)
       transmit = 0;
       log_counter = 0;
 
-      sprintf(MSG, "roll: %0.2f, pitch: %0.2f, v1: %0.2f, v2: %0.2f, dt: %0.6f\r\n",
-              roll, pitch, reaction_ctrl.output, rolling_ctrl.output, dt);
+    states.x1k1 = states.x1k;
+    states.x2k1 = states.x2k;
+    states.u1k1 = states.u1k;
+    states.u2k1 = states.u2k;
+    states.x1k = roll;
+    states.x2k = pitch;
+    states.u1k = reaction_ctrl.output;
+    states.u2k = rolling_ctrl.output;
+
+      sprintf(MSG, "x1k: %0.2f, x2k: %0.2f, u1k: %0.2f, u2k: %0.2f, x1k+: %0.2f, x2k+: %0.2f, u1k+: %0.2f, u2k+: %0.2f, dt: %0.6f\r\n",
+        states.x1k, states.x2k, states.u1k, states.u2k, states.x1k1, states.x2k1, states.u1k1, states.u2k1, dt);
       // sprintf(MSG, "ID:%d, ACC_X:%0.2f, ACC_Y:%0.2f, ACC_Z:%0.2f, GYRO_X:%0.2f, GYRO_Y:%0.2f, GYRO_Z:%0.2f, count:%d, dt: %0.6f\r\n",
       //         UART1_rxBuffer[0],
       //         my_25t.calibrated_acc_x, my_25t.calibrated_acc_y, my_25t.calibrated_acc_z,
