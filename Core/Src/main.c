@@ -86,6 +86,7 @@ int receive_ok = 0;
 int sensor_updated = 0;
 const int dim_n = N;
 const int dim_m = M;
+const int max_episode_length = 50000;
 const float sensor_rotation = -30.0 / 180.0 * M_PI; // sensor frame rotation in X-Y plane
 const float reaction_wheel_safety_angle = 10.0;
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
@@ -173,6 +174,10 @@ void setServoAngle(int angle)
   if (angle > 180)
   {
     angle = 180;
+  }
+  if (angle < 0)
+  {
+    angle = 0;
   }
   uint32_t minPulseWidth = 1000; // 1ms pulse width at a 1MHz clock
   uint32_t maxPulseWidth = 2000; // 2ms pulse width
@@ -335,6 +340,11 @@ typedef struct
   IMU imu;
   Encoder encoder;
 } LinearQuadraticRegulator;
+
+// Initialize the randomizer using the current timestamp as a seed
+// (The time() function is provided by the <time.h> header file)
+// srand(time(NULL));
+
 LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
 {
   model.j = 1;
@@ -342,36 +352,38 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.reward = 0.0;
   model.n = dim_n;
   model.m = dim_m;
-  model.lambda = 0.99;
+  model.lambda = 0.999;
   model.delta = 0.001;
   model.terminated = 0;
   model.updated = 0;
   model.active = 0;
-  model.W_n.x11 = 1.0;
-  model.W_n.x12 = 1.0;
-  model.W_n.x13 = 1.0;
-  model.W_n.x14 = 1.0;
-  model.W_n.x15 = 1.0;
-  model.W_n.x21 = 1.0;
-  model.W_n.x22 = 1.0;
-  model.W_n.x23 = 1.0;
-  model.W_n.x24 = 1.0;
-  model.W_n.x25 = 1.0;
-  model.W_n.x31 = 1.0;
-  model.W_n.x32 = 1.0;
-  model.W_n.x33 = 1.0;
-  model.W_n.x34 = 1.0;
-  model.W_n.x35 = 1.0;
-  model.W_n.x41 = 1.0;
-  model.W_n.x42 = 1.0;
-  model.W_n.x43 = 1.0;
-  model.W_n.x44 = 1.0;
-  model.W_n.x45 = 1.0;
-  model.W_n.x51 = 1.0;
-  model.W_n.x52 = 1.0;
-  model.W_n.x53 = 1.0;
-  model.W_n.x54 = 1.0;
-  model.W_n.x55 = 1.0;
+
+  model.W_n.x11 = (float)(rand() % 100) / 100.0;
+  model.W_n.x12 = (float)(rand() % 100) / 100.0;
+  model.W_n.x13 = (float)(rand() % 100) / 100.0;
+  model.W_n.x14 = (float)(rand() % 100) / 100.0;
+  model.W_n.x15 = (float)(rand() % 100) / 100.0;
+  model.W_n.x21 = (float)(rand() % 100) / 100.0;
+  model.W_n.x22 = (float)(rand() % 100) / 100.0;
+  model.W_n.x23 = (float)(rand() % 100) / 100.0;
+  model.W_n.x24 = (float)(rand() % 100) / 100.0;
+  model.W_n.x25 = (float)(rand() % 100) / 100.0;
+  model.W_n.x31 = (float)(rand() % 100) / 100.0;
+  model.W_n.x32 = (float)(rand() % 100) / 100.0;
+  model.W_n.x33 = (float)(rand() % 100) / 100.0;
+  model.W_n.x34 = (float)(rand() % 100) / 100.0;
+  model.W_n.x35 = (float)(rand() % 100) / 100.0;
+  model.W_n.x41 = (float)(rand() % 100) / 100.0;
+  model.W_n.x42 = (float)(rand() % 100) / 100.0;
+  model.W_n.x43 = (float)(rand() % 100) / 100.0;
+  model.W_n.x44 = (float)(rand() % 100) / 100.0;
+  model.W_n.x45 = (float)(rand() % 100) / 100.0;
+  model.W_n.x51 = (float)(rand() % 100) / 100.0;
+  model.W_n.x52 = (float)(rand() % 100) / 100.0;
+  model.W_n.x53 = (float)(rand() % 100) / 100.0;
+  model.W_n.x54 = (float)(rand() % 100) / 100.0;
+  model.W_n.x55 = (float)(rand() % 100) / 100.0;
+
   model.P_n.x11 = 1.0 / model.delta;
   model.P_n.x12 = 0.0;
   model.P_n.x13 = 0.0;
@@ -440,18 +452,44 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
       u_k[i] += -K_j[i][j] * x_k[j];
     }
   }
+  for (int i = 0; i < model.m; i++)
+  {
+    u_k[i] = sigmoid(u_k[i]);
+  }
   // act!
   model.dataset.x1 = model.imu.calibrated_acc_y;
   model.dataset.x2 = model.imu.calibrated_acc_y_velocity;
-  model.dataset.x3 = model.encoder.velocity;
+  model.dataset.x3 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y;
+  // model.dataset.x3 = model.encoder.velocity;
   model.dataset.x4 = u_k[0];
   model.dataset.x5 = u_k[1];
   int index = argmax(u_k, M);
-  // TODO: make sure values are normalized
-  float action = sigmoid(u_k[index]) * 45.0;
-  if (model.active == 1) {
-    setServoAngle(index == 0 ? 90.0 + 2.0 * action : action + 90.0);
-  } else {
+  float action = u_k[index] * 45.0;
+  if (model.active == 1)
+  {
+    // 0-90 clockwise
+    // 90-135 anti-clockwise
+    if (rand() % 100 > 5)
+    {
+      setServoAngle(index == 0 ? 90.0 + action : 90.0 - 2.0 * action);
+    }
+    else
+    {
+      setServoAngle(model.imu.calibrated_acc_y > 0.0 ? 90.0 + 22.5 : 90.0 - 2.0 * 22.5);
+      if (model.imu.calibrated_acc_y > 0.0)
+      {
+        model.dataset.x4 = 1.0;
+        model.dataset.x5 = 0.0;
+      }
+      else
+      {
+        model.dataset.x4 = 0.0;
+        model.dataset.x5 = 1.0;
+      }
+    }
+  }
+  else
+  {
     setServoAngle(90.0);
   }
   // dataset = (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
@@ -459,7 +497,8 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   model.imu = updateIMU(model.imu);
   model.dataset.x6 = model.imu.calibrated_acc_y;
   model.dataset.x7 = model.imu.calibrated_acc_y_velocity;
-  model.dataset.x8 = model.encoder.velocity;
+  model.dataset.x8 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y;
+  // model.dataset.x8 = model.encoder.velocity;
   float x_k1[N] = {model.dataset.x6, model.dataset.x7, model.dataset.x8};
   float u_k1[M] = {0.0, 0.0};
   for (int i = 0; i < model.n; i++)
@@ -469,6 +508,10 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
       u_k1[i] += -K_j[i][j] * x_k1[j];
       u_k1[i] += -K_j[i][j] * x_k1[j];
     }
+  }
+  for (int i = 0; i < model.m; i++)
+  {
+    u_k1[i] = sigmoid(u_k1[i]);
   }
   model.dataset.x9 = u_k1[0];
   model.dataset.x10 = u_k1[1];
@@ -484,6 +527,11 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   }
   // Now perform a one-step update in the parameter vector W by applying RLS to equation (S27).
   float z_n[N + M];
+  // initialize z_n
+  for (int i = 0; i < model.n + model.m; i++)
+  {
+    z_n[i] = 0.0;
+  }
   float P_n[N + M][N + M] = {{model.P_n.x11, model.P_n.x12, model.P_n.x13, model.P_n.x14, model.P_n.x15},
                              {model.P_n.x21, model.P_n.x22, model.P_n.x23, model.P_n.x24, model.P_n.x25},
                              {model.P_n.x31, model.P_n.x32, model.P_n.x33, model.P_n.x34, model.P_n.x35},
@@ -508,6 +556,11 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   }
   // αₙ = dₙ - transpose(wₙ₋₁) * xₙ
   float alpha_n[N + M];
+  // initialize alpha_n
+  for (int i = 0; i < model.n + model.m; i++)
+  {
+    alpha_n[i] = 0.0;
+  }
   for (int i = 0; i < model.n + model.m; i++)
   {
     for (int j = 0; j < model.n + model.m; j++)
@@ -606,7 +659,7 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
   }
   for (int i = 0; i < model.m; i++)
   {
-    for (int j = 0; j < model.n; j++)
+    for (int j = 0; j < model.m; j++)
     {
       S_uu[i][j] = W_n[model.n + i][model.n + j];
     }
@@ -615,7 +668,7 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
   // uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
   float determinant = S_uu[1][1] * S_uu[2][2] - S_uu[1][2] * S_uu[2][1];
   // check the rank S_uu to see if it's equal to 2 (invertible matrix)
-  if (fabs(determinant) > 0.001) // approximately zero
+  if (fabs(determinant) > 0.001) // greater than zero
   {
     float S_uu_inverse[M][M] = {{S_uu[2][2] / determinant, -S_uu[1][2] / determinant},
                                 {-S_uu[2][1] / determinant, S_uu[1][1] / determinant}};
@@ -627,7 +680,7 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
         K_j[i][j] = 0.0;
         for (int k = 0; k < model.m; k++)
         {
-          K_j[i][j] += -S_uu_inverse[i][k] * S_ux[k][j];
+          K_j[i][j] += S_uu_inverse[i][k] * S_ux[k][j];
         }
       }
     }
@@ -638,6 +691,7 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
     model.K_j.x22 = K_j[2][2];
     model.K_j.x23 = K_j[2][3];
   }
+  model.updated = 1;
   return model;
 }
 /* USER CODE END 0 */
@@ -659,7 +713,7 @@ int main(void)
   const float CPU_CLOCK = 84000000.0;
   const int LOG_CYCLE = 100;
   const float max_rolling_speed = 250.0;
-  const float epsilon = 10.0; // convergence threshold
+  // const float epsilon = 10.0; // convergence threshold
   // const int numStates = 3;
   // sampling time
   float dt = 0.0;
@@ -732,15 +786,6 @@ int main(void)
 
     t1 = DWT->CYCCNT;
 
-    if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == 0)
-    {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-    }
-    else
-    {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-    }
-
     if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == 0)
     {
       model.active = 1;
@@ -760,7 +805,7 @@ int main(void)
       rolling_wheel_controller.active = 0;
     }
 
-    if (sensor_updated == 1)
+    if (sensor_updated == 1 && rolling_wheel_controller.active == 1)
     {
       rolling_wheel_controller.integrator = rolling_wheel_controller.integrator + (model.imu.calibrated_acc_x - rolling_wheel_controller.setpoint) * rolling_wheel_controller.ki;
       if (rolling_wheel_controller.integrator > rolling_wheel_controller.windup)
@@ -779,18 +824,23 @@ int main(void)
       sensor_updated = 0;
     }
 
-    if (fabs(model.imu.calibrated_acc_y) > reaction_wheel_safety_angle || fabs(model.imu.calibrated_acc_x) > rolling_wheel_controller.safety_angle)
+    if (fabs(model.imu.calibrated_acc_y) > reaction_wheel_safety_angle || fabs(model.imu.calibrated_acc_x) > rolling_wheel_controller.safety_angle || model.k > max_episode_length)
     {
       model.terminated = 1;
       model.active = 0;
+      rolling_wheel_controller.active = 0;
+      rolling_wheel_controller.output = 0;
       HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
     }
 
     if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == 0)
     {
+      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+      // HAL_Delay(1000);
       model.terminated = 0;
       model.active = 1;
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+      rolling_wheel_controller.active = 1;
+      model.updated = 0;
     }
 
     if (rolling_wheel_controller.active == 1)
@@ -815,39 +865,18 @@ int main(void)
         __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 0);
       }
     }
-
-    float old_W_n[N + M][N + M] = {{model.W_n.x11, model.W_n.x12, model.W_n.x13, model.W_n.x14, model.W_n.x15},
-                                   {model.W_n.x21, model.W_n.x22, model.W_n.x23, model.W_n.x24, model.W_n.x25},
-                                   {model.W_n.x31, model.W_n.x32, model.W_n.x33, model.W_n.x34, model.W_n.x35},
-                                   {model.W_n.x41, model.W_n.x42, model.W_n.x43, model.W_n.x44, model.W_n.x45},
-                                   {model.W_n.x51, model.W_n.x52, model.W_n.x53, model.W_n.x54, model.W_n.x55}};
-    if (model.terminated == 0) {
+    if (model.terminated == 0)
+    {
       model = stepForward(model);
-    } else {
+    }
+    else
+    {
       setServoAngle(90.0);
     }
-    float new_W_n[N + M][N + M] = {{model.W_n.x11, model.W_n.x12, model.W_n.x13, model.W_n.x14, model.W_n.x15},
-                                   {model.W_n.x21, model.W_n.x22, model.W_n.x23, model.W_n.x24, model.W_n.x25},
-                                   {model.W_n.x31, model.W_n.x32, model.W_n.x33, model.W_n.x34, model.W_n.x35},
-                                   {model.W_n.x41, model.W_n.x42, model.W_n.x43, model.W_n.x44, model.W_n.x45},
-                                   {model.W_n.x51, model.W_n.x52, model.W_n.x53, model.W_n.x54, model.W_n.x55}};
     // Rinse and repeat :)
-    // check for convergence at time k
-    float difference = 0.0;
     if (model.terminated == 1 && model.updated == 0)
     {
-      for (int i = 0; i < N + M; i++)
-      {
-        for (int j = 0; j < N + M; j++)
-        {
-          difference += fabs(new_W_n[i][j] - old_W_n[i][j]);
-        }
-      }
-      if (difference < epsilon)
-      {
-        model = updateControlPolicy(model);
-        model.updated = 1;
-      }
+      model = updateControlPolicy(model);
     }
 
     log_counter++;
@@ -860,10 +889,10 @@ int main(void)
       transmit = 0;
       log_counter = 0;
 
-      sprintf(MSG, "x1: %0.2f, x2: %0.2f, x3: %0.2f, u1: %0.2f, u2: %0.2f, x1k: %0.2f, x2k: %0.2f, x3k: %0.2f, u1k: %0.2f, u2k: %0.2f, j: %d, k: %d, enc: %d, diff: %0.2f, dt: %0.6f\r\n",
+      sprintf(MSG, "x1: %0.2f, x2: %0.2f, x3: %0.2f, u1: %0.2f, u2: %0.2f, x1k: %0.2f, x2k: %0.2f, x3k: %0.2f, u1k: %0.2f, u2k: %0.2f, j: %d, k: %d, enc: %d, dt: %0.6f\r\n",
               model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5,
               model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10,
-              model.j, model.k, TIM3->CNT, difference, dt);
+              model.j, model.k, TIM3->CNT, dt);
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 1000);
     }
 
