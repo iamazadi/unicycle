@@ -34,7 +34,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TRANSMIT_LENGTH 220
+#define TRANSMIT_LENGTH 280
 #define RECEIVE_FRAME_LENGTH 23
 #define TRANSMIT_FRAME_LENGTH 5
 #define N 3
@@ -719,6 +719,7 @@ int main(void)
   float dt = 0.0;
   int transmit = 0;
   int log_counter = 0;
+  int log_status = 0;
   unsigned long t1 = 0;
   unsigned long t2 = 0;
   unsigned long diff = 0;
@@ -889,10 +890,24 @@ int main(void)
       transmit = 0;
       log_counter = 0;
 
-      sprintf(MSG, "x1: %0.2f, x2: %0.2f, x3: %0.2f, u1: %0.2f, u2: %0.2f, x1k: %0.2f, x2k: %0.2f, x3k: %0.2f, u1k: %0.2f, u2k: %0.2f, j: %d, k: %d, enc: %d, dt: %0.6f\r\n",
-              model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5,
-              model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10,
-              model.j, model.k, TIM3->CNT, dt);
+      if (log_status == 0)
+      {
+        sprintf(MSG, "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, pitch: %0.2f, enc: %d, dt: %0.6f\r\n",
+                model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5,
+                model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10,
+                model.j, model.k, model.imu.calibrated_acc_x, TIM3->CNT, dt);
+        log_status = 1;
+      }
+      else if (log_status == 1)
+      {
+        sprintf(MSG, "w1: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, w2: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, w3: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, w4: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, w5: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, end\r\n",
+                model.W_n.x11, model.W_n.x12, model.W_n.x13, model.W_n.x14, model.W_n.x15,
+                model.W_n.x21, model.W_n.x22, model.W_n.x23, model.W_n.x24, model.W_n.x25,
+                model.W_n.x31, model.W_n.x32, model.W_n.x33, model.W_n.x34, model.W_n.x35,
+                model.W_n.x41, model.W_n.x42, model.W_n.x43, model.W_n.x44, model.W_n.x45,
+                model.W_n.x51, model.W_n.x52, model.W_n.x53, model.W_n.x54, model.W_n.x55);
+        log_status = 0;
+      }
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 1000);
     }
 
