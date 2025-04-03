@@ -34,7 +34,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TRANSMIT_LENGTH 280
+#define TRANSMIT_LENGTH 300
 #define RECEIVE_FRAME_LENGTH 23
 #define TRANSMIT_FRAME_LENGTH 5
 #define N 3
@@ -89,7 +89,7 @@ const int dim_m = M;
 const int max_episode_length = 50000;
 const float sensor_rotation = -30.0 / 180.0 * M_PI; // sensor frame rotation in X-Y plane
 const float reaction_wheel_safety_angle = 10.0;
-const float clip_value = 100000.0;
+const float clip_value = 10000.0;
 // define arrays for matrix-matrix and matrix-vector multiplication
 float x_k[N];
 float u_k[M];
@@ -699,31 +699,31 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   model.W_n.x43 = clip_by_value(W_n[4][3], clip_value);
   model.W_n.x44 = clip_by_value(W_n[4][4], clip_value);
 
-  model.P_n.x00 = P_n[0][0];
-  model.P_n.x01 = P_n[0][1];
-  model.P_n.x02 = P_n[0][2];
-  model.P_n.x03 = P_n[0][3];
-  model.P_n.x04 = P_n[0][4];
-  model.P_n.x10 = P_n[1][0];
-  model.P_n.x11 = P_n[1][1];
-  model.P_n.x12 = P_n[1][2];
-  model.P_n.x13 = P_n[1][3];
-  model.P_n.x14 = P_n[1][4];
-  model.P_n.x20 = P_n[2][0];
-  model.P_n.x21 = P_n[2][1];
-  model.P_n.x22 = P_n[2][2];
-  model.P_n.x23 = P_n[2][3];
-  model.P_n.x24 = P_n[2][4];
-  model.P_n.x30 = P_n[3][0];
-  model.P_n.x31 = P_n[3][1];
-  model.P_n.x32 = P_n[3][2];
-  model.P_n.x33 = P_n[3][3];
-  model.P_n.x34 = P_n[3][4];
-  model.P_n.x40 = P_n[4][0];
-  model.P_n.x41 = P_n[4][1];
-  model.P_n.x42 = P_n[4][2];
-  model.P_n.x43 = P_n[4][3];
-  model.P_n.x44 = P_n[4][4];
+  model.P_n.x00 = clip_by_value(P_n[0][0], clip_value);
+  model.P_n.x01 = clip_by_value(P_n[0][1], clip_value);
+  model.P_n.x02 = clip_by_value(P_n[0][2], clip_value);
+  model.P_n.x03 = clip_by_value(P_n[0][3], clip_value);
+  model.P_n.x04 = clip_by_value(P_n[0][4], clip_value);
+  model.P_n.x10 = clip_by_value(P_n[1][0], clip_value);
+  model.P_n.x11 = clip_by_value(P_n[1][1], clip_value);
+  model.P_n.x12 = clip_by_value(P_n[1][2], clip_value);
+  model.P_n.x13 = clip_by_value(P_n[1][3], clip_value);
+  model.P_n.x14 = clip_by_value(P_n[1][4], clip_value);
+  model.P_n.x20 = clip_by_value(P_n[2][0], clip_value);
+  model.P_n.x21 = clip_by_value(P_n[2][1], clip_value);
+  model.P_n.x22 = clip_by_value(P_n[2][2], clip_value);
+  model.P_n.x23 = clip_by_value(P_n[2][3], clip_value);
+  model.P_n.x24 = clip_by_value(P_n[2][4], clip_value);
+  model.P_n.x30 = clip_by_value(P_n[3][0], clip_value);
+  model.P_n.x31 = clip_by_value(P_n[3][1], clip_value);
+  model.P_n.x32 = clip_by_value(P_n[3][2], clip_value);
+  model.P_n.x33 = clip_by_value(P_n[3][3], clip_value);
+  model.P_n.x34 = clip_by_value(P_n[3][4], clip_value);
+  model.P_n.x40 = clip_by_value(P_n[4][0], clip_value);
+  model.P_n.x41 = clip_by_value(P_n[4][1], clip_value);
+  model.P_n.x42 = clip_by_value(P_n[4][2], clip_value);
+  model.P_n.x43 = clip_by_value(P_n[4][3], clip_value);
+  model.P_n.x44 = clip_by_value(P_n[4][4], clip_value);
   // Repeat at the next time k + 1 and continue until RLS converges and the new parameter vector Wⱼ₊₁ is found.
   model.k = k + 1;
   return model;
