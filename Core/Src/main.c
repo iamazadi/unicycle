@@ -90,6 +90,7 @@ const int max_episode_length = 50000;
 const float sensor_rotation = -30.0 / 180.0 * M_PI; // sensor frame rotation in X-Y plane
 const float reaction_wheel_safety_angle = 10.0;
 const float clip_value = 10000.0;
+float servoAngle = 0.0;
 // define arrays for matrix-matrix and matrix-vector multiplication
 float x_k[N];
 float u_k[M];
@@ -394,7 +395,7 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.reward = 0.0;
   model.n = dim_n;
   model.m = dim_m;
-  model.lambda = 0.9;
+  model.lambda = 0.1;
   model.delta = 0.001;
   model.terminated = 0;
   model.updated = 0;
@@ -515,33 +516,20 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   model.dataset.x3 = u_k[0];
   model.dataset.x4 = u_k[1];
   int index = argmax(u_k, M);
-  float action = u_k[index] * 45.0;
+  float action = sigmoid(u_k[index]);
   if (model.active == 1)
   {
     // 0-90 clockwise
     // 90-135 anti-clockwise
-    if (rand() % 100 > 2)
-    {
-      setServoAngle(index == 0 ? 90.0 + action : 90.0 - 2.0 * action);
-    }
-    else // exploit a simple policy to help guide exploration
-    {
-      setServoAngle(model.imu.calibrated_acc_y > 0.0 ? 90.0 + 22.5 : 90.0 - 2.0 * 22.5);
-      if (model.imu.calibrated_acc_y > 0.0)
-      {
-        model.dataset.x3 = 1.0;
-        model.dataset.x4 = 0.0;
-      }
-      else
-      {
-        model.dataset.x3 = 0.0;
-        model.dataset.x4 = 1.0;
-      }
-    }
+    servoAngle = index == 0 ? servoAngle + action : servoAngle - action;
+    servoAngle = fmin(servoAngle, 125.0);
+    servoAngle = fmax(servoAngle, 20.0);
+    setServoAngle(servoAngle);
   }
   else
   {
-    setServoAngle(90.0);
+    servoAngle = 90.0;
+    setServoAngle(servoAngle);
   }
   // dataset = (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
   model.encoder = updateEncoder(model.encoder);
