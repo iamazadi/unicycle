@@ -395,7 +395,7 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.reward = 0.0;
   model.n = dim_n;
   model.m = dim_m;
-  model.lambda = 0.1;
+  model.lambda = 0.99;
   model.delta = 0.001;
   model.terminated = 0;
   model.updated = 0;
