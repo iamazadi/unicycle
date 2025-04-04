@@ -145,6 +145,9 @@ typedef struct
   float calibrated_acc_x_velocity;
   float calibrated_acc_y_velocity;
   float calibrated_acc_z_velocity;
+  float calibrated_acc_x_acceleration;
+  float calibrated_acc_y_acceleration;
+  float calibrated_acc_z_acceleration;
   float calibrated_gyro_x;
   float calibrated_gyro_y;
   float calibrated_gyro_z;
@@ -210,6 +213,9 @@ IMU parsedata(IMU sensor, float theta, uint8_t data[])
   float calibrated_acc_x = sensor.calibrated_acc_x;
   float calibrated_acc_y = sensor.calibrated_acc_y;
   float calibrated_acc_z = sensor.calibrated_acc_z;
+  float calibrated_acc_x_velocity = sensor.calibrated_acc_x_velocity;
+  float calibrated_acc_y_velocity = sensor.calibrated_acc_y_velocity;
+  float calibrated_acc_z_velocity = sensor.calibrated_acc_z_velocity;
   sensor.acc_x = (data[4] << 8) | data[5];
   sensor.acc_y = (data[6] << 8) | data[7];
   sensor.acc_z = (data[8] << 8) | data[9];
@@ -229,6 +235,9 @@ IMU parsedata(IMU sensor, float theta, uint8_t data[])
   sensor.calibrated_acc_x_velocity = sensor.calibrated_acc_x - calibrated_acc_x;
   sensor.calibrated_acc_y_velocity = sensor.calibrated_acc_y - calibrated_acc_y;
   sensor.calibrated_acc_z_velocity = sensor.calibrated_acc_z - calibrated_acc_z;
+  sensor.calibrated_acc_x_acceleration = sensor.calibrated_acc_x_velocity - calibrated_acc_x_velocity;
+  sensor.calibrated_acc_y_acceleration = sensor.calibrated_acc_y_velocity - calibrated_acc_y_velocity;
+  sensor.calibrated_acc_z_acceleration = sensor.calibrated_acc_z_velocity - calibrated_acc_z_velocity;
   return sensor;
 }
 
@@ -257,11 +266,14 @@ float sigmoid(float x)
   return 1.0 / (1.0 + exp(-x));
 }
 
-float clip_by_value(float x, float clip_value) {
-  if (x < -clip_value) {
+float clip_by_value(float x, float clip_value)
+{
+  if (x < -clip_value)
+  {
     return -clip_value;
   }
-  if (x > clip_value) {
+  if (x > clip_value)
+  {
     return clip_value;
   }
   return x;
@@ -382,7 +394,7 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.reward = 0.0;
   model.n = dim_n;
   model.m = dim_m;
-  model.lambda = 0.999;
+  model.lambda = 0.9;
   model.delta = 0.001;
   model.terminated = 0;
   model.updated = 0;
@@ -457,7 +469,7 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.dataset.x7 = 0.0;
   model.dataset.x8 = 0.0;
   model.dataset.x9 = 0.0;
-  IMU imu = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
+  IMU imu = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
   Encoder encoder = {0, 0, 0, 0, 100, 50.0, 0.0};
   model.imu = imu;
   model.encoder = encoder;
@@ -498,7 +510,7 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   // act!
   model.dataset.x0 = model.imu.calibrated_acc_y;
   model.dataset.x1 = model.imu.calibrated_acc_y_velocity;
-  model.dataset.x2 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y;
+  model.dataset.x2 = model.imu.calibrated_acc_y_acceleration;
   // model.dataset.x3 = model.encoder.velocity;
   model.dataset.x3 = u_k[0];
   model.dataset.x4 = u_k[1];
@@ -508,7 +520,7 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   {
     // 0-90 clockwise
     // 90-135 anti-clockwise
-    if (rand() % 100 > 5)
+    if (rand() % 100 > 2)
     {
       setServoAngle(index == 0 ? 90.0 + action : 90.0 - 2.0 * action);
     }
@@ -536,7 +548,7 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   model.imu = updateIMU(model.imu);
   model.dataset.x5 = model.imu.calibrated_acc_y;
   model.dataset.x6 = model.imu.calibrated_acc_y_velocity;
-  model.dataset.x7 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y;
+  model.dataset.x7 = model.imu.calibrated_acc_y_acceleration;
   // model.dataset.x8 = model.encoder.velocity;
   x_k1[0] = model.dataset.x5;
   x_k1[1] = model.dataset.x6;
@@ -1036,6 +1048,13 @@ int main(void)
                 model.P_n.x20, model.P_n.x21, model.P_n.x22, model.P_n.x23, model.P_n.x24,
                 model.P_n.x30, model.P_n.x31, model.P_n.x32, model.P_n.x33, model.P_n.x34,
                 model.P_n.x40, model.P_n.x41, model.P_n.x42, model.P_n.x43, model.P_n.x44);
+        log_status = 3;
+      }
+      else if (log_status == 3)
+      {
+        sprintf(MSG, "k0: %0.2f, %0.2f, %0.2f, k1: %0.2f, %0.2f, %0.2f, end\r\n",
+                model.K_j.x00, model.K_j.x01, model.K_j.x02,
+                model.K_j.x10, model.K_j.x11, model.K_j.x12);
         log_status = 0;
       }
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 1000);
