@@ -47,8 +47,10 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
 TIM_HandleTypeDef htim2;
-TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
@@ -58,6 +60,8 @@ DMA_HandleTypeDef hdma_usart1_rx;
 DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
+
+uint32_t value_adc;
 
 /* USER CODE END PV */
 
@@ -70,7 +74,7 @@ static void MX_USART6_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM4_Init(void);
-static void MX_TIM3_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -82,7 +86,8 @@ uint8_t UART1_txBuffer[TRANSMIT_FRAME_LENGTH] = {0xA4, 0x03, 0x08, 0x12, 0xC1};
 uint8_t UART1_txBuffer_cfg[TRANSMIT_FRAME_LENGTH] = {0xA4, 0x06, 0x01, 0x06, 0xB1};
 // response: a4030812f93dfbcf002a000100010001ddb416bafffa48
 // response: a4030812f93dfbce0028000100010002ddae16b9ffe227
-int receive_ok = 0;
+int uart_receive_ok = 0;
+int adc_receive_ok = 0;
 int sensor_updated = 0;
 const int dim_n = N;
 const int dim_m = M;
@@ -91,6 +96,11 @@ const float sensor_rotation = -30.0 / 180.0 * M_PI; // sensor frame rotation in 
 const float reaction_wheel_safety_angle = 10.0;
 const float clip_value = 10000.0;
 float servoAngle = 0.0;
+float reaction_wheel_speed = 0.0;
+float rolling_wheel_speed = 0.0;
+int encoder0 = 0;
+int encoder1 = 0;
+uint32_t AD_RES_BUFFER[2];
 // define arrays for matrix-matrix and matrix-vector multiplication
 float x_k[N];
 float u_k[M];
@@ -115,12 +125,13 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   if (huart->Instance == USART1)
   {
     // HAL_UART_Receive_DMA(&huart, UART1_rxBuffer, RECEIVE_FRAME_LENGTH);
-    receive_ok = 1;
+    uart_receive_ok = 1;
   }
 }
 typedef struct
 {
-  int value;                  // the vlue of the timer counter
+  int value0;                 // the value of the adc measurement on channel A
+  int value1;                 // the value of the adc measurement on channel B
   int change;                 // instantanious change in encoder value
   int accumulator;            // accumultes the instantanoius changes over a number of intervals
   int interval_counter;       // the number of intervals accumulated
@@ -173,23 +184,43 @@ typedef struct
   int active;
 } Controller;
 
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+    // Conversion Complete & DMA Transfer Complete As Well
+    // So The AD_RES_BUFFER Is Now Updated
+    adc_receive_ok = 1;
+}
+
 Encoder updateEncoder(Encoder encoder)
 {
-  if (encoder.interval_counter > encoder.intervals)
-  {
-    encoder.velocity = (float)encoder.accumulator / (float)encoder.interval_counter;
-    // convert the unit to radian per sample time
-    encoder.velocity = encoder.velocity / encoder.pulse_per_revolution * 2.0 * M_PI;
-    encoder.interval_counter = 0;
-    encoder.accumulator = 0;
+  if (adc_receive_ok == 1) {
+    encoder.value0 = (AD_RES_BUFFER[0] << 4);
+    encoder.value1 = (AD_RES_BUFFER[1] << 4);
+    adc_receive_ok = 0;
   }
-  else
-  {
-    encoder.interval_counter++;
-    encoder.change = TIM3->CNT - encoder.value;
-    encoder.value = TIM3->CNT;
-    encoder.accumulator += encoder.change;
-  }
+  
+  // // Start ADC Conversion
+  // HAL_ADC_Start(&hadc1);
+  // // Poll ADC1 Perihperal & TimeOut = 1mSec
+  // HAL_ADC_PollForConversion(&hadc1, 1);
+  // Read The ADC Conversion Result & Map It To PWM DutyCycle
+  // AD_RES = HAL_ADC_GetValue(&hadc1);
+  // if (encoder.interval_counter > encoder.intervals)
+  // {
+  //   encoder.velocity = (float)encoder.accumulator / (float)encoder.interval_counter;
+  //   // convert the unit to radian per sample time
+  //   encoder.velocity = encoder.velocity / encoder.pulse_per_revolution * 2.0 * M_PI;
+  //   encoder.interval_counter = 0;
+  //   encoder.accumulator = 0;
+  // }
+  // else
+  // {
+  //   encoder.interval_counter++;
+  //   encoder.change = TIM3->CNT - encoder.value;
+  //   encoder.value = TIM3->CNT;
+  //   encoder.accumulator += encoder.change;
+  // }
+  // encoder.value = HAL_ADC_GetValue(&hadc1);
   return encoder;
 }
 
@@ -245,7 +276,7 @@ IMU parsedata(IMU sensor, float theta, uint8_t data[])
 IMU updateIMU(IMU gy_25t)
 {
   uint8_t sum = 0, i = 0;
-  if (receive_ok == 1)
+  if (uart_receive_ok == 1)
   {
     for (sum = 0, i = 0; i < (UART1_rxBuffer[3] + 4); i++)
     {
@@ -255,7 +286,7 @@ IMU updateIMU(IMU gy_25t)
     if (sum == UART1_rxBuffer[i] && UART1_rxBuffer[0] == UART1_txBuffer[0])
     {
       gy_25t = parsedata(gy_25t, sensor_rotation, UART1_rxBuffer);
-      receive_ok = 0;
+      uart_receive_ok = 0;
       sensor_updated = 1;
     }
   }
@@ -471,7 +502,7 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.dataset.x8 = 0.0;
   model.dataset.x9 = 0.0;
   IMU imu = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
-  Encoder encoder = {0, 0, 0, 0, 100, 50.0, 0.0};
+  Encoder encoder = {0, 0, 0, 0, 0, 100, 50.0, 0.0};
   model.imu = imu;
   model.encoder = encoder;
   return model;
@@ -817,9 +848,9 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
 /* USER CODE END 0 */
 
 /**
- * @brief  The application entry point.
- * @retval int
- */
+  * @brief  The application entry point.
+  * @retval int
+  */
 int main(void)
 {
 
@@ -874,7 +905,7 @@ int main(void)
   MX_TIM2_Init();
   MX_USART2_UART_Init();
   MX_TIM4_Init();
-  MX_TIM3_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
   HAL_Delay(10);
@@ -885,7 +916,7 @@ int main(void)
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
-  HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
+  // HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
   HAL_Delay(30);
   setServoAngle(90.0);
   // initialize the Encoder and IMU
@@ -894,6 +925,8 @@ int main(void)
   HAL_Delay(1);
   model.encoder = updateEncoder(model.encoder);
   model.imu = updateIMU(model.imu);
+  HAL_Delay(1);
+  HAL_ADC_Start_DMA(&hadc1, AD_RES_BUFFER, 2);
   HAL_Delay(3000);
   /* USER CODE END 2 */
 
@@ -963,6 +996,7 @@ int main(void)
       rolling_wheel_controller.active = 1;
       model.updated = 0;
     }
+    // Rinse and repeat :)
 
     if (rolling_wheel_controller.active == 1)
     {
@@ -993,12 +1027,16 @@ int main(void)
     else
     {
       setServoAngle(90.0);
+      model.encoder = updateEncoder(model.encoder);
+      model.imu = updateIMU(model.imu);
     }
-    // Rinse and repeat :)
     if (model.terminated == 1 && model.updated == 0)
     {
       model = updateControlPolicy(model);
     }
+
+    reaction_wheel_speed = servoAngle > 90.0 ? (servoAngle - 90.0) / 45.0 : -(90.0 - servoAngle) / 90.0;
+    rolling_wheel_speed = rolling_wheel_controller.output / 255.0;
 
     log_counter++;
     if (log_counter > LOG_CYCLE)
@@ -1012,39 +1050,39 @@ int main(void)
 
       if (log_status == 0)
       {
-        sprintf(MSG, "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, pitch: %0.2f, enc: %d, dt: %0.6f\r\n",
+        sprintf(MSG, "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, enc0: %d, enc1: %d, v1: %0.2f, v2: %0.2f, dt: %0.6f\r\n",
                 model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4,
                 model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9,
-                model.j, model.k, model.imu.calibrated_acc_x, TIM3->CNT, dt);
-        log_status = 1;
-      }
-      else if (log_status == 1)
-      {
-        sprintf(MSG, "w0: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, w1: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, w2: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, w3: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, w4: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, end\r\n",
-                model.W_n.x00, model.W_n.x01, model.W_n.x02, model.W_n.x03, model.W_n.x04,
-                model.W_n.x10, model.W_n.x11, model.W_n.x12, model.W_n.x13, model.W_n.x14,
-                model.W_n.x20, model.W_n.x21, model.W_n.x22, model.W_n.x23, model.W_n.x24,
-                model.W_n.x30, model.W_n.x31, model.W_n.x32, model.W_n.x33, model.W_n.x34,
-                model.W_n.x40, model.W_n.x41, model.W_n.x42, model.W_n.x43, model.W_n.x44);
-        log_status = 2;
-      }
-      else if (log_status == 2)
-      {
-        sprintf(MSG, "p0: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, p1: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, p2: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, p3: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, p4: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, end\r\n",
-                model.P_n.x00, model.P_n.x01, model.P_n.x02, model.P_n.x03, model.P_n.x04,
-                model.P_n.x10, model.P_n.x11, model.P_n.x12, model.P_n.x13, model.P_n.x14,
-                model.P_n.x20, model.P_n.x21, model.P_n.x22, model.P_n.x23, model.P_n.x24,
-                model.P_n.x30, model.P_n.x31, model.P_n.x32, model.P_n.x33, model.P_n.x34,
-                model.P_n.x40, model.P_n.x41, model.P_n.x42, model.P_n.x43, model.P_n.x44);
-        log_status = 3;
-      }
-      else if (log_status == 3)
-      {
-        sprintf(MSG, "k0: %0.2f, %0.2f, %0.2f, k1: %0.2f, %0.2f, %0.2f, end\r\n",
-                model.K_j.x00, model.K_j.x01, model.K_j.x02,
-                model.K_j.x10, model.K_j.x11, model.K_j.x12);
+                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.encoder.value0, model.encoder.value1, reaction_wheel_speed, rolling_wheel_speed, dt);
         log_status = 0;
       }
+      // else if (log_status == 1)
+      // {
+      //   sprintf(MSG, "w0: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, w1: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, w2: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, w3: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, w4: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, end\r\n",
+      //           model.W_n.x00, model.W_n.x01, model.W_n.x02, model.W_n.x03, model.W_n.x04,
+      //           model.W_n.x10, model.W_n.x11, model.W_n.x12, model.W_n.x13, model.W_n.x14,
+      //           model.W_n.x20, model.W_n.x21, model.W_n.x22, model.W_n.x23, model.W_n.x24,
+      //           model.W_n.x30, model.W_n.x31, model.W_n.x32, model.W_n.x33, model.W_n.x34,
+      //           model.W_n.x40, model.W_n.x41, model.W_n.x42, model.W_n.x43, model.W_n.x44);
+      //   log_status = 2;
+      // }
+      // else if (log_status == 2)
+      // {
+      //   sprintf(MSG, "p0: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, p1: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, p2: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, p3: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, p4: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, end\r\n",
+      //           model.P_n.x00, model.P_n.x01, model.P_n.x02, model.P_n.x03, model.P_n.x04,
+      //           model.P_n.x10, model.P_n.x11, model.P_n.x12, model.P_n.x13, model.P_n.x14,
+      //           model.P_n.x20, model.P_n.x21, model.P_n.x22, model.P_n.x23, model.P_n.x24,
+      //           model.P_n.x30, model.P_n.x31, model.P_n.x32, model.P_n.x33, model.P_n.x34,
+      //           model.P_n.x40, model.P_n.x41, model.P_n.x42, model.P_n.x43, model.P_n.x44);
+      //   log_status = 3;
+      // }
+      // else if (log_status == 3)
+      // {
+      //   sprintf(MSG, "k0: %0.2f, %0.2f, %0.2f, k1: %0.2f, %0.2f, %0.2f, end\r\n",
+      //           model.K_j.x00, model.K_j.x01, model.K_j.x02,
+      //           model.K_j.x10, model.K_j.x11, model.K_j.x12);
+      //   log_status = 0;
+      // }
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 1000);
     }
 
@@ -1056,22 +1094,22 @@ int main(void)
 }
 
 /**
- * @brief System Clock Configuration
- * @retval None
- */
+  * @brief System Clock Configuration
+  * @retval None
+  */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-   */
+  */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-   * in the RCC_OscInitTypeDef structure.
-   */
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -1087,8 +1125,9 @@ void SystemClock_Config(void)
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-   */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
@@ -1101,10 +1140,71 @@ void SystemClock_Config(void)
 }
 
 /**
- * @brief TIM2 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_8;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_112CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_9;
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM2_Init(void)
 {
 
@@ -1120,9 +1220,9 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 84 - 1;
+  htim2.Init.Prescaler = 84-1;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 20000 - 1;
+  htim2.Init.Period = 20000-1;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -1156,61 +1256,14 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 2 */
   HAL_TIM_MspPostInit(&htim2);
+
 }
 
 /**
- * @brief TIM3 Initialization Function
- * @param None
- * @retval None
- */
-static void MX_TIM3_Init(void)
-{
-
-  /* USER CODE BEGIN TIM3_Init 0 */
-
-  /* USER CODE END TIM3_Init 0 */
-
-  TIM_Encoder_InitTypeDef sConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-
-  /* USER CODE BEGIN TIM3_Init 1 */
-
-  /* USER CODE END TIM3_Init 1 */
-  htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 0;
-  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 65535;
-  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
-  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
-  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
-  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC1Filter = 15;
-  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
-  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
-  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC2Filter = 15;
-  if (HAL_TIM_Encoder_Init(&htim3, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM3_Init 2 */
-
-  /* USER CODE END TIM3_Init 2 */
-}
-
-/**
- * @brief TIM4 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM4_Init(void)
 {
 
@@ -1262,13 +1315,14 @@ static void MX_TIM4_Init(void)
 
   /* USER CODE END TIM4_Init 2 */
   HAL_TIM_MspPostInit(&htim4);
+
 }
 
 /**
- * @brief USART1 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART1_UART_Init(void)
 {
 
@@ -1294,13 +1348,14 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
+
 }
 
 /**
- * @brief USART2 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART2_UART_Init(void)
 {
 
@@ -1326,13 +1381,14 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
 }
 
 /**
- * @brief USART6 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief USART6 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART6_UART_Init(void)
 {
 
@@ -1358,11 +1414,12 @@ static void MX_USART6_UART_Init(void)
   /* USER CODE BEGIN USART6_Init 2 */
 
   /* USER CODE END USART6_Init 2 */
+
 }
 
 /**
- * Enable DMA controller clock
- */
+  * Enable DMA controller clock
+  */
 static void MX_DMA_Init(void)
 {
 
@@ -1374,21 +1431,25 @@ static void MX_DMA_Init(void)
   /* DMA1_Stream5_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
   /* DMA2_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
+
 }
 
 /**
- * @brief GPIO Initialization Function
- * @param None
- * @retval None
- */
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
-  /* USER CODE END MX_GPIO_Init_1 */
+/* USER CODE BEGIN MX_GPIO_Init_1 */
+/* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -1397,7 +1458,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2 | GPIO_PIN_3, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2|GPIO_PIN_3, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
@@ -1409,13 +1470,13 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PC0 PC1 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1;
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PC2 PC3 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_3;
+  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_3;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -1428,8 +1489,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-  /* USER CODE END MX_GPIO_Init_2 */
+/* USER CODE BEGIN MX_GPIO_Init_2 */
+/* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -1437,9 +1498,9 @@ static void MX_GPIO_Init(void)
 /* USER CODE END 4 */
 
 /**
- * @brief  This function is executed in case of error occurrence.
- * @retval None
- */
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -1451,14 +1512,14 @@ void Error_Handler(void)
   /* USER CODE END Error_Handler_Debug */
 }
 
-#ifdef USE_FULL_ASSERT
+#ifdef  USE_FULL_ASSERT
 /**
- * @brief  Reports the name of the source file and the source line number
- *         where the assert_param error has occurred.
- * @param  file: pointer to the source file name
- * @param  line: assert_param error line source number
- * @retval None
- */
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
