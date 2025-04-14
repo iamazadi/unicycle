@@ -37,7 +37,7 @@
 #define TRANSMIT_LENGTH 300
 #define RECEIVE_FRAME_LENGTH 23
 #define TRANSMIT_FRAME_LENGTH 5
-#define N 3
+#define N 6
 #define M 2
 /* USER CODE END PD */
 
@@ -100,6 +100,11 @@ float reaction_wheel_speed = 0.0;
 float rolling_wheel_speed = 0.0;
 int encoder0 = 0;
 int encoder1 = 0;
+int encoderState = 0;
+int encoderLastState = 0;
+int encoderCounter = 0;
+int encoderChange = 0;
+int encoderVelocity = 0;
 uint32_t AD_RES_BUFFER[2];
 // define arrays for matrix-matrix and matrix-vector multiplication
 float x_k[N];
@@ -130,14 +135,22 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 }
 typedef struct
 {
-  int value0;                 // the value of the adc measurement on channel A
-  int value1;                 // the value of the adc measurement on channel B
+  int value0; // the value of the adc measurement on channel A
+  int value1; // the value of the adc measurement on channel B
+  int channelA;
+  int channelB;
+  int counter;
+  float angle;
+  int aState;
+  int aLastState;
   int change;                 // instantanious change in encoder value
   int accumulator;            // accumultes the instantanoius changes over a number of intervals
   int interval_counter;       // the number of intervals accumulated
   int intervals;              // maximum number intervals before averaging
   float pulse_per_revolution; // the number of pulses per revolution
-  float velocity;             // the wheel velocity
+  float threshold;            // the threshold for binarizing sensor readings
+  float velocity;             // the angular velocity
+  float acceleration;         // the angular acceleration
 } Encoder;
 
 typedef struct
@@ -160,6 +173,9 @@ typedef struct
   float calibrated_acc_x_acceleration;
   float calibrated_acc_y_acceleration;
   float calibrated_acc_z_acceleration;
+  float calibrated_acc_x_jerk;
+  float calibrated_acc_y_jerk;
+  float calibrated_acc_z_jerk;
   float calibrated_gyro_x;
   float calibrated_gyro_y;
   float calibrated_gyro_z;
@@ -184,43 +200,50 @@ typedef struct
   int active;
 } Controller;
 
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+float sigmoid(float x)
 {
-    // Conversion Complete & DMA Transfer Complete As Well
-    // So The AD_RES_BUFFER Is Now Updated
-    adc_receive_ok = 1;
+  return 1.0 / (1.0 + exp(-x));
 }
 
 Encoder updateEncoder(Encoder encoder)
 {
-  if (adc_receive_ok == 1) {
+  if (adc_receive_ok == 1)
+  {
     encoder.value0 = (AD_RES_BUFFER[0] << 4);
     encoder.value1 = (AD_RES_BUFFER[1] << 4);
+    float valueA = ((float)encoder.value0 - 32512.0) / 65025.0;
+    float valueB = ((float)encoder.value1 - 32512.0) / 65025.0;
+    if (valueA < encoder.threshold)
+    {
+      encoder.channelA = 0;
+    }
+    else
+    {
+      encoder.channelA = 1;
+    }
+    if (valueB < encoder.threshold)
+    {
+      encoder.channelB = 0;
+    }
+    else
+    {
+      encoder.channelB = 1;
+    }
     adc_receive_ok = 0;
   }
-  
-  // // Start ADC Conversion
-  // HAL_ADC_Start(&hadc1);
-  // // Poll ADC1 Perihperal & TimeOut = 1mSec
-  // HAL_ADC_PollForConversion(&hadc1, 1);
-  // Read The ADC Conversion Result & Map It To PWM DutyCycle
-  // AD_RES = HAL_ADC_GetValue(&hadc1);
-  // if (encoder.interval_counter > encoder.intervals)
-  // {
-  //   encoder.velocity = (float)encoder.accumulator / (float)encoder.interval_counter;
-  //   // convert the unit to radian per sample time
-  //   encoder.velocity = encoder.velocity / encoder.pulse_per_revolution * 2.0 * M_PI;
-  //   encoder.interval_counter = 0;
-  //   encoder.accumulator = 0;
-  // }
-  // else
-  // {
-  //   encoder.interval_counter++;
-  //   encoder.change = TIM3->CNT - encoder.value;
-  //   encoder.value = TIM3->CNT;
-  //   encoder.accumulator += encoder.change;
-  // }
-  // encoder.value = HAL_ADC_GetValue(&hadc1);
+  encoder.aState = encoder.channelA;
+  if (encoder.aState != encoder.aLastState)
+  {
+    if (encoder.channelB != encoder.aState)
+    {
+      encoder.angle = encoder.angle + (2.0 * M_PI / encoder.pulse_per_revolution);
+    }
+    else
+    {
+      encoder.angle = encoder.angle - (2.0 * M_PI / encoder.pulse_per_revolution);
+    }
+  }
+  encoder.aLastState = encoder.aState;
   return encoder;
 }
 
@@ -248,6 +271,9 @@ IMU parsedata(IMU sensor, float theta, uint8_t data[])
   float calibrated_acc_x_velocity = sensor.calibrated_acc_x_velocity;
   float calibrated_acc_y_velocity = sensor.calibrated_acc_y_velocity;
   float calibrated_acc_z_velocity = sensor.calibrated_acc_z_velocity;
+  float calibrated_acc_x_acceleration = sensor.calibrated_acc_x_acceleration;
+  float calibrated_acc_y_acceleration = sensor.calibrated_acc_y_acceleration;
+  float calibrated_acc_z_acceleration = sensor.calibrated_acc_z_acceleration;
   sensor.acc_x = (data[4] << 8) | data[5];
   sensor.acc_y = (data[6] << 8) | data[7];
   sensor.acc_z = (data[8] << 8) | data[9];
@@ -270,6 +296,9 @@ IMU parsedata(IMU sensor, float theta, uint8_t data[])
   sensor.calibrated_acc_x_acceleration = sensor.calibrated_acc_x_velocity - calibrated_acc_x_velocity;
   sensor.calibrated_acc_y_acceleration = sensor.calibrated_acc_y_velocity - calibrated_acc_y_velocity;
   sensor.calibrated_acc_z_acceleration = sensor.calibrated_acc_z_velocity - calibrated_acc_z_velocity;
+  sensor.calibrated_acc_x_jerk = sensor.calibrated_acc_x_acceleration - calibrated_acc_x_acceleration;
+  sensor.calibrated_acc_y_jerk = sensor.calibrated_acc_y_acceleration - calibrated_acc_y_acceleration;
+  sensor.calibrated_acc_z_jerk = sensor.calibrated_acc_z_acceleration - calibrated_acc_z_acceleration;
   return sensor;
 }
 
@@ -291,11 +320,6 @@ IMU updateIMU(IMU gy_25t)
     }
   }
   return gy_25t;
-}
-
-float sigmoid(float x)
-{
-  return 1.0 / (1.0 + exp(-x));
 }
 
 float clip_by_value(float x, float clip_value)
@@ -331,12 +355,6 @@ typedef struct
   float x0;
   float x1;
   float x2;
-} Vec3f;
-typedef struct
-{
-  float x0;
-  float x1;
-  float x2;
   float x3;
   float x4;
   float x5;
@@ -344,28 +362,13 @@ typedef struct
   float x7;
   float x8;
   float x9;
-} Vec10f;
-typedef struct
-{
-  float x00;
-  float x01;
-  float x02;
   float x10;
   float x11;
   float x12;
-  float x20;
-  float x21;
-  float x22;
-} Mat3f;
-typedef struct
-{
-  float x00;
-  float x01;
-  float x02;
-  float x10;
-  float x11;
-  float x12;
-} Mat23f;
+  float x13;
+  float x14;
+  float x15;
+} Vec16f;
 typedef struct
 {
   float x00;
@@ -373,34 +376,88 @@ typedef struct
   float x02;
   float x03;
   float x04;
+  float x05;
   float x10;
   float x11;
   float x12;
   float x13;
   float x14;
+  float x15;
+} Mat26f;
+typedef struct
+{
+  float x00;
+  float x01;
+  float x02;
+  float x03;
+  float x04;
+  float x05;
+  float x06;
+  float x07;
+  float x10;
+  float x11;
+  float x12;
+  float x13;
+  float x14;
+  float x15;
+  float x16;
+  float x17;
   float x20;
   float x21;
   float x22;
   float x23;
   float x24;
+  float x25;
+  float x26;
+  float x27;
   float x30;
   float x31;
   float x32;
   float x33;
   float x34;
+  float x35;
+  float x36;
+  float x37;
   float x40;
   float x41;
   float x42;
   float x43;
   float x44;
-} Mat5f;
+  float x45;
+  float x46;
+  float x47;
+  float x50;
+  float x51;
+  float x52;
+  float x53;
+  float x54;
+  float x55;
+  float x56;
+  float x57;
+  float x60;
+  float x61;
+  float x62;
+  float x63;
+  float x64;
+  float x65;
+  float x66;
+  float x67;
+  float x70;
+  float x71;
+  float x72;
+  float x73;
+  float x74;
+  float x75;
+  float x76;
+  float x77;
+} Mat8f;
 // Represents a Linear Quadratic Regulator (LQR) model.
 typedef struct
 {
-  Mat5f W_n;      // filter matrix
-  Mat5f P_n;      // inverse autocorrelation matrix
-  Mat23f K_j;     // feedback policy
-  Vec10f dataset; // (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
+  Mat8f W_n;      // filter matrix
+  Mat8f P_n;      // inverse autocorrelation matrix
+  Mat26f K_j;     // feedback policy
+  Vec16f dataset; // (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
   int j;          // step number
   int k;          // time k
   float reward;   // the cumulative reward
@@ -414,6 +471,16 @@ typedef struct
   IMU imu;
   Encoder encoder;
 } LinearQuadraticRegulator;
+
+// instantiate a model and initialize it
+LinearQuadraticRegulator model;
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+  // Conversion Complete & DMA Transfer Complete As Well
+  // So The AD_RES_BUFFER Is Now Updated
+  adc_receive_ok = 1;
+}
 
 // Initialize the randomizer using the current timestamp as a seed
 // (The time() function is provided by the <time.h> header file)
@@ -437,59 +504,143 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.W_n.x02 = (float)(rand() % 100) / 100.0;
   model.W_n.x03 = (float)(rand() % 100) / 100.0;
   model.W_n.x04 = (float)(rand() % 100) / 100.0;
+  model.W_n.x05 = (float)(rand() % 100) / 100.0;
+  model.W_n.x06 = (float)(rand() % 100) / 100.0;
+  model.W_n.x07 = (float)(rand() % 100) / 100.0;
   model.W_n.x10 = (float)(rand() % 100) / 100.0;
   model.W_n.x11 = (float)(rand() % 100) / 100.0;
   model.W_n.x12 = (float)(rand() % 100) / 100.0;
   model.W_n.x13 = (float)(rand() % 100) / 100.0;
   model.W_n.x14 = (float)(rand() % 100) / 100.0;
+  model.W_n.x15 = (float)(rand() % 100) / 100.0;
+  model.W_n.x16 = (float)(rand() % 100) / 100.0;
+  model.W_n.x17 = (float)(rand() % 100) / 100.0;
   model.W_n.x20 = (float)(rand() % 100) / 100.0;
   model.W_n.x21 = (float)(rand() % 100) / 100.0;
   model.W_n.x22 = (float)(rand() % 100) / 100.0;
   model.W_n.x23 = (float)(rand() % 100) / 100.0;
   model.W_n.x24 = (float)(rand() % 100) / 100.0;
+  model.W_n.x25 = (float)(rand() % 100) / 100.0;
+  model.W_n.x26 = (float)(rand() % 100) / 100.0;
+  model.W_n.x27 = (float)(rand() % 100) / 100.0;
   model.W_n.x30 = (float)(rand() % 100) / 100.0;
   model.W_n.x31 = (float)(rand() % 100) / 100.0;
   model.W_n.x32 = (float)(rand() % 100) / 100.0;
   model.W_n.x33 = (float)(rand() % 100) / 100.0;
   model.W_n.x34 = (float)(rand() % 100) / 100.0;
+  model.W_n.x35 = (float)(rand() % 100) / 100.0;
+  model.W_n.x36 = (float)(rand() % 100) / 100.0;
+  model.W_n.x37 = (float)(rand() % 100) / 100.0;
   model.W_n.x40 = (float)(rand() % 100) / 100.0;
   model.W_n.x41 = (float)(rand() % 100) / 100.0;
   model.W_n.x42 = (float)(rand() % 100) / 100.0;
   model.W_n.x43 = (float)(rand() % 100) / 100.0;
   model.W_n.x44 = (float)(rand() % 100) / 100.0;
+  model.W_n.x45 = (float)(rand() % 100) / 100.0;
+  model.W_n.x46 = (float)(rand() % 100) / 100.0;
+  model.W_n.x47 = (float)(rand() % 100) / 100.0;
+  model.W_n.x50 = (float)(rand() % 100) / 100.0;
+  model.W_n.x51 = (float)(rand() % 100) / 100.0;
+  model.W_n.x52 = (float)(rand() % 100) / 100.0;
+  model.W_n.x53 = (float)(rand() % 100) / 100.0;
+  model.W_n.x54 = (float)(rand() % 100) / 100.0;
+  model.W_n.x55 = (float)(rand() % 100) / 100.0;
+  model.W_n.x56 = (float)(rand() % 100) / 100.0;
+  model.W_n.x57 = (float)(rand() % 100) / 100.0;
+  model.W_n.x60 = (float)(rand() % 100) / 100.0;
+  model.W_n.x61 = (float)(rand() % 100) / 100.0;
+  model.W_n.x62 = (float)(rand() % 100) / 100.0;
+  model.W_n.x63 = (float)(rand() % 100) / 100.0;
+  model.W_n.x64 = (float)(rand() % 100) / 100.0;
+  model.W_n.x65 = (float)(rand() % 100) / 100.0;
+  model.W_n.x66 = (float)(rand() % 100) / 100.0;
+  model.W_n.x67 = (float)(rand() % 100) / 100.0;
+  model.W_n.x70 = (float)(rand() % 100) / 100.0;
+  model.W_n.x71 = (float)(rand() % 100) / 100.0;
+  model.W_n.x72 = (float)(rand() % 100) / 100.0;
+  model.W_n.x73 = (float)(rand() % 100) / 100.0;
+  model.W_n.x74 = (float)(rand() % 100) / 100.0;
+  model.W_n.x75 = (float)(rand() % 100) / 100.0;
+  model.W_n.x76 = (float)(rand() % 100) / 100.0;
+  model.W_n.x77 = (float)(rand() % 100) / 100.0;
 
   model.P_n.x00 = 1.0 / model.delta;
   model.P_n.x01 = 0.0;
   model.P_n.x02 = 0.0;
   model.P_n.x03 = 0.0;
   model.P_n.x04 = 0.0;
+  model.P_n.x05 = 0.0;
+  model.P_n.x06 = 0.0;
+  model.P_n.x07 = 0.0;
   model.P_n.x10 = 0.0;
   model.P_n.x11 = 1.0 / model.delta;
   model.P_n.x12 = 0.0;
   model.P_n.x13 = 0.0;
   model.P_n.x14 = 0.0;
+  model.P_n.x15 = 0.0;
+  model.P_n.x16 = 0.0;
+  model.P_n.x17 = 0.0;
   model.P_n.x20 = 0.0;
   model.P_n.x21 = 0.0;
   model.P_n.x22 = 1.0 / model.delta;
   model.P_n.x23 = 0.0;
   model.P_n.x24 = 0.0;
+  model.P_n.x25 = 0.0;
+  model.P_n.x26 = 0.0;
+  model.P_n.x27 = 0.0;
   model.P_n.x30 = 0.0;
   model.P_n.x31 = 0.0;
   model.P_n.x32 = 0.0;
   model.P_n.x33 = 1.0 / model.delta;
   model.P_n.x34 = 0.0;
+  model.P_n.x35 = 0.0;
+  model.P_n.x36 = 0.0;
+  model.P_n.x37 = 0.0;
   model.P_n.x40 = 0.0;
   model.P_n.x41 = 0.0;
   model.P_n.x42 = 0.0;
   model.P_n.x43 = 0.0;
   model.P_n.x44 = 1.0 / model.delta;
+  model.P_n.x45 = 0.0;
+  model.P_n.x46 = 0.0;
+  model.P_n.x47 = 0.0;
+  model.P_n.x50 = 0.0;
+  model.P_n.x51 = 0.0;
+  model.P_n.x52 = 0.0;
+  model.P_n.x53 = 0.0;
+  model.P_n.x54 = 0.0;
+  model.P_n.x55 = 1.0 / model.delta;
+  model.P_n.x56 = 0.0;
+  model.P_n.x57 = 0.0;
+  model.P_n.x60 = 0.0;
+  model.P_n.x61 = 0.0;
+  model.P_n.x62 = 0.0;
+  model.P_n.x63 = 0.0;
+  model.P_n.x64 = 0.0;
+  model.P_n.x65 = 0.0;
+  model.P_n.x66 = 1.0 / model.delta;
+  model.P_n.x67 = 0.0;
+  model.P_n.x70 = 0.0;
+  model.P_n.x71 = 0.0;
+  model.P_n.x72 = 0.0;
+  model.P_n.x73 = 0.0;
+  model.P_n.x74 = 0.0;
+  model.P_n.x75 = 0.0;
+  model.P_n.x76 = 0.0;
+  model.P_n.x77 = 1.0 / model.delta;
 
   model.K_j.x00 = (float)(rand() % 100) / 100.0;
   model.K_j.x01 = (float)(rand() % 100) / 100.0;
   model.K_j.x02 = (float)(rand() % 100) / 100.0;
+  model.K_j.x03 = (float)(rand() % 100) / 100.0;
+  model.K_j.x04 = (float)(rand() % 100) / 100.0;
+  model.K_j.x05 = (float)(rand() % 100) / 100.0;
   model.K_j.x10 = (float)(rand() % 100) / 100.0;
   model.K_j.x11 = (float)(rand() % 100) / 100.0;
   model.K_j.x12 = (float)(rand() % 100) / 100.0;
+  model.K_j.x13 = (float)(rand() % 100) / 100.0;
+  model.K_j.x14 = (float)(rand() % 100) / 100.0;
+  model.K_j.x15 = (float)(rand() % 100) / 100.0;
 
   model.dataset.x0 = 0.0;
   model.dataset.x1 = 0.0;
@@ -501,8 +652,14 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.dataset.x7 = 0.0;
   model.dataset.x8 = 0.0;
   model.dataset.x9 = 0.0;
-  IMU imu = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
-  Encoder encoder = {0, 0, 0, 0, 0, 100, 50.0, 0.0};
+  model.dataset.x10 = 0.0;
+  model.dataset.x11 = 0.0;
+  model.dataset.x12 = 0.0;
+  model.dataset.x13 = 0.0;
+  model.dataset.x14 = 0.0;
+  model.dataset.x15 = 0.0;
+  IMU imu = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
+  Encoder encoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 30, 50.0, 0.0, 0.0, 0.0};
   model.imu = imu;
   model.encoder = encoder;
   return model;
@@ -519,12 +676,21 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   x_k[0] = model.dataset.x0;
   x_k[1] = model.dataset.x1;
   x_k[2] = model.dataset.x2;
+  x_k[3] = model.dataset.x3;
+  x_k[4] = model.dataset.x4;
+  x_k[5] = model.dataset.x5;
   K_j[0][0] = model.K_j.x00;
   K_j[0][1] = model.K_j.x01;
   K_j[0][2] = model.K_j.x02;
+  K_j[0][3] = model.K_j.x03;
+  K_j[0][4] = model.K_j.x04;
+  K_j[0][5] = model.K_j.x05;
   K_j[1][0] = model.K_j.x10;
   K_j[1][1] = model.K_j.x11;
   K_j[1][2] = model.K_j.x12;
+  K_j[1][3] = model.K_j.x13;
+  K_j[1][4] = model.K_j.x14;
+  K_j[1][5] = model.K_j.x15;
   u_k[0] = 0.0;
   u_k[1] = 0.0;
   // feeback policy
@@ -540,12 +706,16 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
     u_k[i] = sigmoid(u_k[i]);
   }
   // act!
-  model.dataset.x0 = model.imu.calibrated_acc_y;
+  model.dataset.x0 = -model.imu.calibrated_acc_y;
   model.dataset.x1 = model.imu.calibrated_acc_y_velocity;
   model.dataset.x2 = model.imu.calibrated_acc_y_acceleration;
-  // model.dataset.x3 = model.encoder.velocity;
-  model.dataset.x3 = u_k[0];
-  model.dataset.x4 = u_k[1];
+  model.dataset.x3 = -pow(model.imu.calibrated_acc_y, 2);
+  model.dataset.x4 = pow(model.imu.calibrated_acc_y_velocity, 2);
+  model.dataset.x5 = pow(model.imu.calibrated_acc_y_acceleration, 2);
+  // model.dataset.x3 = model.imu.calibrated_acc_y_jerk;
+  // model.dataset.x3 = model.imu.calibrated_acc_y > 0.0 ? pow(model.imu.calibrated_acc_y, 2) : -pow(model.imu.calibrated_acc_y, 2);
+  model.dataset.x6 = u_k[0];
+  model.dataset.x7 = u_k[1];
   int index = argmax(u_k, M);
   float action = sigmoid(u_k[index]);
   if (model.active == 1)
@@ -553,8 +723,8 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
     // 0-90 clockwise
     // 90-135 anti-clockwise
     servoAngle = index == 0 ? servoAngle + action : servoAngle - action;
-    servoAngle = fmin(servoAngle, 125.0);
-    servoAngle = fmax(servoAngle, 20.0);
+    servoAngle = fmin(servoAngle, 135.0);
+    servoAngle = fmax(servoAngle, 0.0);
     setServoAngle(servoAngle);
   }
   else
@@ -565,13 +735,20 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   // dataset = (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
   model.encoder = updateEncoder(model.encoder);
   model.imu = updateIMU(model.imu);
-  model.dataset.x5 = model.imu.calibrated_acc_y;
-  model.dataset.x6 = model.imu.calibrated_acc_y_velocity;
-  model.dataset.x7 = model.imu.calibrated_acc_y_acceleration;
-  // model.dataset.x8 = model.encoder.velocity;
-  x_k1[0] = model.dataset.x5;
-  x_k1[1] = model.dataset.x6;
-  x_k1[2] = model.dataset.x7;
+  model.dataset.x8 = -model.imu.calibrated_acc_y;
+  model.dataset.x9 = model.imu.calibrated_acc_y_velocity;
+  model.dataset.x10 = model.imu.calibrated_acc_y_acceleration;
+  model.dataset.x11 = -pow(model.imu.calibrated_acc_y, 2);
+  model.dataset.x12 = pow(model.imu.calibrated_acc_y_velocity, 2);
+  model.dataset.x13 = pow(model.imu.calibrated_acc_y_acceleration, 2);
+  // model.dataset.x9 = model.imu.calibrated_acc_y_jerk;
+  // model.dataset.x9 = model.imu.calibrated_acc_y > 0.0 ? pow(model.imu.calibrated_acc_y, 2) : -pow(model.imu.calibrated_acc_y, 2);
+  x_k1[0] = model.dataset.x8;
+  x_k1[1] = model.dataset.x9;
+  x_k1[2] = model.dataset.x10;
+  x_k1[3] = model.dataset.x11;
+  x_k1[4] = model.dataset.x12;
+  x_k1[5] = model.dataset.x13;
   u_k1[0] = 0.0;
   u_k1[1] = 0.0;
   for (int i = 0; i < model.m; i++)
@@ -585,19 +762,25 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   {
     u_k1[i] = sigmoid(u_k1[i]);
   }
-  model.dataset.x8 = u_k1[0];
-  model.dataset.x9 = u_k1[1];
+  model.dataset.x14 = u_k1[0];
+  model.dataset.x15 = u_k1[1];
   // Compute the quadratic basis sets ϕ(zₖ), ϕ(zₖ₊₁).
   z_k[0] = model.dataset.x0;
   z_k[1] = model.dataset.x1;
   z_k[2] = model.dataset.x2;
   z_k[3] = model.dataset.x3;
   z_k[4] = model.dataset.x4;
-  z_k1[0] = model.dataset.x5;
-  z_k1[1] = model.dataset.x6;
-  z_k1[2] = model.dataset.x7;
-  z_k1[3] = model.dataset.x8;
-  z_k1[4] = model.dataset.x9;
+  z_k[5] = model.dataset.x5;
+  z_k[6] = model.dataset.x6;
+  z_k[7] = model.dataset.x7;
+  z_k1[0] = model.dataset.x8;
+  z_k1[1] = model.dataset.x9;
+  z_k1[2] = model.dataset.x10;
+  z_k1[3] = model.dataset.x11;
+  z_k1[4] = model.dataset.x12;
+  z_k1[5] = model.dataset.x13;
+  z_k1[6] = model.dataset.x14;
+  z_k1[7] = model.dataset.x15;
   for (int i = 0; i < model.n + model.m; i++)
   {
     basisset0[i] = sigmoid(z_k[i]);
@@ -609,52 +792,130 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   P_n[0][2] = model.P_n.x02;
   P_n[0][3] = model.P_n.x03;
   P_n[0][4] = model.P_n.x04;
+  P_n[0][5] = model.P_n.x05;
+  P_n[0][6] = model.P_n.x06;
+  P_n[0][7] = model.P_n.x07;
   P_n[1][0] = model.P_n.x10;
   P_n[1][1] = model.P_n.x11;
   P_n[1][2] = model.P_n.x12;
   P_n[1][3] = model.P_n.x13;
   P_n[1][4] = model.P_n.x14;
+  P_n[1][5] = model.P_n.x15;
+  P_n[1][6] = model.P_n.x16;
+  P_n[1][7] = model.P_n.x17;
   P_n[2][0] = model.P_n.x20;
   P_n[2][1] = model.P_n.x21;
   P_n[2][2] = model.P_n.x22;
   P_n[2][3] = model.P_n.x23;
   P_n[2][4] = model.P_n.x24;
+  P_n[2][5] = model.P_n.x25;
+  P_n[2][6] = model.P_n.x26;
+  P_n[2][7] = model.P_n.x27;
   P_n[3][0] = model.P_n.x30;
   P_n[3][1] = model.P_n.x31;
   P_n[3][2] = model.P_n.x32;
   P_n[3][3] = model.P_n.x33;
   P_n[3][4] = model.P_n.x34;
+  P_n[3][5] = model.P_n.x35;
+  P_n[3][6] = model.P_n.x36;
+  P_n[3][7] = model.P_n.x37;
   P_n[4][0] = model.P_n.x40;
   P_n[4][1] = model.P_n.x41;
   P_n[4][2] = model.P_n.x42;
   P_n[4][3] = model.P_n.x43;
   P_n[4][4] = model.P_n.x44;
+  P_n[4][5] = model.P_n.x45;
+  P_n[4][6] = model.P_n.x46;
+  P_n[4][7] = model.P_n.x47;
+  P_n[5][0] = model.P_n.x50;
+  P_n[5][1] = model.P_n.x51;
+  P_n[5][2] = model.P_n.x52;
+  P_n[5][3] = model.P_n.x53;
+  P_n[5][4] = model.P_n.x54;
+  P_n[5][5] = model.P_n.x55;
+  P_n[5][6] = model.P_n.x56;
+  P_n[5][7] = model.P_n.x57;
+  P_n[6][0] = model.P_n.x60;
+  P_n[6][1] = model.P_n.x61;
+  P_n[6][2] = model.P_n.x62;
+  P_n[6][3] = model.P_n.x63;
+  P_n[6][4] = model.P_n.x64;
+  P_n[6][5] = model.P_n.x65;
+  P_n[6][6] = model.P_n.x66;
+  P_n[6][7] = model.P_n.x67;
+  P_n[7][0] = model.P_n.x70;
+  P_n[7][1] = model.P_n.x71;
+  P_n[7][2] = model.P_n.x72;
+  P_n[7][3] = model.P_n.x73;
+  P_n[7][4] = model.P_n.x74;
+  P_n[7][5] = model.P_n.x75;
+  P_n[7][6] = model.P_n.x76;
+  P_n[7][7] = model.P_n.x77;
 
   W_n[0][0] = model.W_n.x00;
   W_n[0][1] = model.W_n.x01;
   W_n[0][2] = model.W_n.x02;
   W_n[0][3] = model.W_n.x03;
   W_n[0][4] = model.W_n.x04;
+  W_n[0][5] = model.W_n.x05;
+  W_n[0][6] = model.W_n.x06;
+  W_n[0][7] = model.W_n.x07;
   W_n[1][0] = model.W_n.x10;
   W_n[1][1] = model.W_n.x11;
   W_n[1][2] = model.W_n.x12;
   W_n[1][3] = model.W_n.x13;
   W_n[1][4] = model.W_n.x14;
+  W_n[1][5] = model.W_n.x15;
+  W_n[1][6] = model.W_n.x16;
+  W_n[1][7] = model.W_n.x17;
   W_n[2][0] = model.W_n.x20;
   W_n[2][1] = model.W_n.x21;
   W_n[2][2] = model.W_n.x22;
   W_n[2][3] = model.W_n.x23;
   W_n[2][4] = model.W_n.x24;
+  W_n[2][5] = model.W_n.x25;
+  W_n[2][6] = model.W_n.x26;
+  W_n[2][7] = model.W_n.x27;
   W_n[3][0] = model.W_n.x30;
   W_n[3][1] = model.W_n.x31;
   W_n[3][2] = model.W_n.x32;
   W_n[3][3] = model.W_n.x33;
   W_n[3][4] = model.W_n.x34;
+  W_n[3][5] = model.W_n.x35;
+  W_n[3][6] = model.W_n.x36;
+  W_n[3][7] = model.W_n.x37;
   W_n[4][0] = model.W_n.x40;
   W_n[4][1] = model.W_n.x41;
   W_n[4][2] = model.W_n.x42;
   W_n[4][3] = model.W_n.x43;
   W_n[4][4] = model.W_n.x44;
+  W_n[4][5] = model.W_n.x45;
+  W_n[4][6] = model.W_n.x46;
+  W_n[4][7] = model.W_n.x47;
+  W_n[5][0] = model.W_n.x50;
+  W_n[5][1] = model.W_n.x51;
+  W_n[5][2] = model.W_n.x52;
+  W_n[5][3] = model.W_n.x53;
+  W_n[5][4] = model.W_n.x54;
+  W_n[5][5] = model.W_n.x55;
+  W_n[5][6] = model.W_n.x56;
+  W_n[5][7] = model.W_n.x57;
+  W_n[6][0] = model.W_n.x60;
+  W_n[6][1] = model.W_n.x61;
+  W_n[6][2] = model.W_n.x62;
+  W_n[6][3] = model.W_n.x63;
+  W_n[6][4] = model.W_n.x64;
+  W_n[6][5] = model.W_n.x65;
+  W_n[6][6] = model.W_n.x66;
+  W_n[6][7] = model.W_n.x67;
+  W_n[7][0] = model.W_n.x70;
+  W_n[7][1] = model.W_n.x71;
+  W_n[7][2] = model.W_n.x72;
+  W_n[7][3] = model.W_n.x73;
+  W_n[7][4] = model.W_n.x74;
+  W_n[7][5] = model.W_n.x75;
+  W_n[7][6] = model.W_n.x76;
+  W_n[7][7] = model.W_n.x77;
 
   // initialize z_n
   for (int i = 0; i < model.n + model.m; i++)
@@ -673,7 +934,7 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   {
     z_k_dot_z_n += z_k[i] * z_n[i];
   }
-  for (int i = 0; i < N + M; i++)
+  for (int i = 0; i < model.n + model.m; i++)
   {
     g_n[i] = 1.0 / (model.lambda + z_k_dot_z_n) * z_n[i];
   }
@@ -709,52 +970,130 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   model.W_n.x02 = clip_by_value(W_n[0][2], clip_value);
   model.W_n.x03 = clip_by_value(W_n[0][3], clip_value);
   model.W_n.x04 = clip_by_value(W_n[0][4], clip_value);
+  model.W_n.x05 = clip_by_value(W_n[0][5], clip_value);
+  model.W_n.x06 = clip_by_value(W_n[0][6], clip_value);
+  model.W_n.x07 = clip_by_value(W_n[0][7], clip_value);
   model.W_n.x10 = clip_by_value(W_n[1][0], clip_value);
   model.W_n.x11 = clip_by_value(W_n[1][1], clip_value);
   model.W_n.x12 = clip_by_value(W_n[1][2], clip_value);
   model.W_n.x13 = clip_by_value(W_n[1][3], clip_value);
   model.W_n.x14 = clip_by_value(W_n[1][4], clip_value);
+  model.W_n.x15 = clip_by_value(W_n[1][5], clip_value);
+  model.W_n.x16 = clip_by_value(W_n[1][6], clip_value);
+  model.W_n.x17 = clip_by_value(W_n[1][7], clip_value);
   model.W_n.x20 = clip_by_value(W_n[2][0], clip_value);
   model.W_n.x21 = clip_by_value(W_n[2][1], clip_value);
   model.W_n.x22 = clip_by_value(W_n[2][2], clip_value);
   model.W_n.x23 = clip_by_value(W_n[2][3], clip_value);
   model.W_n.x24 = clip_by_value(W_n[2][4], clip_value);
+  model.W_n.x25 = clip_by_value(W_n[2][5], clip_value);
+  model.W_n.x26 = clip_by_value(W_n[2][6], clip_value);
+  model.W_n.x27 = clip_by_value(W_n[2][7], clip_value);
   model.W_n.x30 = clip_by_value(W_n[3][0], clip_value);
   model.W_n.x31 = clip_by_value(W_n[3][1], clip_value);
   model.W_n.x32 = clip_by_value(W_n[3][2], clip_value);
   model.W_n.x33 = clip_by_value(W_n[3][3], clip_value);
   model.W_n.x34 = clip_by_value(W_n[3][4], clip_value);
+  model.W_n.x35 = clip_by_value(W_n[3][5], clip_value);
+  model.W_n.x36 = clip_by_value(W_n[3][6], clip_value);
+  model.W_n.x37 = clip_by_value(W_n[3][7], clip_value);
   model.W_n.x40 = clip_by_value(W_n[4][0], clip_value);
   model.W_n.x41 = clip_by_value(W_n[4][1], clip_value);
   model.W_n.x42 = clip_by_value(W_n[4][2], clip_value);
   model.W_n.x43 = clip_by_value(W_n[4][3], clip_value);
   model.W_n.x44 = clip_by_value(W_n[4][4], clip_value);
+  model.W_n.x45 = clip_by_value(W_n[4][5], clip_value);
+  model.W_n.x46 = clip_by_value(W_n[4][6], clip_value);
+  model.W_n.x47 = clip_by_value(W_n[4][7], clip_value);
+  model.W_n.x50 = clip_by_value(W_n[5][0], clip_value);
+  model.W_n.x51 = clip_by_value(W_n[5][1], clip_value);
+  model.W_n.x52 = clip_by_value(W_n[5][2], clip_value);
+  model.W_n.x53 = clip_by_value(W_n[5][3], clip_value);
+  model.W_n.x54 = clip_by_value(W_n[5][4], clip_value);
+  model.W_n.x55 = clip_by_value(W_n[5][5], clip_value);
+  model.W_n.x56 = clip_by_value(W_n[5][6], clip_value);
+  model.W_n.x57 = clip_by_value(W_n[5][7], clip_value);
+  model.W_n.x60 = clip_by_value(W_n[6][0], clip_value);
+  model.W_n.x61 = clip_by_value(W_n[6][1], clip_value);
+  model.W_n.x62 = clip_by_value(W_n[6][2], clip_value);
+  model.W_n.x63 = clip_by_value(W_n[6][3], clip_value);
+  model.W_n.x64 = clip_by_value(W_n[6][4], clip_value);
+  model.W_n.x65 = clip_by_value(W_n[6][5], clip_value);
+  model.W_n.x66 = clip_by_value(W_n[6][6], clip_value);
+  model.W_n.x67 = clip_by_value(W_n[6][7], clip_value);
+  model.W_n.x70 = clip_by_value(W_n[7][0], clip_value);
+  model.W_n.x71 = clip_by_value(W_n[7][1], clip_value);
+  model.W_n.x72 = clip_by_value(W_n[7][2], clip_value);
+  model.W_n.x73 = clip_by_value(W_n[7][3], clip_value);
+  model.W_n.x74 = clip_by_value(W_n[7][4], clip_value);
+  model.W_n.x75 = clip_by_value(W_n[7][5], clip_value);
+  model.W_n.x76 = clip_by_value(W_n[7][6], clip_value);
+  model.W_n.x77 = clip_by_value(W_n[7][7], clip_value);
 
   model.P_n.x00 = clip_by_value(P_n[0][0], clip_value);
   model.P_n.x01 = clip_by_value(P_n[0][1], clip_value);
   model.P_n.x02 = clip_by_value(P_n[0][2], clip_value);
   model.P_n.x03 = clip_by_value(P_n[0][3], clip_value);
   model.P_n.x04 = clip_by_value(P_n[0][4], clip_value);
+  model.P_n.x05 = clip_by_value(P_n[0][5], clip_value);
+  model.P_n.x06 = clip_by_value(P_n[0][6], clip_value);
+  model.P_n.x07 = clip_by_value(P_n[0][7], clip_value);
   model.P_n.x10 = clip_by_value(P_n[1][0], clip_value);
   model.P_n.x11 = clip_by_value(P_n[1][1], clip_value);
   model.P_n.x12 = clip_by_value(P_n[1][2], clip_value);
   model.P_n.x13 = clip_by_value(P_n[1][3], clip_value);
   model.P_n.x14 = clip_by_value(P_n[1][4], clip_value);
+  model.P_n.x15 = clip_by_value(P_n[1][5], clip_value);
+  model.P_n.x16 = clip_by_value(P_n[1][6], clip_value);
+  model.P_n.x17 = clip_by_value(P_n[1][7], clip_value);
   model.P_n.x20 = clip_by_value(P_n[2][0], clip_value);
   model.P_n.x21 = clip_by_value(P_n[2][1], clip_value);
   model.P_n.x22 = clip_by_value(P_n[2][2], clip_value);
   model.P_n.x23 = clip_by_value(P_n[2][3], clip_value);
   model.P_n.x24 = clip_by_value(P_n[2][4], clip_value);
+  model.P_n.x25 = clip_by_value(P_n[2][5], clip_value);
+  model.P_n.x26 = clip_by_value(P_n[2][6], clip_value);
+  model.P_n.x27 = clip_by_value(P_n[2][7], clip_value);
   model.P_n.x30 = clip_by_value(P_n[3][0], clip_value);
   model.P_n.x31 = clip_by_value(P_n[3][1], clip_value);
   model.P_n.x32 = clip_by_value(P_n[3][2], clip_value);
   model.P_n.x33 = clip_by_value(P_n[3][3], clip_value);
   model.P_n.x34 = clip_by_value(P_n[3][4], clip_value);
+  model.P_n.x35 = clip_by_value(P_n[3][5], clip_value);
+  model.P_n.x36 = clip_by_value(P_n[3][6], clip_value);
+  model.P_n.x37 = clip_by_value(P_n[3][7], clip_value);
   model.P_n.x40 = clip_by_value(P_n[4][0], clip_value);
   model.P_n.x41 = clip_by_value(P_n[4][1], clip_value);
   model.P_n.x42 = clip_by_value(P_n[4][2], clip_value);
   model.P_n.x43 = clip_by_value(P_n[4][3], clip_value);
   model.P_n.x44 = clip_by_value(P_n[4][4], clip_value);
+  model.P_n.x45 = clip_by_value(P_n[4][5], clip_value);
+  model.P_n.x46 = clip_by_value(P_n[4][6], clip_value);
+  model.P_n.x47 = clip_by_value(P_n[4][7], clip_value);
+  model.P_n.x50 = clip_by_value(P_n[5][0], clip_value);
+  model.P_n.x51 = clip_by_value(P_n[5][1], clip_value);
+  model.P_n.x52 = clip_by_value(P_n[5][2], clip_value);
+  model.P_n.x53 = clip_by_value(P_n[5][3], clip_value);
+  model.P_n.x54 = clip_by_value(P_n[5][4], clip_value);
+  model.P_n.x55 = clip_by_value(P_n[5][5], clip_value);
+  model.P_n.x56 = clip_by_value(P_n[5][6], clip_value);
+  model.P_n.x57 = clip_by_value(P_n[5][7], clip_value);
+  model.P_n.x60 = clip_by_value(P_n[6][0], clip_value);
+  model.P_n.x61 = clip_by_value(P_n[6][1], clip_value);
+  model.P_n.x62 = clip_by_value(P_n[6][2], clip_value);
+  model.P_n.x63 = clip_by_value(P_n[6][3], clip_value);
+  model.P_n.x64 = clip_by_value(P_n[6][4], clip_value);
+  model.P_n.x65 = clip_by_value(P_n[6][5], clip_value);
+  model.P_n.x66 = clip_by_value(P_n[6][6], clip_value);
+  model.P_n.x67 = clip_by_value(P_n[6][7], clip_value);
+  model.P_n.x70 = clip_by_value(P_n[7][0], clip_value);
+  model.P_n.x71 = clip_by_value(P_n[7][1], clip_value);
+  model.P_n.x72 = clip_by_value(P_n[7][2], clip_value);
+  model.P_n.x73 = clip_by_value(P_n[7][3], clip_value);
+  model.P_n.x74 = clip_by_value(P_n[7][4], clip_value);
+  model.P_n.x75 = clip_by_value(P_n[7][5], clip_value);
+  model.P_n.x76 = clip_by_value(P_n[7][6], clip_value);
+  model.P_n.x77 = clip_by_value(P_n[7][7], clip_value);
   // Repeat at the next time k + 1 and continue until RLS converges and the new parameter vector Wⱼ₊₁ is found.
   model.k = k + 1;
   return model;
@@ -772,26 +1111,65 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
   W_n[0][2] = model.W_n.x02;
   W_n[0][3] = model.W_n.x03;
   W_n[0][4] = model.W_n.x04;
+  W_n[0][5] = model.W_n.x05;
+  W_n[0][6] = model.W_n.x06;
+  W_n[0][7] = model.W_n.x07;
   W_n[1][0] = model.W_n.x10;
   W_n[1][1] = model.W_n.x11;
   W_n[1][2] = model.W_n.x12;
   W_n[1][3] = model.W_n.x13;
   W_n[1][4] = model.W_n.x14;
+  W_n[1][5] = model.W_n.x15;
+  W_n[1][6] = model.W_n.x16;
+  W_n[1][7] = model.W_n.x17;
   W_n[2][0] = model.W_n.x20;
   W_n[2][1] = model.W_n.x21;
   W_n[2][2] = model.W_n.x22;
   W_n[2][3] = model.W_n.x23;
   W_n[2][4] = model.W_n.x24;
+  W_n[2][5] = model.W_n.x25;
+  W_n[2][6] = model.W_n.x26;
+  W_n[2][7] = model.W_n.x27;
   W_n[3][0] = model.W_n.x30;
   W_n[3][1] = model.W_n.x31;
   W_n[3][2] = model.W_n.x32;
   W_n[3][3] = model.W_n.x33;
   W_n[3][4] = model.W_n.x34;
+  W_n[3][5] = model.W_n.x35;
+  W_n[3][6] = model.W_n.x36;
+  W_n[3][7] = model.W_n.x37;
   W_n[4][0] = model.W_n.x40;
   W_n[4][1] = model.W_n.x41;
   W_n[4][2] = model.W_n.x42;
   W_n[4][3] = model.W_n.x43;
   W_n[4][4] = model.W_n.x44;
+  W_n[4][5] = model.W_n.x45;
+  W_n[4][6] = model.W_n.x46;
+  W_n[4][7] = model.W_n.x47;
+  W_n[5][0] = model.W_n.x50;
+  W_n[5][1] = model.W_n.x51;
+  W_n[5][2] = model.W_n.x52;
+  W_n[5][3] = model.W_n.x53;
+  W_n[5][4] = model.W_n.x54;
+  W_n[5][5] = model.W_n.x55;
+  W_n[5][6] = model.W_n.x56;
+  W_n[5][7] = model.W_n.x57;
+  W_n[6][0] = model.W_n.x60;
+  W_n[6][1] = model.W_n.x61;
+  W_n[6][2] = model.W_n.x62;
+  W_n[6][3] = model.W_n.x63;
+  W_n[6][4] = model.W_n.x64;
+  W_n[6][5] = model.W_n.x65;
+  W_n[6][6] = model.W_n.x66;
+  W_n[6][7] = model.W_n.x67;
+  W_n[7][0] = model.W_n.x70;
+  W_n[7][1] = model.W_n.x71;
+  W_n[7][2] = model.W_n.x72;
+  W_n[7][3] = model.W_n.x73;
+  W_n[7][4] = model.W_n.x74;
+  W_n[7][5] = model.W_n.x75;
+  W_n[7][6] = model.W_n.x76;
+  W_n[7][7] = model.W_n.x77;
 
   for (int i = 0; i < model.m; i++)
   {
@@ -838,9 +1216,15 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
     model.K_j.x00 = K_j[0][0];
     model.K_j.x01 = K_j[0][1];
     model.K_j.x02 = K_j[0][2];
+    model.K_j.x03 = K_j[0][3];
+    model.K_j.x04 = K_j[0][4];
+    model.K_j.x05 = K_j[0][5];
     model.K_j.x10 = K_j[1][0];
     model.K_j.x11 = K_j[1][1];
     model.K_j.x12 = K_j[1][2];
+    model.K_j.x13 = K_j[1][3];
+    model.K_j.x14 = K_j[1][4];
+    model.K_j.x15 = K_j[1][5];
   }
   model.updated = 1;
   return model;
@@ -848,9 +1232,9 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief  The application entry point.
+ * @retval int
+ */
 int main(void)
 {
 
@@ -876,8 +1260,6 @@ int main(void)
   unsigned long diff = 0;
   // fields: p, i, d, windup, safety angle, target angle, setpoint, integrator, output and active.
   Controller rolling_wheel_controller = {9.0, 20.0, 1.0, 29.0, 12.0, 0.0, 0.0, 0.0, 0.0, 0};
-  // instantiate a model and initialize it
-  LinearQuadraticRegulator model;
   model = initialize(model);
   /* USER CODE END 1 */
 
@@ -1050,10 +1432,12 @@ int main(void)
 
       if (log_status == 0)
       {
-        sprintf(MSG, "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, enc0: %d, enc1: %d, v1: %0.2f, v2: %0.2f, dt: %0.6f\r\n",
-                model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4,
-                model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9,
-                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.encoder.value0, model.encoder.value1, reaction_wheel_speed, rolling_wheel_speed, dt);
+        sprintf(MSG,
+                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, angle: %0.2f, enc: %d, v1: %0.2f, v2: %0.2f, dt: %0.6f\r\n",
+                model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5,
+                model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11,
+                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.encoder.angle,
+                model.encoder.value0, reaction_wheel_speed, rolling_wheel_speed, dt);
         log_status = 0;
       }
       // else if (log_status == 1)
@@ -1094,22 +1478,22 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
+ * @brief System Clock Configuration
+ * @retval None
+ */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-  */
+   */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+   * in the RCC_OscInitTypeDef structure.
+   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -1125,9 +1509,8 @@ void SystemClock_Config(void)
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+   */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
@@ -1140,10 +1523,10 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief ADC1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief ADC1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_ADC1_Init(void)
 {
 
@@ -1158,7 +1541,7 @@ static void MX_ADC1_Init(void)
   /* USER CODE END ADC1_Init 1 */
 
   /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
+   */
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
@@ -1177,7 +1560,7 @@ static void MX_ADC1_Init(void)
   }
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
+   */
   sConfig.Channel = ADC_CHANNEL_8;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_112CYCLES;
@@ -1187,7 +1570,7 @@ static void MX_ADC1_Init(void)
   }
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
+   */
   sConfig.Channel = ADC_CHANNEL_9;
   sConfig.Rank = 2;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
@@ -1197,14 +1580,13 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
-
 }
 
 /**
-  * @brief TIM2 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief TIM2 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_TIM2_Init(void)
 {
 
@@ -1220,9 +1602,9 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 84-1;
+  htim2.Init.Prescaler = 84 - 1;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 20000-1;
+  htim2.Init.Period = 20000 - 1;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -1256,14 +1638,13 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 2 */
   HAL_TIM_MspPostInit(&htim2);
-
 }
 
 /**
-  * @brief TIM4 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief TIM4 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_TIM4_Init(void)
 {
 
@@ -1315,14 +1696,13 @@ static void MX_TIM4_Init(void)
 
   /* USER CODE END TIM4_Init 2 */
   HAL_TIM_MspPostInit(&htim4);
-
 }
 
 /**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART1_UART_Init(void)
 {
 
@@ -1348,14 +1728,13 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
-
 }
 
 /**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART2 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART2_UART_Init(void)
 {
 
@@ -1381,14 +1760,13 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
-
 }
 
 /**
-  * @brief USART6 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART6 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART6_UART_Init(void)
 {
 
@@ -1414,12 +1792,11 @@ static void MX_USART6_UART_Init(void)
   /* USER CODE BEGIN USART6_Init 2 */
 
   /* USER CODE END USART6_Init 2 */
-
 }
 
 /**
-  * Enable DMA controller clock
-  */
+ * Enable DMA controller clock
+ */
 static void MX_DMA_Init(void)
 {
 
@@ -1437,19 +1814,18 @@ static void MX_DMA_Init(void)
   /* DMA2_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
-
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-/* USER CODE BEGIN MX_GPIO_Init_1 */
-/* USER CODE END MX_GPIO_Init_1 */
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+  /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -1458,7 +1834,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2|GPIO_PIN_3, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2 | GPIO_PIN_3, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
@@ -1470,13 +1846,13 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PC0 PC1 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1;
+  GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PC2 PC3 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_3;
+  GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_3;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -1489,8 +1865,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
-/* USER CODE BEGIN MX_GPIO_Init_2 */
-/* USER CODE END MX_GPIO_Init_2 */
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -1498,9 +1874,9 @@ static void MX_GPIO_Init(void)
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -1512,14 +1888,14 @@ void Error_Handler(void)
   /* USER CODE END Error_Handler_Debug */
 }
 
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
