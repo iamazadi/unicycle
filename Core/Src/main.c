@@ -712,8 +712,6 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   model.dataset.x3 = -pow(model.imu.calibrated_acc_y, 2);
   model.dataset.x4 = pow(model.imu.calibrated_acc_y_velocity, 2);
   model.dataset.x5 = pow(model.imu.calibrated_acc_y_acceleration, 2);
-  // model.dataset.x3 = model.imu.calibrated_acc_y_jerk;
-  // model.dataset.x3 = model.imu.calibrated_acc_y > 0.0 ? pow(model.imu.calibrated_acc_y, 2) : -pow(model.imu.calibrated_acc_y, 2);
   model.dataset.x6 = u_k[0];
   model.dataset.x7 = u_k[1];
   int index = argmax(u_k, M);
@@ -723,8 +721,8 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
     // 0-90 clockwise
     // 90-135 anti-clockwise
     servoAngle = index == 0 ? servoAngle + action : servoAngle - action;
-    servoAngle = fmin(servoAngle, 135.0);
-    servoAngle = fmax(servoAngle, 0.0);
+    servoAngle = fmin(servoAngle, 125.0);
+    servoAngle = fmax(servoAngle, 20.0);
     setServoAngle(servoAngle);
   }
   else
@@ -741,8 +739,6 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   model.dataset.x11 = -pow(model.imu.calibrated_acc_y, 2);
   model.dataset.x12 = pow(model.imu.calibrated_acc_y_velocity, 2);
   model.dataset.x13 = pow(model.imu.calibrated_acc_y_acceleration, 2);
-  // model.dataset.x9 = model.imu.calibrated_acc_y_jerk;
-  // model.dataset.x9 = model.imu.calibrated_acc_y > 0.0 ? pow(model.imu.calibrated_acc_y, 2) : -pow(model.imu.calibrated_acc_y, 2);
   x_k1[0] = model.dataset.x8;
   x_k1[1] = model.dataset.x9;
   x_k1[2] = model.dataset.x10;
