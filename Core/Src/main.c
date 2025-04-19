@@ -48,7 +48,6 @@
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
-DMA_HandleTypeDef hdma_adc1;
 
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim4;
@@ -60,8 +59,6 @@ DMA_HandleTypeDef hdma_usart1_rx;
 DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
-
-uint32_t value_adc;
 
 /* USER CODE END PV */
 
@@ -89,6 +86,7 @@ uint8_t UART1_txBuffer_cfg[TRANSMIT_FRAME_LENGTH] = {0xA4, 0x06, 0x01, 0x06, 0xB
 int uart_receive_ok = 0;
 int adc_receive_ok = 0;
 int sensor_updated = 0;
+const float CPU_CLOCK = 84000000.0;
 const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
@@ -105,7 +103,9 @@ int encoderLastState = 0;
 int encoderCounter = 0;
 int encoderChange = 0;
 int encoderVelocity = 0;
-uint32_t AD_RES_BUFFER[2];
+unsigned long interruptTime = 0;
+unsigned long encoderTime = 0;
+uint16_t AD_RES = 0;
 // define arrays for matrix-matrix and matrix-vector multiplication
 float x_k[N];
 float u_k[M];
@@ -151,6 +151,7 @@ typedef struct
   float threshold;            // the threshold for binarizing sensor readings
   float velocity;             // the angular velocity
   float acceleration;         // the angular acceleration
+  float jerk;                 // the angular jerk
 } Encoder;
 
 typedef struct
@@ -207,43 +208,33 @@ float sigmoid(float x)
 
 Encoder updateEncoder(Encoder encoder)
 {
-  if (adc_receive_ok == 1)
+  // Start ADC Conversion
+  HAL_ADC_Start(&hadc1);
+  // Poll ADC1 Perihperal & TimeOut = 1mSec
+  HAL_ADC_PollForConversion(&hadc1, 1);
+  // Read The ADC Conversion Result & Map It To PWM DutyCycle
+  AD_RES = HAL_ADC_GetValue(&hadc1);
+  int value = (AD_RES << 4) > encoder.threshold ? 1 : 0;
+  if (encoder.value0 != value)
   {
-    encoder.value0 = (AD_RES_BUFFER[0] << 4);
-    encoder.value1 = (AD_RES_BUFFER[1] << 4);
-    float valueA = ((float)encoder.value0 - 32512.0) / 65025.0;
-    float valueB = ((float)encoder.value1 - 32512.0) / 65025.0;
-    if (valueA < encoder.threshold)
-    {
-      encoder.channelA = 0;
-    }
-    else
-    {
-      encoder.channelA = 1;
-    }
-    if (valueB < encoder.threshold)
-    {
-      encoder.channelB = 0;
-    }
-    else
-    {
-      encoder.channelB = 1;
-    }
-    adc_receive_ok = 0;
+    encoder.counter = encoder.counter + 1;
+    encoder.value0 = value;
   }
-  encoder.aState = encoder.channelA;
-  if (encoder.aState != encoder.aLastState)
+
+  encoder.interval_counter = encoder.interval_counter + 1;
+  if (encoder.interval_counter > encoder.intervals)
   {
-    if (encoder.channelB != encoder.aState)
-    {
-      encoder.angle = encoder.angle + (2.0 * M_PI / encoder.pulse_per_revolution);
-    }
-    else
-    {
-      encoder.angle = encoder.angle - (2.0 * M_PI / encoder.pulse_per_revolution);
-    }
+    encoder.interval_counter = 0;
+    // if (encoder.interval_counter != 0)
+    // {
+    //   encoder.velocity = (float)encoder.counter / (float)encoder.interval_counter;
+    // }
+    encoder.jerk = encoder.acceleration - (encoder.velocity - ((float) encoder.counter / 10.0));
+    encoder.acceleration = encoder.velocity - ((float) encoder.counter / 10.0);
+    encoder.velocity = (float) encoder.counter / 10.0;
+
+    encoder.counter = 0;
   }
-  encoder.aLastState = encoder.aState;
   return encoder;
 }
 
@@ -475,13 +466,6 @@ typedef struct
 // instantiate a model and initialize it
 LinearQuadraticRegulator model;
 
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
-{
-  // Conversion Complete & DMA Transfer Complete As Well
-  // So The AD_RES_BUFFER Is Now Updated
-  adc_receive_ok = 1;
-}
-
 // Initialize the randomizer using the current timestamp as a seed
 // (The time() function is provided by the <time.h> header file)
 // srand(time(NULL));
@@ -659,7 +643,7 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.dataset.x14 = 0.0;
   model.dataset.x15 = 0.0;
   IMU imu = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
-  Encoder encoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 30, 50.0, 0.0, 0.0, 0.0};
+  Encoder encoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 100, 2.0, 61000.0, 0.0, 0.0, 0.0};
   model.imu = imu;
   model.encoder = encoder;
   return model;
@@ -706,9 +690,12 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
     u_k[i] = sigmoid(u_k[i]);
   }
   // act!
-  model.dataset.x0 = -model.imu.calibrated_acc_y;
-  model.dataset.x1 = model.imu.calibrated_acc_y_velocity;
-  model.dataset.x2 = model.imu.calibrated_acc_y_acceleration;
+  // model.dataset.x0 = -model.imu.calibrated_acc_y;
+  // model.dataset.x1 = model.imu.calibrated_acc_y_velocity;
+  // model.dataset.x2 = model.imu.calibrated_acc_y_acceleration;
+  model.dataset.x0 = pow(model.encoder.jerk, 2);
+  model.dataset.x1 = pow(model.encoder.velocity, 2);
+  model.dataset.x2 = pow(model.encoder.acceleration, 2);
   model.dataset.x3 = -pow(model.imu.calibrated_acc_y, 2);
   model.dataset.x4 = pow(model.imu.calibrated_acc_y_velocity, 2);
   model.dataset.x5 = pow(model.imu.calibrated_acc_y_acceleration, 2);
@@ -733,9 +720,12 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   // dataset = (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
   model.encoder = updateEncoder(model.encoder);
   model.imu = updateIMU(model.imu);
-  model.dataset.x8 = -model.imu.calibrated_acc_y;
-  model.dataset.x9 = model.imu.calibrated_acc_y_velocity;
-  model.dataset.x10 = model.imu.calibrated_acc_y_acceleration;
+  // model.dataset.x8 = -model.imu.calibrated_acc_y;
+  // model.dataset.x9 = model.imu.calibrated_acc_y_velocity;
+  // model.dataset.x10 = model.imu.calibrated_acc_y_acceleration;
+  model.dataset.x8 = pow(model.encoder.jerk, 2);
+  model.dataset.x9 = pow(model.encoder.acceleration, 2);
+  model.dataset.x10 = pow(model.encoder.velocity, 2);
   model.dataset.x11 = -pow(model.imu.calibrated_acc_y, 2);
   model.dataset.x12 = pow(model.imu.calibrated_acc_y_velocity, 2);
   model.dataset.x13 = pow(model.imu.calibrated_acc_y_acceleration, 2);
@@ -1225,6 +1215,7 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
   model.updated = 1;
   return model;
 }
+
 /* USER CODE END 0 */
 
 /**
@@ -1241,7 +1232,6 @@ int main(void)
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
   uint8_t MSG[TRANSMIT_LENGTH] = {'\0'};
-  const float CPU_CLOCK = 84000000.0;
   const int LOG_CYCLE = 100;
   const float max_rolling_speed = 250.0;
   // const float epsilon = 10.0; // convergence threshold
@@ -1298,13 +1288,12 @@ int main(void)
   HAL_Delay(30);
   setServoAngle(90.0);
   // initialize the Encoder and IMU
+  HAL_Delay(10);
   model.encoder = updateEncoder(model.encoder);
   model.imu = updateIMU(model.imu);
-  HAL_Delay(1);
+  HAL_Delay(10);
   model.encoder = updateEncoder(model.encoder);
   model.imu = updateIMU(model.imu);
-  HAL_Delay(1);
-  HAL_ADC_Start_DMA(&hadc1, AD_RES_BUFFER, 2);
   HAL_Delay(3000);
   /* USER CODE END 2 */
 
@@ -1416,7 +1405,7 @@ int main(void)
     reaction_wheel_speed = servoAngle > 90.0 ? (servoAngle - 90.0) / 45.0 : -(90.0 - servoAngle) / 90.0;
     rolling_wheel_speed = rolling_wheel_controller.output / 255.0;
 
-    log_counter++;
+    // log_counter++;
     if (log_counter > LOG_CYCLE)
     {
       transmit = 1;
@@ -1429,11 +1418,11 @@ int main(void)
       if (log_status == 0)
       {
         sprintf(MSG,
-                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, angle: %0.2f, enc: %d, v1: %0.2f, v2: %0.2f, dt: %0.6f\r\n",
+                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, enc: %0.2f, v1: %0.2f, v2: %D dt: %0.6f\r\n",
                 model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5,
                 model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11,
-                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.encoder.angle,
-                model.encoder.value0, reaction_wheel_speed, rolling_wheel_speed, dt);
+                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x,
+                model.encoder.velocity, reaction_wheel_speed, rolling_wheel_speed, dt);
         log_status = 0;
       }
       // else if (log_status == 1)
@@ -1542,14 +1531,14 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = ENABLE;
-  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 2;
-  hadc1.Init.DMAContinuousRequests = ENABLE;
-  hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
     Error_Handler();
@@ -1559,16 +1548,7 @@ static void MX_ADC1_Init(void)
    */
   sConfig.Channel = ADC_CHANNEL_8;
   sConfig.Rank = 1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_112CYCLES;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-   */
-  sConfig.Channel = ADC_CHANNEL_9;
-  sConfig.Rank = 2;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -1804,9 +1784,6 @@ static void MX_DMA_Init(void)
   /* DMA1_Stream5_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
-  /* DMA2_Stream0_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
   /* DMA2_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
