@@ -93,6 +93,7 @@ const int max_episode_length = 50000;
 const float sensor_rotation = -30.0 / 180.0 * M_PI; // sensor frame rotation in X-Y plane
 const float reaction_wheel_safety_angle = 10.0;
 const float clip_value = 10000.0;
+const int encoderWindowLength = 100;
 float servoAngle = 0.0;
 float reaction_wheel_speed = 0.0;
 float rolling_wheel_speed = 0.0;
@@ -106,6 +107,7 @@ int encoderVelocity = 0;
 unsigned long interruptTime = 0;
 unsigned long encoderTime = 0;
 uint16_t AD_RES = 0;
+int encoderWindow[100];
 // define arrays for matrix-matrix and matrix-vector multiplication
 float x_k[N];
 float u_k[M];
@@ -180,6 +182,7 @@ typedef struct
   float calibrated_gyro_x;
   float calibrated_gyro_y;
   float calibrated_gyro_z;
+  float calibrated_gyro_y_velocity;
   float acc_x_offset;
   float acc_y_offset;
   float acc_z_offset;
@@ -219,21 +222,20 @@ Encoder updateEncoder(Encoder encoder)
   {
     encoder.counter = encoder.counter + 1;
     encoder.value0 = value;
-  }
+    for (int i = 0; i < encoderWindowLength - 1; i++)
+    {
+      encoderWindow[i] = encoderWindow[i + 1];
+    }
+    encoderWindow[encoderWindowLength - 1] = value;
+    int count = 0;
+    for (int i = 0; i < encoderWindowLength; i++)
+    {
+      count = count + encoderWindow[i];
+    }
 
-  encoder.interval_counter = encoder.interval_counter + 1;
-  if (encoder.interval_counter > encoder.intervals)
-  {
-    encoder.interval_counter = 0;
-    // if (encoder.interval_counter != 0)
-    // {
-    //   encoder.velocity = (float)encoder.counter / (float)encoder.interval_counter;
-    // }
-    encoder.jerk = encoder.acceleration - (encoder.velocity - ((float) encoder.counter / 10.0));
-    encoder.acceleration = encoder.velocity - ((float) encoder.counter / 10.0);
-    encoder.velocity = (float) encoder.counter / 10.0;
-
-    encoder.counter = 0;
+    encoder.jerk = encoder.acceleration - (encoder.velocity - ((float)count / (float)encoderWindowLength));
+    encoder.acceleration = encoder.velocity - ((float)count / (float)encoderWindowLength);
+    encoder.velocity = (float)count / (float)encoderWindowLength;
   }
   return encoder;
 }
@@ -265,6 +267,7 @@ IMU parsedata(IMU sensor, float theta, uint8_t data[])
   float calibrated_acc_x_acceleration = sensor.calibrated_acc_x_acceleration;
   float calibrated_acc_y_acceleration = sensor.calibrated_acc_y_acceleration;
   float calibrated_acc_z_acceleration = sensor.calibrated_acc_z_acceleration;
+  float calibrated_gyro_y = sensor.calibrated_gyro_y;
   sensor.acc_x = (data[4] << 8) | data[5];
   sensor.acc_y = (data[6] << 8) | data[7];
   sensor.acc_z = (data[8] << 8) | data[9];
@@ -281,15 +284,16 @@ IMU parsedata(IMU sensor, float theta, uint8_t data[])
   sensor.calibrated_acc_y = sin(theta) * sensor.calibrated_acc_x + cos(theta) * sensor.calibrated_acc_y;
   sensor.calibrated_gyro_x = cos(theta) * sensor.calibrated_gyro_x + -sin(theta) * sensor.calibrated_gyro_y;
   sensor.calibrated_gyro_y = sin(theta) * sensor.calibrated_gyro_x + cos(theta) * sensor.calibrated_gyro_y;
-  sensor.calibrated_acc_x_velocity = sensor.calibrated_acc_x - calibrated_acc_x;
-  sensor.calibrated_acc_y_velocity = sensor.calibrated_acc_y - calibrated_acc_y;
-  sensor.calibrated_acc_z_velocity = sensor.calibrated_acc_z - calibrated_acc_z;
-  sensor.calibrated_acc_x_acceleration = sensor.calibrated_acc_x_velocity - calibrated_acc_x_velocity;
-  sensor.calibrated_acc_y_acceleration = sensor.calibrated_acc_y_velocity - calibrated_acc_y_velocity;
-  sensor.calibrated_acc_z_acceleration = sensor.calibrated_acc_z_velocity - calibrated_acc_z_velocity;
-  sensor.calibrated_acc_x_jerk = sensor.calibrated_acc_x_acceleration - calibrated_acc_x_acceleration;
-  sensor.calibrated_acc_y_jerk = sensor.calibrated_acc_y_acceleration - calibrated_acc_y_acceleration;
-  sensor.calibrated_acc_z_jerk = sensor.calibrated_acc_z_acceleration - calibrated_acc_z_acceleration;
+  sensor.calibrated_acc_x_velocity = calibrated_acc_x - sensor.calibrated_acc_x;
+  sensor.calibrated_acc_y_velocity = calibrated_acc_y - sensor.calibrated_acc_y;
+  sensor.calibrated_acc_z_velocity = calibrated_acc_z - sensor.calibrated_acc_z;
+  sensor.calibrated_acc_x_acceleration = calibrated_acc_x_velocity - sensor.calibrated_acc_x_velocity;
+  sensor.calibrated_acc_y_acceleration = calibrated_acc_y_velocity - sensor.calibrated_acc_y_velocity;
+  sensor.calibrated_acc_z_acceleration = calibrated_acc_z_velocity - sensor.calibrated_acc_z_velocity;
+  sensor.calibrated_acc_x_jerk = calibrated_acc_x_acceleration - sensor.calibrated_acc_x_acceleration;
+  sensor.calibrated_acc_y_jerk = calibrated_acc_y_acceleration - sensor.calibrated_acc_y_acceleration;
+  sensor.calibrated_acc_z_jerk = calibrated_acc_z_acceleration - sensor.calibrated_acc_z_acceleration;
+  sensor.calibrated_gyro_y_velocity = calibrated_gyro_y - sensor.calibrated_gyro_y;
   return sensor;
 }
 
@@ -642,7 +646,7 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.dataset.x13 = 0.0;
   model.dataset.x14 = 0.0;
   model.dataset.x15 = 0.0;
-  IMU imu = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
+  IMU imu = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
   Encoder encoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 100, 2.0, 61000.0, 0.0, 0.0, 0.0};
   model.imu = imu;
   model.encoder = encoder;
@@ -690,19 +694,16 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
     u_k[i] = sigmoid(u_k[i]);
   }
   // act!
-  // model.dataset.x0 = -model.imu.calibrated_acc_y;
-  // model.dataset.x1 = model.imu.calibrated_acc_y_velocity;
-  // model.dataset.x2 = model.imu.calibrated_acc_y_acceleration;
-  model.dataset.x0 = pow(model.encoder.jerk, 2);
-  model.dataset.x1 = pow(model.encoder.velocity, 2);
-  model.dataset.x2 = pow(model.encoder.acceleration, 2);
-  model.dataset.x3 = -pow(model.imu.calibrated_acc_y, 2);
-  model.dataset.x4 = pow(model.imu.calibrated_acc_y_velocity, 2);
-  model.dataset.x5 = pow(model.imu.calibrated_acc_y_acceleration, 2);
-  model.dataset.x6 = u_k[0];
-  model.dataset.x7 = u_k[1];
+  model.dataset.x0 = pow(model.encoder.velocity, 2);
+  model.dataset.x1 = pow(model.encoder.acceleration, 2);
+  model.dataset.x2 = -pow(model.imu.calibrated_acc_y, 2);
+  model.dataset.x3 = pow(model.imu.calibrated_acc_y_velocity, 2);
+  model.dataset.x4 = pow(model.imu.calibrated_acc_y_acceleration, 2);
+  model.dataset.x5 = -pow(model.imu.calibrated_gyro_y_velocity / 360.0, 2);
+  model.dataset.x6 = pow(u_k[0], 2);
+  model.dataset.x7 = pow(u_k[1], 2);
   int index = argmax(u_k, M);
-  float action = sigmoid(u_k[index]);
+  float action = u_k[index];
   if (model.active == 1)
   {
     // 0-90 clockwise
@@ -720,15 +721,12 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   // dataset = (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
   model.encoder = updateEncoder(model.encoder);
   model.imu = updateIMU(model.imu);
-  // model.dataset.x8 = -model.imu.calibrated_acc_y;
-  // model.dataset.x9 = model.imu.calibrated_acc_y_velocity;
-  // model.dataset.x10 = model.imu.calibrated_acc_y_acceleration;
-  model.dataset.x8 = pow(model.encoder.jerk, 2);
+  model.dataset.x8 = pow(model.encoder.velocity, 2);
   model.dataset.x9 = pow(model.encoder.acceleration, 2);
-  model.dataset.x10 = pow(model.encoder.velocity, 2);
-  model.dataset.x11 = -pow(model.imu.calibrated_acc_y, 2);
-  model.dataset.x12 = pow(model.imu.calibrated_acc_y_velocity, 2);
-  model.dataset.x13 = pow(model.imu.calibrated_acc_y_acceleration, 2);
+  model.dataset.x10 = -pow(model.imu.calibrated_acc_y, 2);
+  model.dataset.x11 = pow(model.imu.calibrated_acc_y_velocity, 2);
+  model.dataset.x12 = pow(model.imu.calibrated_acc_y_acceleration, 2);
+  model.dataset.x13 = -pow(model.imu.calibrated_gyro_y_velocity / 360.0, 2);
   x_k1[0] = model.dataset.x8;
   x_k1[1] = model.dataset.x9;
   x_k1[2] = model.dataset.x10;
@@ -748,8 +746,8 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   {
     u_k1[i] = sigmoid(u_k1[i]);
   }
-  model.dataset.x14 = u_k1[0];
-  model.dataset.x15 = u_k1[1];
+  model.dataset.x14 = pow(u_k1[0], 2);
+  model.dataset.x15 = pow(u_k1[1], 2);
   // Compute the quadratic basis sets ϕ(zₖ), ϕ(zₖ₊₁).
   z_k[0] = model.dataset.x0;
   z_k[1] = model.dataset.x1;
@@ -1294,6 +1292,10 @@ int main(void)
   HAL_Delay(10);
   model.encoder = updateEncoder(model.encoder);
   model.imu = updateIMU(model.imu);
+  for (int i = 0; i < encoderWindowLength; i++)
+  {
+    encoderWindow[i] = 0;
+  }
   HAL_Delay(3000);
   /* USER CODE END 2 */
 
@@ -1405,7 +1407,7 @@ int main(void)
     reaction_wheel_speed = servoAngle > 90.0 ? (servoAngle - 90.0) / 45.0 : -(90.0 - servoAngle) / 90.0;
     rolling_wheel_speed = rolling_wheel_controller.output / 255.0;
 
-    // log_counter++;
+    log_counter++;
     if (log_counter > LOG_CYCLE)
     {
       transmit = 1;
@@ -1417,11 +1419,13 @@ int main(void)
 
       if (log_status == 0)
       {
+        // z: 0.25, 0.00, -0.37, 0.00, 2.21, -0.04, 0.02, 0.19, 0.25, 0.00, -45332.99, 45594.11, j: 3, k: 1, roll: -13.81, pitch: 1.17, gyro_y: -231.54, enc: 0.50, v1: -0.78, v2: 0.00, dt: 0.000026
         sprintf(MSG,
-                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, enc: %0.2f, v1: %0.2f, v2: %D dt: %0.6f\r\n",
+                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, gyro_y: %0.2f, enc: %0.2f, v1: %0.2f, v2: %0.2f, dt: %0.6f\r\n",
                 model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5,
                 model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11,
-                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x,
+                model.dataset.x12, model.dataset.x13, model.dataset.x14, model.dataset.x15,
+                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.imu.calibrated_gyro_y_velocity,
                 model.encoder.velocity, reaction_wheel_speed, rolling_wheel_speed, dt);
         log_status = 0;
       }
