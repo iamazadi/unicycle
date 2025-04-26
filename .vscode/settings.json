@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "cmath": "c",
-        "stm32f4xx_hal_adc.h": "c"
+        "stm32f4xx_hal_adc.h": "c",
+        "type_traits": "c"
     }
 }

@@ -50,6 +50,7 @@
 ADC_HandleTypeDef hadc1;
 
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
@@ -72,6 +73,7 @@ static void MX_TIM2_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_ADC1_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -91,12 +93,16 @@ const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
 const float sensor_rotation = -30.0 / 180.0 * M_PI; // sensor frame rotation in X-Y plane
-const float reaction_wheel_safety_angle = 10.0;
+const float reaction_wheel_safety_angle = 10.0 / 10.0;
 const float clip_value = 10000.0;
 const int encoderWindowLength = 100;
-float servoAngle = 0.0;
+float reaction_wheel_pwm = 0.0;
 float reaction_wheel_speed = 0.0;
 float rolling_wheel_speed = 0.0;
+float gyro_tilt_y = 0.0;
+float gyro_velocity_y = 0.0;
+// sampling time
+float dt = 0.0;
 int encoder0 = 0;
 int encoder1 = 0;
 int encoderState = 0;
@@ -182,7 +188,7 @@ typedef struct
   float calibrated_gyro_x;
   float calibrated_gyro_y;
   float calibrated_gyro_z;
-  float calibrated_gyro_y_velocity;
+  float calibrated_gyro_y_acceleration;
   float acc_x_offset;
   float acc_y_offset;
   float acc_z_offset;
@@ -211,32 +217,34 @@ float sigmoid(float x)
 
 Encoder updateEncoder(Encoder encoder)
 {
+  // encoder.value0 = ((TIM3->CNT) >> 2);
+  // encoder.acceleration = encoder.velocity - (encoder.value0 - encoder.value1);
+  // encoder.velocity = encoder.value0 - encoder.value1;
+  // encoder.value1 = encoder.value0;
   // Start ADC Conversion
   HAL_ADC_Start(&hadc1);
   // Poll ADC1 Perihperal & TimeOut = 1mSec
   HAL_ADC_PollForConversion(&hadc1, 1);
   // Read The ADC Conversion Result & Map It To PWM DutyCycle
   AD_RES = HAL_ADC_GetValue(&hadc1);
-  int value = (AD_RES << 4) > encoder.threshold ? 1 : 0;
-  if (encoder.value0 != value)
+  encoder.value0 = AD_RES > encoder.threshold ? 1 : 0;
+  int edge = encoder.value0 != encoder.value1; // detecting an edge
+  // shift the window one step
+  for (int i = 0; i < encoderWindowLength - 1; i++)
   {
-    encoder.counter = encoder.counter + 1;
-    encoder.value0 = value;
-    for (int i = 0; i < encoderWindowLength - 1; i++)
-    {
-      encoderWindow[i] = encoderWindow[i + 1];
-    }
-    encoderWindow[encoderWindowLength - 1] = value;
-    int count = 0;
-    for (int i = 0; i < encoderWindowLength; i++)
-    {
-      count = count + encoderWindow[i];
-    }
-
-    encoder.jerk = encoder.acceleration - (encoder.velocity - ((float)count / (float)encoderWindowLength));
-    encoder.acceleration = encoder.velocity - ((float)count / (float)encoderWindowLength);
-    encoder.velocity = (float)count / (float)encoderWindowLength;
+    encoderWindow[i] = encoderWindow[i + 1];
   }
+  encoderWindow[encoderWindowLength - 1] = edge;
+  int count = 0;
+  for (int i = 0; i < encoderWindowLength; i++)
+  {
+    count = count + encoderWindow[i];
+  }
+  // compute the angular velocity and acceleration
+  encoder.jerk = encoder.acceleration - (encoder.velocity - ((float)count / (float)encoderWindowLength));
+  encoder.acceleration = encoder.velocity - ((float)count / (float)encoderWindowLength);
+  encoder.velocity = (float)count / (float)encoderWindowLength;
+  encoder.value1 = encoder.value0;
   return encoder;
 }
 
@@ -280,10 +288,12 @@ IMU parsedata(IMU sensor, float theta, uint8_t data[])
   sensor.calibrated_gyro_x = (float)sensor.gyro_x / 100.0f - sensor.gyro_x_offset;
   sensor.calibrated_gyro_y = (float)sensor.gyro_y / 100.0f - sensor.gyro_y_offset;
   sensor.calibrated_gyro_z = (float)sensor.gyro_z / 100.0f - sensor.gyro_z_offset;
+  sensor.calibrated_gyro_y = sensor.calibrated_gyro_y / 180.0;
   sensor.calibrated_acc_x = cos(theta) * sensor.calibrated_acc_x + -sin(theta) * sensor.calibrated_acc_y;
   sensor.calibrated_acc_y = sin(theta) * sensor.calibrated_acc_x + cos(theta) * sensor.calibrated_acc_y;
   sensor.calibrated_gyro_x = cos(theta) * sensor.calibrated_gyro_x + -sin(theta) * sensor.calibrated_gyro_y;
   sensor.calibrated_gyro_y = sin(theta) * sensor.calibrated_gyro_x + cos(theta) * sensor.calibrated_gyro_y;
+  sensor.calibrated_acc_y = sensor.calibrated_acc_y / 10.0;
   sensor.calibrated_acc_x_velocity = calibrated_acc_x - sensor.calibrated_acc_x;
   sensor.calibrated_acc_y_velocity = calibrated_acc_y - sensor.calibrated_acc_y;
   sensor.calibrated_acc_z_velocity = calibrated_acc_z - sensor.calibrated_acc_z;
@@ -293,7 +303,7 @@ IMU parsedata(IMU sensor, float theta, uint8_t data[])
   sensor.calibrated_acc_x_jerk = calibrated_acc_x_acceleration - sensor.calibrated_acc_x_acceleration;
   sensor.calibrated_acc_y_jerk = calibrated_acc_y_acceleration - sensor.calibrated_acc_y_acceleration;
   sensor.calibrated_acc_z_jerk = calibrated_acc_z_acceleration - sensor.calibrated_acc_z_acceleration;
-  sensor.calibrated_gyro_y_velocity = calibrated_gyro_y - sensor.calibrated_gyro_y;
+  sensor.calibrated_gyro_y_acceleration = calibrated_gyro_y - sensor.calibrated_gyro_y;
   return sensor;
 }
 
@@ -647,7 +657,7 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.dataset.x14 = 0.0;
   model.dataset.x15 = 0.0;
   IMU imu = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
-  Encoder encoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 100, 2.0, 61000.0, 0.0, 0.0, 0.0};
+  Encoder encoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 100, 2.0, 900.0, 0.0, 0.0, 0.0};
   model.imu = imu;
   model.encoder = encoder;
   return model;
@@ -691,42 +701,59 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   }
   for (int i = 0; i < model.m; i++)
   {
-    u_k[i] = sigmoid(u_k[i]);
+    u_k[i] = u_k[i];
   }
   // act!
-  model.dataset.x0 = pow(model.encoder.velocity, 2);
-  model.dataset.x1 = pow(model.encoder.acceleration, 2);
-  model.dataset.x2 = -pow(model.imu.calibrated_acc_y, 2);
-  model.dataset.x3 = pow(model.imu.calibrated_acc_y_velocity, 2);
-  model.dataset.x4 = pow(model.imu.calibrated_acc_y_acceleration, 2);
-  model.dataset.x5 = -pow(model.imu.calibrated_gyro_y_velocity / 360.0, 2);
-  model.dataset.x6 = pow(u_k[0], 2);
-  model.dataset.x7 = pow(u_k[1], 2);
+  model.dataset.x0 = model.encoder.velocity;
+  model.dataset.x1 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y_velocity;
+  model.dataset.x2 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y_acceleration;
+  model.dataset.x3 = model.imu.calibrated_acc_y;
+  model.dataset.x4 = model.imu.calibrated_acc_y_velocity;
+  model.dataset.x5 = model.imu.calibrated_acc_y_acceleration;
+  model.dataset.x6 = u_k[0];
+  model.dataset.x7 = u_k[1];
   int index = argmax(u_k, M);
-  float action = u_k[index];
+  float action = 255.0 * u_k[index];
   if (model.active == 1)
   {
-    // 0-90 clockwise
-    // 90-135 anti-clockwise
-    servoAngle = index == 0 ? servoAngle + action : servoAngle - action;
-    servoAngle = fmin(servoAngle, 125.0);
-    servoAngle = fmax(servoAngle, 20.0);
-    setServoAngle(servoAngle);
+    // if (index == 0) {
+    //   reaction_wheel_pwm += action;
+    // } else {
+    //   reaction_wheel_pwm -= action;
+    // }
+    reaction_wheel_pwm += action;
+    reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
+    reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
+    if (reaction_wheel_pwm < 0)
+    {
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 255 * (int)fabs(reaction_wheel_pwm));
+    }
+    else
+    {
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 255 * (int)fabs(reaction_wheel_pwm));
+    }
   }
   else
   {
-    servoAngle = 90.0;
-    setServoAngle(servoAngle);
+    reaction_wheel_pwm = 0.0;
+    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 0);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
   }
   // dataset = (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
   model.encoder = updateEncoder(model.encoder);
   model.imu = updateIMU(model.imu);
-  model.dataset.x8 = pow(model.encoder.velocity, 2);
-  model.dataset.x9 = pow(model.encoder.acceleration, 2);
-  model.dataset.x10 = -pow(model.imu.calibrated_acc_y, 2);
-  model.dataset.x11 = pow(model.imu.calibrated_acc_y_velocity, 2);
-  model.dataset.x12 = pow(model.imu.calibrated_acc_y_acceleration, 2);
-  model.dataset.x13 = -pow(model.imu.calibrated_gyro_y_velocity / 360.0, 2);
+  HAL_Delay(1);
+  model.dataset.x8 = model.encoder.velocity;
+  model.dataset.x9 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y_velocity;
+  model.dataset.x10 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y_acceleration;
+  model.dataset.x11 = model.imu.calibrated_acc_y;
+  model.dataset.x12 = model.imu.calibrated_acc_y_velocity;
+  model.dataset.x13 = model.imu.calibrated_acc_y_acceleration;
   x_k1[0] = model.dataset.x8;
   x_k1[1] = model.dataset.x9;
   x_k1[2] = model.dataset.x10;
@@ -744,10 +771,10 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   }
   for (int i = 0; i < model.m; i++)
   {
-    u_k1[i] = sigmoid(u_k1[i]);
+    u_k1[i] = u_k1[i];
   }
-  model.dataset.x14 = pow(u_k1[0], 2);
-  model.dataset.x15 = pow(u_k1[1], 2);
+  model.dataset.x14 = u_k1[0];
+  model.dataset.x15 = u_k1[1];
   // Compute the quadratic basis sets ϕ(zₖ), ϕ(zₖ₊₁).
   z_k[0] = model.dataset.x0;
   z_k[1] = model.dataset.x1;
@@ -767,8 +794,8 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   z_k1[7] = model.dataset.x15;
   for (int i = 0; i < model.n + model.m; i++)
   {
-    basisset0[i] = sigmoid(z_k[i]);
-    basisset1[i] = sigmoid(z_k1[i]);
+    basisset0[i] = pow(z_k[i], 2);
+    basisset1[i] = pow(z_k1[i], 2);
   }
   // Now perform a one-step update in the parameter vector W by applying RLS to equation (S27).
   P_n[0][0] = model.P_n.x00;
@@ -1234,8 +1261,6 @@ int main(void)
   const float max_rolling_speed = 250.0;
   // const float epsilon = 10.0; // convergence threshold
   // const int numStates = 3;
-  // sampling time
-  float dt = 0.0;
   int transmit = 0;
   int log_counter = 0;
   int log_status = 0;
@@ -1272,6 +1297,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM4_Init();
   MX_ADC1_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
   HAL_Delay(10);
@@ -1282,9 +1308,10 @@ int main(void)
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
-  // HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
+  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
+  HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
   HAL_Delay(30);
-  setServoAngle(90.0);
+  // setServoAngle(90.0);
   // initialize the Encoder and IMU
   HAL_Delay(10);
   model.encoder = updateEncoder(model.encoder);
@@ -1316,7 +1343,8 @@ int main(void)
     else
     {
       model.active = 0;
-      setServoAngle(90.0);
+      reaction_wheel_pwm = 0.0;
+      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 0);
     }
 
     if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == 0)
@@ -1395,7 +1423,10 @@ int main(void)
     }
     else
     {
-      setServoAngle(90.0);
+      reaction_wheel_pwm = 0.0;
+      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 0);
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
       model.encoder = updateEncoder(model.encoder);
       model.imu = updateIMU(model.imu);
     }
@@ -1404,7 +1435,7 @@ int main(void)
       model = updateControlPolicy(model);
     }
 
-    reaction_wheel_speed = servoAngle > 90.0 ? (servoAngle - 90.0) / 45.0 : -(90.0 - servoAngle) / 90.0;
+    reaction_wheel_speed = reaction_wheel_pwm / 255.0;
     rolling_wheel_speed = rolling_wheel_controller.output / 255.0;
 
     log_counter++;
@@ -1421,12 +1452,12 @@ int main(void)
       {
         // z: 0.25, 0.00, -0.37, 0.00, 2.21, -0.04, 0.02, 0.19, 0.25, 0.00, -45332.99, 45594.11, j: 3, k: 1, roll: -13.81, pitch: 1.17, gyro_y: -231.54, enc: 0.50, v1: -0.78, v2: 0.00, dt: 0.000026
         sprintf(MSG,
-                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, gyro_y: %0.2f, enc: %0.2f, v1: %0.2f, v2: %0.2f, dt: %0.6f\r\n",
+                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, enc: %0.2f, gyr: %0.2f, v1: %0.2f, v2: %0.2f, dt: %0.6f\r\n",
                 model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5,
                 model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11,
                 model.dataset.x12, model.dataset.x13, model.dataset.x14, model.dataset.x15,
-                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.imu.calibrated_gyro_y_velocity,
-                model.encoder.velocity, reaction_wheel_speed, rolling_wheel_speed, dt);
+                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.encoder.velocity, model.imu.calibrated_gyro_y_acceleration,
+                reaction_wheel_speed, rolling_wheel_speed, dt);
         log_status = 0;
       }
       // else if (log_status == 1)
@@ -1621,6 +1652,54 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+ * @brief TIM3 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 0;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 65535;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 10;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 10;
+  if (HAL_TIM_Encoder_Init(&htim3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+}
+
+/**
  * @brief TIM4 Initialization Function
  * @param None
  * @retval None
@@ -1669,6 +1748,10 @@ static void MX_TIM4_Init(void)
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -1816,6 +1899,9 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13 | GPIO_PIN_14, GPIO_PIN_RESET);
+
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
@@ -1841,6 +1927,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB13 PB14 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13 | GPIO_PIN_14;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
   /* USER CODE END MX_GPIO_Init_2 */
