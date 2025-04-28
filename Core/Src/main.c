@@ -692,15 +692,15 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   }
   // act!
   model.dataset.x0 = model.encoder.velocity;
-  model.dataset.x1 = model.encoder.acceleration;
-  model.dataset.x2 = model.imu.calibrated_acc_y * model.encoder.velocity;
+  model.dataset.x1 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y;
+  model.dataset.x2 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y * model.imu.calibrated_acc_y;
   model.dataset.x3 = model.imu.calibrated_acc_y;
   model.dataset.x4 = model.imu.calibrated_acc_y_velocity;
   model.dataset.x5 = model.imu.calibrated_acc_y_acceleration;
   model.dataset.x6 = u_k[0];
   model.dataset.x7 = u_k[1];
   int index = argmax(u_k, M);
-  float action = 255.0 * u_k[index];
+  float action = 50.0 * u_k[index];
   if (model.active == 1)
   {
     // if (index == 0) {
@@ -736,8 +736,8 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   model.imu = updateIMU(model.imu);
   // HAL_Delay(1);
   model.dataset.x8 = model.encoder.velocity;
-  model.dataset.x9 = model.encoder.acceleration;
-  model.dataset.x10 = model.imu.calibrated_acc_y * model.encoder.velocity;
+  model.dataset.x9 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y;
+  model.dataset.x10 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y * model.imu.calibrated_acc_y;
   model.dataset.x11 = model.imu.calibrated_acc_y;
   model.dataset.x12 = model.imu.calibrated_acc_y_velocity;
   model.dataset.x13 = model.imu.calibrated_acc_y_acceleration;
@@ -1403,6 +1403,8 @@ int main(void)
       }
       else
       {
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
         __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 0);
       }
     }
