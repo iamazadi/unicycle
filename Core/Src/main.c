@@ -93,7 +93,8 @@ const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
 const float sensor_rotation = -30.0 / 180.0 * M_PI; // sensor frame rotation in X-Y plane
-const float reaction_wheel_safety_angle = 10.0 / 10.0;
+const float yaxis_coefficient = 10.0;
+const float reaction_wheel_safety_angle = 10.0 / yaxis_coefficient;
 const float clip_value = 10000.0;
 const int encoderWindowLength = 100;
 float reaction_wheel_pwm = 0.0;
@@ -288,12 +289,12 @@ IMU parsedata(IMU sensor, float theta, uint8_t data[])
   sensor.calibrated_gyro_x = (float)sensor.gyro_x / 100.0f - sensor.gyro_x_offset;
   sensor.calibrated_gyro_y = (float)sensor.gyro_y / 100.0f - sensor.gyro_y_offset;
   sensor.calibrated_gyro_z = (float)sensor.gyro_z / 100.0f - sensor.gyro_z_offset;
-  sensor.calibrated_gyro_y = sensor.calibrated_gyro_y / 180.0;
+  sensor.calibrated_gyro_y = sensor.calibrated_gyro_y / 360.0;
   sensor.calibrated_acc_x = cos(theta) * sensor.calibrated_acc_x + -sin(theta) * sensor.calibrated_acc_y;
   sensor.calibrated_acc_y = sin(theta) * sensor.calibrated_acc_x + cos(theta) * sensor.calibrated_acc_y;
   sensor.calibrated_gyro_x = cos(theta) * sensor.calibrated_gyro_x + -sin(theta) * sensor.calibrated_gyro_y;
   sensor.calibrated_gyro_y = sin(theta) * sensor.calibrated_gyro_x + cos(theta) * sensor.calibrated_gyro_y;
-  sensor.calibrated_acc_y = sensor.calibrated_acc_y / 10.0;
+  sensor.calibrated_acc_y = sensor.calibrated_acc_y / yaxis_coefficient;
   sensor.calibrated_acc_x_velocity = calibrated_acc_x - sensor.calibrated_acc_x;
   sensor.calibrated_acc_y_velocity = calibrated_acc_y - sensor.calibrated_acc_y;
   sensor.calibrated_acc_z_velocity = calibrated_acc_z - sensor.calibrated_acc_z;
@@ -705,8 +706,8 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   }
   // act!
   model.dataset.x0 = model.encoder.velocity;
-  model.dataset.x1 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y_velocity;
-  model.dataset.x2 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y_acceleration;
+  model.dataset.x1 = model.encoder.acceleration;
+  model.dataset.x2 = model.imu.calibrated_gyro_y_acceleration;
   model.dataset.x3 = model.imu.calibrated_acc_y;
   model.dataset.x4 = model.imu.calibrated_acc_y_velocity;
   model.dataset.x5 = model.imu.calibrated_acc_y_acceleration;
@@ -747,10 +748,10 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   // dataset = (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
   model.encoder = updateEncoder(model.encoder);
   model.imu = updateIMU(model.imu);
-  HAL_Delay(1);
+  // HAL_Delay(1);
   model.dataset.x8 = model.encoder.velocity;
-  model.dataset.x9 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y_velocity;
-  model.dataset.x10 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y_acceleration;
+  model.dataset.x9 = model.encoder.acceleration;
+  model.dataset.x10 = model.imu.calibrated_gyro_y_acceleration;
   model.dataset.x11 = model.imu.calibrated_acc_y;
   model.dataset.x12 = model.imu.calibrated_acc_y_velocity;
   model.dataset.x13 = model.imu.calibrated_acc_y_acceleration;
@@ -794,8 +795,10 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   z_k1[7] = model.dataset.x15;
   for (int i = 0; i < model.n + model.m; i++)
   {
-    basisset0[i] = pow(z_k[i], 2);
-    basisset1[i] = pow(z_k1[i], 2);
+    // basisset0[i] = pow(z_k[i], 2);
+    // basisset1[i] = pow(z_k1[i], 2);
+    basisset0[i] = z_k[i];
+    basisset1[i] = z_k1[i];
   }
   // Now perform a one-step update in the parameter vector W by applying RLS to equation (S27).
   P_n[0][0] = model.P_n.x00;
