@@ -211,41 +211,27 @@ typedef struct
   int active;
 } Controller;
 
-float sigmoid(float x)
-{
-  return 1.0 / (1.0 + exp(-x));
-}
-
 Encoder updateEncoder(Encoder encoder)
 {
-  // encoder.value0 = ((TIM3->CNT) >> 2);
-  // encoder.acceleration = encoder.velocity - (encoder.value0 - encoder.value1);
-  // encoder.velocity = encoder.value0 - encoder.value1;
-  // encoder.value1 = encoder.value0;
-  // Start ADC Conversion
-  HAL_ADC_Start(&hadc1);
-  // Poll ADC1 Perihperal & TimeOut = 1mSec
-  HAL_ADC_PollForConversion(&hadc1, 1);
-  // Read The ADC Conversion Result & Map It To PWM DutyCycle
-  AD_RES = HAL_ADC_GetValue(&hadc1);
-  encoder.value0 = AD_RES > encoder.threshold ? 1 : 0;
-  int edge = encoder.value0 != encoder.value1; // detecting an edge
+  encoder.value0 = encoder.value1;
+  encoder.value1 = ((TIM3->CNT) >> 2);
   // shift the window one step
   for (int i = 0; i < encoderWindowLength - 1; i++)
   {
     encoderWindow[i] = encoderWindow[i + 1];
   }
-  encoderWindow[encoderWindowLength - 1] = edge;
-  int count = 0;
+  encoderWindow[encoderWindowLength - 1] = encoder.value0 - encoder.value1;
+  encoder.accumulator = 0;
   for (int i = 0; i < encoderWindowLength; i++)
   {
-    count = count + encoderWindow[i];
+    encoder.accumulator += encoderWindow[i];
   }
   // compute the angular velocity and acceleration
-  encoder.jerk = encoder.acceleration - (encoder.velocity - ((float)count / (float)encoderWindowLength));
-  encoder.acceleration = encoder.velocity - ((float)count / (float)encoderWindowLength);
-  encoder.velocity = (float)count / (float)encoderWindowLength;
-  encoder.value1 = encoder.value0;
+  float velocity = 0.5 * (float)encoder.accumulator / (float)encoderWindowLength;
+  float acceleration = encoder.velocity - velocity;
+  encoder.jerk = encoder.acceleration - acceleration;
+  encoder.acceleration = acceleration;
+  encoder.velocity = velocity;
   return encoder;
 }
 
@@ -658,7 +644,7 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.dataset.x14 = 0.0;
   model.dataset.x15 = 0.0;
   IMU imu = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
-  Encoder encoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 100, 2.0, 900.0, 0.0, 0.0, 0.0};
+  Encoder encoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
   model.imu = imu;
   model.encoder = encoder;
   return model;
@@ -707,7 +693,7 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   // act!
   model.dataset.x0 = model.encoder.velocity;
   model.dataset.x1 = model.encoder.acceleration;
-  model.dataset.x2 = model.imu.calibrated_gyro_y_acceleration;
+  model.dataset.x2 = model.imu.calibrated_acc_y * model.encoder.velocity;
   model.dataset.x3 = model.imu.calibrated_acc_y;
   model.dataset.x4 = model.imu.calibrated_acc_y_velocity;
   model.dataset.x5 = model.imu.calibrated_acc_y_acceleration;
@@ -751,7 +737,7 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   // HAL_Delay(1);
   model.dataset.x8 = model.encoder.velocity;
   model.dataset.x9 = model.encoder.acceleration;
-  model.dataset.x10 = model.imu.calibrated_gyro_y_acceleration;
+  model.dataset.x10 = model.imu.calibrated_acc_y * model.encoder.velocity;
   model.dataset.x11 = model.imu.calibrated_acc_y;
   model.dataset.x12 = model.imu.calibrated_acc_y_velocity;
   model.dataset.x13 = model.imu.calibrated_acc_y_acceleration;
@@ -1455,11 +1441,11 @@ int main(void)
       {
         // z: 0.25, 0.00, -0.37, 0.00, 2.21, -0.04, 0.02, 0.19, 0.25, 0.00, -45332.99, 45594.11, j: 3, k: 1, roll: -13.81, pitch: 1.17, gyro_y: -231.54, enc: 0.50, v1: -0.78, v2: 0.00, dt: 0.000026
         sprintf(MSG,
-                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, enc: %0.2f, gyr: %0.2f, v1: %0.2f, v2: %0.2f, dt: %0.6f\r\n",
+                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, encvel: %0.2f, encacc: %0.2f, v1: %0.2f, v2: %0.2f, dt: %0.6f\r\n",
                 model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5,
                 model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11,
                 model.dataset.x12, model.dataset.x13, model.dataset.x14, model.dataset.x15,
-                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.encoder.velocity, model.imu.calibrated_gyro_y_acceleration,
+                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.encoder.velocity, model.encoder.acceleration,
                 reaction_wheel_speed, rolling_wheel_speed, dt);
         log_status = 0;
       }
