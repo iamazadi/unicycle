@@ -39,6 +39,7 @@
 #define TRANSMIT_FRAME_LENGTH 5
 #define N 6
 #define M 2
+#define WINDOWLENGTH 5
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -96,7 +97,7 @@ const float sensor_rotation = -30.0 / 180.0 * M_PI; // sensor frame rotation in 
 const float yaxis_coefficient = 10.0;
 const float reaction_wheel_safety_angle = 10.0 / yaxis_coefficient;
 const float clip_value = 10000.0;
-const int encoderWindowLength = 100;
+const int encoderWindowLength = WINDOWLENGTH;
 float reaction_wheel_pwm = 0.0;
 float reaction_wheel_speed = 0.0;
 float rolling_wheel_speed = 0.0;
@@ -114,7 +115,7 @@ int encoderVelocity = 0;
 unsigned long interruptTime = 0;
 unsigned long encoderTime = 0;
 uint16_t AD_RES = 0;
-int encoderWindow[100];
+int encoderWindow[WINDOWLENGTH];
 // define arrays for matrix-matrix and matrix-vector multiplication
 float x_k[N];
 float u_k[M];
@@ -693,7 +694,7 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   // act!
   model.dataset.x0 = model.encoder.velocity;
   model.dataset.x1 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y;
-  model.dataset.x2 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y * model.imu.calibrated_acc_y;
+  model.dataset.x2 = model.encoder.velocity * model.encoder.velocity;
   model.dataset.x3 = model.imu.calibrated_acc_y;
   model.dataset.x4 = model.imu.calibrated_acc_y_velocity;
   model.dataset.x5 = model.imu.calibrated_acc_y_acceleration;
@@ -737,7 +738,7 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   // HAL_Delay(1);
   model.dataset.x8 = model.encoder.velocity;
   model.dataset.x9 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y;
-  model.dataset.x10 = model.imu.calibrated_acc_y * model.imu.calibrated_acc_y * model.imu.calibrated_acc_y;
+  model.dataset.x10 = model.encoder.velocity * model.encoder.velocity;
   model.dataset.x11 = model.imu.calibrated_acc_y;
   model.dataset.x12 = model.imu.calibrated_acc_y_velocity;
   model.dataset.x13 = model.imu.calibrated_acc_y_acceleration;
