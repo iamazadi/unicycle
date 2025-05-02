@@ -39,7 +39,7 @@
 #define TRANSMIT_FRAME_LENGTH 5
 #define N 10
 #define M 2
-#define WINDOWLENGTH 30
+#define WINDOWLENGTH 10
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -220,8 +220,11 @@ Encoder updateEncoder(Encoder encoder, int newValue)
     encoder.accumulator += encoderWindow[i];
   }
   // compute the angular velocity and acceleration
-  float velocity = 0.5 * (float)encoder.accumulator / (float)encoderWindowLength;
+  float velocity = 0.1 * (float)encoder.accumulator / (float)encoderWindowLength;
+  velocity = fmin(1.0, velocity);
+  velocity = fmax(-1.0, velocity);
   float acceleration = encoder.velocity - velocity;
+  encoder.jerk = encoder.acceleration - acceleration;
   encoder.acceleration = acceleration;
   encoder.velocity = velocity;
   encoder.angle = sin((float)(encoder.value0 % 180) / 180.0 * 2.0 * 3.14);
@@ -262,6 +265,7 @@ IMU parsedata(IMU sensor, float theta, uint8_t data[])
   sensor.calibrated_gyro_y = sin(theta) * sensor.calibrated_gyro_x + cos(theta) * sensor.calibrated_gyro_y;
   sensor.calibrated_acc_x = sensor.calibrated_acc_x / xaxis_coefficient;
   sensor.calibrated_acc_y = sensor.calibrated_acc_y / yaxis_coefficient;
+  sensor.calibrated_acc_z = sensor.calibrated_acc_z / 90.0;
   sensor.calibrated_acc_x_velocity = calibrated_acc_x - sensor.calibrated_acc_x;
   sensor.calibrated_acc_y_velocity = calibrated_acc_y - sensor.calibrated_acc_y;
   sensor.calibrated_acc_z_velocity = calibrated_acc_z - sensor.calibrated_acc_z;
@@ -829,7 +833,7 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.reward = 0.0;
   model.n = dim_n;
   model.m = dim_m;
-  model.lambda = 0.9;
+  model.lambda = 0.95;
   model.delta = 0.001;
   model.terminated = 0;
   model.updated = 0;
@@ -1229,21 +1233,21 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   }
   // act!
   model.dataset.x0 = model.imu.calibrated_acc_x;
-  model.dataset.x1 = (model.imu.calibrated_acc_x_velocity + model.imu.calibrated_gyro_x) / 2.0;
-  model.dataset.x2 = (model.imu.calibrated_acc_x_acceleration + model.imu.calibrated_gyro_x_acceleration) / 2.0;
+  model.dataset.x1 = model.imu.calibrated_acc_x_velocity - model.imu.calibrated_acc_x_acceleration;
+  model.dataset.x2 = (model.imu.calibrated_gyro_x_acceleration - model.imu.calibrated_acc_x_acceleration) / 2.0;
   model.dataset.x3 = model.imu.calibrated_acc_y;
-  model.dataset.x4 = (model.imu.calibrated_acc_y_velocity + model.imu.calibrated_gyro_y) / 2.0;
-  model.dataset.x5 = (model.imu.calibrated_acc_y_acceleration + model.imu.calibrated_gyro_y_acceleration) / 2.0;
-  model.dataset.x6 = model.ReactionEncoder.velocity;
-  model.dataset.x7 = model.ReactionEncoder.acceleration;
-  model.dataset.x8 = model.RollingEncoder.velocity;
+  model.dataset.x4 = model.imu.calibrated_acc_y_velocity - model.imu.calibrated_acc_y_acceleration;
+  model.dataset.x5 = (model.imu.calibrated_gyro_y_acceleration - model.imu.calibrated_acc_y_acceleration) / 2.0;
+  model.dataset.x6 = pow(model.imu.calibrated_acc_x, 2) + pow(model.imu.calibrated_acc_y, 2) + pow(model.imu.calibrated_acc_z, 2);
+  model.dataset.x7 = model.ReactionEncoder.velocity - model.ReactionEncoder.acceleration;
+  model.dataset.x8 = model.RollingEncoder.velocity - model.RollingEncoder.acceleration;
   model.dataset.x9 = model.RollingEncoder.angle;
   model.dataset.x10 = u_k[0];
   model.dataset.x11 = u_k[1];
 
   if (model.active == 1)
   {
-    reaction_wheel_pwm += 64.0 * u_k[0];
+    reaction_wheel_pwm += 16.0 * u_k[0];
     rolling_wheel_pwm += 1.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
@@ -1287,16 +1291,15 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   model.ReactionEncoder = updateEncoder(model.ReactionEncoder, TIM3->CNT);
   model.RollingEncoder = updateEncoder(model.RollingEncoder, TIM4->CNT);
   model.imu = updateIMU(model.imu);
-  // HAL_Delay(1);
   model.dataset.x12 = model.imu.calibrated_acc_x;
-  model.dataset.x13 = (model.imu.calibrated_acc_x_velocity + model.imu.calibrated_gyro_x) / 2.0;
-  model.dataset.x14 = (model.imu.calibrated_acc_x_acceleration + model.imu.calibrated_gyro_x_acceleration) / 2.0;
+  model.dataset.x13 = model.imu.calibrated_acc_x_velocity - model.imu.calibrated_acc_x_acceleration;
+  model.dataset.x14 = (model.imu.calibrated_gyro_x_acceleration - model.imu.calibrated_acc_x_acceleration) / 2.0;
   model.dataset.x15 = model.imu.calibrated_acc_y;
-  model.dataset.x16 = (model.imu.calibrated_acc_y_velocity + model.imu.calibrated_gyro_y) / 2.0;
-  model.dataset.x17 = (model.imu.calibrated_acc_y_acceleration + model.imu.calibrated_gyro_y_acceleration) / 2.0;
-  model.dataset.x18 = model.ReactionEncoder.velocity;
-  model.dataset.x19 = model.ReactionEncoder.acceleration;
-  model.dataset.x20 = model.RollingEncoder.velocity;
+  model.dataset.x16 = model.imu.calibrated_acc_y_velocity - model.imu.calibrated_acc_y_acceleration;
+  model.dataset.x17 = (model.imu.calibrated_gyro_y_acceleration - model.imu.calibrated_acc_y_acceleration) / 2.0;
+  model.dataset.x18 = pow(model.imu.calibrated_acc_x, 2) + pow(model.imu.calibrated_acc_y, 2) + pow(model.imu.calibrated_acc_z, 2);
+  model.dataset.x19 = model.ReactionEncoder.velocity - model.ReactionEncoder.acceleration;
+  model.dataset.x20 = model.RollingEncoder.velocity - model.RollingEncoder.acceleration;
   model.dataset.x21 = model.RollingEncoder.angle;
   x_k1[0] = model.dataset.x12;
   x_k1[1] = model.dataset.x13;
@@ -1647,11 +1650,11 @@ int main(void)
       {
         // z: 0.25, 0.00, -0.37, 0.00, 2.21, -0.04, 0.02, 0.19, 0.25, 0.00, -45332.99, 45594.11, j: 3, k: 1, roll: -13.81, pitch: 1.17, gyro_y: -231.54, enc: 0.50, v1: -0.78, v2: 0.00, dt: 0.000026
         sprintf(MSG,
-                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, velocity0: %0.2f, angle: %0.2f, dt: %0.6f\r\n",
+                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, velocity0: %0.2f, velocity1: %0.2f, dt: %0.6f\r\n",
                 model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5,
                 model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11,
                 model.dataset.x12, model.dataset.x13, model.dataset.x14, model.dataset.x15,
-                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.ReactionEncoder.velocity, model.RollingEncoder.angle,
+                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.ReactionEncoder.velocity, model.RollingEncoder.velocity,
                 dt);
         log_status = 0;
       }
