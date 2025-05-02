@@ -37,9 +37,9 @@
 #define TRANSMIT_LENGTH 300
 #define RECEIVE_FRAME_LENGTH 23
 #define TRANSMIT_FRAME_LENGTH 5
-#define N 8
+#define N 10
 #define M 2
-#define WINDOWLENGTH 5
+#define WINDOWLENGTH 30
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -118,6 +118,7 @@ int encoderVelocity = 0;
 unsigned long interruptTime = 0;
 unsigned long encoderTime = 0;
 uint16_t AD_RES = 0;
+uint32_t AD_RES_BUFFER[2];
 int encoderWindow[WINDOWLENGTH];
 // define arrays for matrix-matrix and matrix-vector multiplication
 float x_k[N];
@@ -156,7 +157,7 @@ typedef struct
   float angle;
   int aState;
   int aLastState;
-  int change;                 // instantanious change in encoder value
+  int direction;              // clockwise or anticlockwise rotation
   int accumulator;            // accumultes the instantanoius changes over a number of intervals
   int interval_counter;       // the number of intervals accumulated
   int intervals;              // maximum number intervals before averaging
@@ -193,6 +194,7 @@ typedef struct
   float calibrated_gyro_x;
   float calibrated_gyro_y;
   float calibrated_gyro_z;
+  float calibrated_gyro_x_acceleration;
   float calibrated_gyro_y_acceleration;
   float acc_x_offset;
   float acc_y_offset;
@@ -201,24 +203,11 @@ typedef struct
   float gyro_y_offset;
   float gyro_z_offset;
 } IMU;
-typedef struct
-{
-  float kp;
-  float ki;
-  float kd;
-  float windup;
-  float safety_angle;
-  float target_angle;
-  float setpoint;
-  float integrator;
-  float output;
-  int active;
-} Controller;
 
-Encoder updateEncoder(Encoder encoder)
+Encoder updateEncoder(Encoder encoder, int newValue)
 {
   encoder.value0 = encoder.value1;
-  encoder.value1 = ((TIM3->CNT) >> 2);
+  encoder.value1 = newValue;
   // shift the window one step
   for (int i = 0; i < encoderWindowLength - 1; i++)
   {
@@ -233,26 +222,10 @@ Encoder updateEncoder(Encoder encoder)
   // compute the angular velocity and acceleration
   float velocity = 0.5 * (float)encoder.accumulator / (float)encoderWindowLength;
   float acceleration = encoder.velocity - velocity;
-  encoder.jerk = encoder.acceleration - acceleration;
   encoder.acceleration = acceleration;
   encoder.velocity = velocity;
+  encoder.angle = sin((float)(encoder.value0 % 180) / 180.0 * 2.0 * 3.14);
   return encoder;
-}
-
-void setServoAngle(int angle)
-{
-  if (angle > 180)
-  {
-    angle = 180;
-  }
-  if (angle < 0)
-  {
-    angle = 0;
-  }
-  uint32_t minPulseWidth = 1000; // 1ms pulse width at a 1MHz clock
-  uint32_t maxPulseWidth = 2000; // 2ms pulse width
-  uint32_t pulse = ((angle * (maxPulseWidth - minPulseWidth)) / 180) + minPulseWidth;
-  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, pulse); // Changed to TIM2, Channel 1
 }
 
 IMU parsedata(IMU sensor, float theta, uint8_t data[])
@@ -266,6 +239,7 @@ IMU parsedata(IMU sensor, float theta, uint8_t data[])
   float calibrated_acc_x_acceleration = sensor.calibrated_acc_x_acceleration;
   float calibrated_acc_y_acceleration = sensor.calibrated_acc_y_acceleration;
   float calibrated_acc_z_acceleration = sensor.calibrated_acc_z_acceleration;
+  float calibrated_gyro_x = sensor.calibrated_gyro_x;
   float calibrated_gyro_y = sensor.calibrated_gyro_y;
   sensor.acc_x = (data[4] << 8) | data[5];
   sensor.acc_y = (data[6] << 8) | data[7];
@@ -297,6 +271,7 @@ IMU parsedata(IMU sensor, float theta, uint8_t data[])
   sensor.calibrated_acc_x_jerk = calibrated_acc_x_acceleration - sensor.calibrated_acc_x_acceleration;
   sensor.calibrated_acc_y_jerk = calibrated_acc_y_acceleration - sensor.calibrated_acc_y_acceleration;
   sensor.calibrated_acc_z_jerk = calibrated_acc_z_acceleration - sensor.calibrated_acc_z_acceleration;
+  sensor.calibrated_gyro_x_acceleration = calibrated_gyro_x - sensor.calibrated_gyro_x;
   sensor.calibrated_gyro_y_acceleration = calibrated_gyro_y - sensor.calibrated_gyro_y;
   return sensor;
 }
@@ -343,7 +318,11 @@ typedef struct
   float x17;
   float x18;
   float x19;
-} Vec20f;
+  float x20;
+  float x21;
+  float x22;
+  float x23;
+} Vec24f;
 typedef struct
 {
   float x00;
@@ -354,6 +333,8 @@ typedef struct
   float x05;
   float x06;
   float x07;
+  float x08;
+  float x09;
   float x10;
   float x11;
   float x12;
@@ -362,7 +343,9 @@ typedef struct
   float x15;
   float x16;
   float x17;
-} Mat28f;
+  float x18;
+  float x19;
+} Mat210f;
 typedef struct
 {
   float x0000;
@@ -375,6 +358,8 @@ typedef struct
   float x0007;
   float x0008;
   float x0009;
+  float x0010;
+  float x0011;
   float x0100;
   float x0101;
   float x0102;
@@ -385,6 +370,8 @@ typedef struct
   float x0107;
   float x0108;
   float x0109;
+  float x0110;
+  float x0111;
   float x0200;
   float x0201;
   float x0202;
@@ -395,6 +382,8 @@ typedef struct
   float x0207;
   float x0208;
   float x0209;
+  float x0210;
+  float x0211;
   float x0300;
   float x0301;
   float x0302;
@@ -405,6 +394,8 @@ typedef struct
   float x0307;
   float x0308;
   float x0309;
+  float x0310;
+  float x0311;
   float x0400;
   float x0401;
   float x0402;
@@ -415,6 +406,8 @@ typedef struct
   float x0407;
   float x0408;
   float x0409;
+  float x0410;
+  float x0411;
   float x0500;
   float x0501;
   float x0502;
@@ -425,6 +418,8 @@ typedef struct
   float x0507;
   float x0508;
   float x0509;
+  float x0510;
+  float x0511;
   float x0600;
   float x0601;
   float x0602;
@@ -435,6 +430,8 @@ typedef struct
   float x0607;
   float x0608;
   float x0609;
+  float x0610;
+  float x0611;
   float x0700;
   float x0701;
   float x0702;
@@ -445,6 +442,8 @@ typedef struct
   float x0707;
   float x0708;
   float x0709;
+  float x0710;
+  float x0711;
   float x0800;
   float x0801;
   float x0802;
@@ -455,6 +454,8 @@ typedef struct
   float x0807;
   float x0808;
   float x0809;
+  float x0810;
+  float x0811;
   float x0900;
   float x0901;
   float x0902;
@@ -465,14 +466,40 @@ typedef struct
   float x0907;
   float x0908;
   float x0909;
-} Mat10f;
+  float x0910;
+  float x0911;
+  float x1000;
+  float x1001;
+  float x1002;
+  float x1003;
+  float x1004;
+  float x1005;
+  float x1006;
+  float x1007;
+  float x1008;
+  float x1009;
+  float x1010;
+  float x1011;
+  float x1100;
+  float x1101;
+  float x1102;
+  float x1103;
+  float x1104;
+  float x1105;
+  float x1106;
+  float x1107;
+  float x1108;
+  float x1109;
+  float x1110;
+  float x1111;
+} Mat12f;
 // Represents a Linear Quadratic Regulator (LQR) model.
 typedef struct
 {
-  Mat10f W_n;     // filter matrix
-  Mat10f P_n;     // inverse autocorrelation matrix
-  Mat28f K_j;     // feedback policy
-  Vec20f dataset; // (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
+  Mat12f W_n;     // filter matrix
+  Mat12f P_n;     // inverse autocorrelation matrix
+  Mat210f K_j;     // feedback policy
+  Vec24f dataset; // (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
   int j;          // step number
   int k;          // time k
   float reward;   // the cumulative reward
@@ -484,10 +511,11 @@ typedef struct
   int updated;    // whether the policy has been updated since episode termination and parameter convegence
   int active;     // is the model controller active
   IMU imu;
-  Encoder encoder;
+  Encoder ReactionEncoder;
+  Encoder RollingEncoder;
 } LinearQuadraticRegulator;
 
-void putBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function prototype
+void putBuffer(int m, int n, float buffer[][n], Mat12f matrix) // function prototype
 {
   buffer[0][0] = matrix.x0000;
   buffer[0][1] = matrix.x0001;
@@ -499,6 +527,8 @@ void putBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function proto
   buffer[0][7] = matrix.x0007;
   buffer[0][8] = matrix.x0008;
   buffer[0][9] = matrix.x0009;
+  buffer[0][10] = matrix.x0010;
+  buffer[0][11] = matrix.x0011;
   buffer[1][0] = matrix.x0100;
   buffer[1][1] = matrix.x0101;
   buffer[1][2] = matrix.x0102;
@@ -509,6 +539,8 @@ void putBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function proto
   buffer[1][7] = matrix.x0107;
   buffer[1][8] = matrix.x0108;
   buffer[1][9] = matrix.x0109;
+  buffer[1][10] = matrix.x0110;
+  buffer[1][11] = matrix.x0111;
   buffer[2][0] = matrix.x0200;
   buffer[2][1] = matrix.x0201;
   buffer[2][2] = matrix.x0202;
@@ -519,6 +551,8 @@ void putBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function proto
   buffer[2][7] = matrix.x0207;
   buffer[2][8] = matrix.x0208;
   buffer[2][9] = matrix.x0209;
+  buffer[2][10] = matrix.x0210;
+  buffer[2][11] = matrix.x0211;
   buffer[3][0] = matrix.x0300;
   buffer[3][1] = matrix.x0301;
   buffer[3][2] = matrix.x0302;
@@ -529,6 +563,8 @@ void putBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function proto
   buffer[3][7] = matrix.x0307;
   buffer[3][8] = matrix.x0308;
   buffer[3][9] = matrix.x0309;
+  buffer[3][10] = matrix.x0310;
+  buffer[3][11] = matrix.x0311;
   buffer[4][0] = matrix.x0400;
   buffer[4][1] = matrix.x0401;
   buffer[4][2] = matrix.x0402;
@@ -539,6 +575,8 @@ void putBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function proto
   buffer[4][7] = matrix.x0407;
   buffer[4][8] = matrix.x0408;
   buffer[4][9] = matrix.x0409;
+  buffer[4][10] = matrix.x0410;
+  buffer[4][11] = matrix.x0411;
   buffer[5][0] = matrix.x0500;
   buffer[5][1] = matrix.x0501;
   buffer[5][2] = matrix.x0502;
@@ -549,6 +587,8 @@ void putBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function proto
   buffer[5][7] = matrix.x0507;
   buffer[5][8] = matrix.x0508;
   buffer[5][9] = matrix.x0509;
+  buffer[5][10] = matrix.x0510;
+  buffer[5][11] = matrix.x0511;
   buffer[6][0] = matrix.x0600;
   buffer[6][1] = matrix.x0601;
   buffer[6][2] = matrix.x0602;
@@ -559,6 +599,8 @@ void putBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function proto
   buffer[6][7] = matrix.x0607;
   buffer[6][8] = matrix.x0608;
   buffer[6][9] = matrix.x0609;
+  buffer[6][10] = matrix.x0610;
+  buffer[6][11] = matrix.x0611;
   buffer[7][0] = matrix.x0700;
   buffer[7][1] = matrix.x0701;
   buffer[7][2] = matrix.x0702;
@@ -569,6 +611,8 @@ void putBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function proto
   buffer[7][7] = matrix.x0707;
   buffer[7][8] = matrix.x0708;
   buffer[7][9] = matrix.x0709;
+  buffer[7][10] = matrix.x0710;
+  buffer[7][11] = matrix.x0711;
   buffer[8][0] = matrix.x0800;
   buffer[8][1] = matrix.x0801;
   buffer[8][2] = matrix.x0802;
@@ -579,6 +623,8 @@ void putBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function proto
   buffer[8][7] = matrix.x0807;
   buffer[8][8] = matrix.x0808;
   buffer[8][9] = matrix.x0809;
+  buffer[8][10] = matrix.x0810;
+  buffer[8][11] = matrix.x0811;
   buffer[9][0] = matrix.x0900;
   buffer[9][1] = matrix.x0901;
   buffer[9][2] = matrix.x0902;
@@ -589,11 +635,37 @@ void putBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function proto
   buffer[9][7] = matrix.x0907;
   buffer[9][8] = matrix.x0908;
   buffer[9][9] = matrix.x0909;
+  buffer[9][10] = matrix.x0910;
+  buffer[9][11] = matrix.x0911;
+  buffer[10][0] = matrix.x1000;
+  buffer[10][1] = matrix.x1001;
+  buffer[10][2] = matrix.x1002;
+  buffer[10][3] = matrix.x1003;
+  buffer[10][4] = matrix.x1004;
+  buffer[10][5] = matrix.x1005;
+  buffer[10][6] = matrix.x1006;
+  buffer[10][7] = matrix.x1007;
+  buffer[10][8] = matrix.x1008;
+  buffer[10][9] = matrix.x1009;
+  buffer[10][10] = matrix.x1010;
+  buffer[10][11] = matrix.x1011;
+  buffer[11][0] = matrix.x1100;
+  buffer[11][1] = matrix.x1101;
+  buffer[11][2] = matrix.x1102;
+  buffer[11][3] = matrix.x1103;
+  buffer[11][4] = matrix.x1104;
+  buffer[11][5] = matrix.x1105;
+  buffer[11][6] = matrix.x1106;
+  buffer[11][7] = matrix.x1107;
+  buffer[11][8] = matrix.x1108;
+  buffer[11][9] = matrix.x1109;
+  buffer[11][10] = matrix.x1110;
+  buffer[11][11] = matrix.x1111;
 
   return;
 }
 
-Mat10f getBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function prototype
+Mat12f getBuffer(int m, int n, float buffer[][n], Mat12f matrix) // function prototype
 {
   matrix.x0000 = buffer[0][0];
   matrix.x0001 = buffer[0][1];
@@ -605,6 +677,8 @@ Mat10f getBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function pro
   matrix.x0007 = buffer[0][7];
   matrix.x0008 = buffer[0][8];
   matrix.x0009 = buffer[0][9];
+  matrix.x0010 = buffer[0][10];
+  matrix.x0011 = buffer[0][11];
   matrix.x0100 = buffer[1][0];
   matrix.x0101 = buffer[1][1];
   matrix.x0102 = buffer[1][2];
@@ -615,6 +689,8 @@ Mat10f getBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function pro
   matrix.x0107 = buffer[1][7];
   matrix.x0108 = buffer[1][8];
   matrix.x0109 = buffer[1][9];
+  matrix.x0110 = buffer[1][10];
+  matrix.x0111 = buffer[1][11];
   matrix.x0200 = buffer[2][0];
   matrix.x0201 = buffer[2][1];
   matrix.x0202 = buffer[2][2];
@@ -625,6 +701,8 @@ Mat10f getBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function pro
   matrix.x0207 = buffer[2][7];
   matrix.x0208 = buffer[2][8];
   matrix.x0209 = buffer[2][9];
+  matrix.x0210 = buffer[2][10];
+  matrix.x0211 = buffer[2][11];
   matrix.x0300 = buffer[3][0];
   matrix.x0301 = buffer[3][1];
   matrix.x0302 = buffer[3][2];
@@ -635,6 +713,8 @@ Mat10f getBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function pro
   matrix.x0307 = buffer[3][7];
   matrix.x0308 = buffer[3][8];
   matrix.x0309 = buffer[3][9];
+  matrix.x0310 = buffer[3][10];
+  matrix.x0311 = buffer[3][11];
   matrix.x0400 = buffer[4][0];
   matrix.x0401 = buffer[4][1];
   matrix.x0402 = buffer[4][2];
@@ -645,6 +725,8 @@ Mat10f getBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function pro
   matrix.x0407 = buffer[4][7];
   matrix.x0408 = buffer[4][8];
   matrix.x0409 = buffer[4][9];
+  matrix.x0410 = buffer[4][10];
+  matrix.x0411 = buffer[4][11];
   matrix.x0500 = buffer[5][0];
   matrix.x0501 = buffer[5][1];
   matrix.x0502 = buffer[5][2];
@@ -655,6 +737,8 @@ Mat10f getBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function pro
   matrix.x0507 = buffer[5][7];
   matrix.x0508 = buffer[5][8];
   matrix.x0509 = buffer[5][9];
+  matrix.x0510 = buffer[5][10];
+  matrix.x0511 = buffer[5][11];
   matrix.x0600 = buffer[6][0];
   matrix.x0601 = buffer[6][1];
   matrix.x0602 = buffer[6][2];
@@ -665,6 +749,8 @@ Mat10f getBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function pro
   matrix.x0607 = buffer[6][7];
   matrix.x0608 = buffer[6][8];
   matrix.x0609 = buffer[6][9];
+  matrix.x0610 = buffer[6][10];
+  matrix.x0611 = buffer[6][11];
   matrix.x0700 = buffer[7][0];
   matrix.x0701 = buffer[7][1];
   matrix.x0702 = buffer[7][2];
@@ -675,6 +761,8 @@ Mat10f getBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function pro
   matrix.x0707 = buffer[7][7];
   matrix.x0708 = buffer[7][8];
   matrix.x0709 = buffer[7][9];
+  matrix.x0710 = buffer[7][10];
+  matrix.x0711 = buffer[7][11];
   matrix.x0800 = buffer[8][0];
   matrix.x0801 = buffer[8][1];
   matrix.x0802 = buffer[8][2];
@@ -685,6 +773,8 @@ Mat10f getBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function pro
   matrix.x0807 = buffer[8][7];
   matrix.x0808 = buffer[8][8];
   matrix.x0809 = buffer[8][9];
+  matrix.x0810 = buffer[8][10];
+  matrix.x0811 = buffer[8][11];
   matrix.x0900 = buffer[9][0];
   matrix.x0901 = buffer[9][1];
   matrix.x0902 = buffer[9][2];
@@ -695,6 +785,32 @@ Mat10f getBuffer(int m, int n, float buffer[][n], Mat10f matrix) // function pro
   matrix.x0907 = buffer[9][7];
   matrix.x0908 = buffer[9][8];
   matrix.x0909 = buffer[9][9];
+  matrix.x0910 = buffer[9][10];
+  matrix.x0911 = buffer[9][11];
+  matrix.x1000 = buffer[10][0];
+  matrix.x1001 = buffer[10][1];
+  matrix.x1002 = buffer[10][2];
+  matrix.x1003 = buffer[10][3];
+  matrix.x1004 = buffer[10][4];
+  matrix.x1005 = buffer[10][5];
+  matrix.x1006 = buffer[10][6];
+  matrix.x1007 = buffer[10][7];
+  matrix.x1008 = buffer[10][8];
+  matrix.x1009 = buffer[10][9];
+  matrix.x1010 = buffer[10][10];
+  matrix.x1011 = buffer[10][11];
+  matrix.x1100 = buffer[11][0];
+  matrix.x1101 = buffer[11][1];
+  matrix.x1102 = buffer[11][2];
+  matrix.x1103 = buffer[11][3];
+  matrix.x1104 = buffer[11][4];
+  matrix.x1105 = buffer[11][5];
+  matrix.x1106 = buffer[11][6];
+  matrix.x1107 = buffer[11][7];
+  matrix.x1108 = buffer[11][8];
+  matrix.x1109 = buffer[11][9];
+  matrix.x1110 = buffer[11][10];
+  matrix.x1111 = buffer[11][11];
 
   return matrix;
 }
@@ -713,7 +829,7 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.reward = 0.0;
   model.n = dim_n;
   model.m = dim_m;
-  model.lambda = 0.99;
+  model.lambda = 0.9;
   model.delta = 0.001;
   model.terminated = 0;
   model.updated = 0;
@@ -729,6 +845,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.W_n.x0007 = (float)(rand() % 100) / 100.0;
   model.W_n.x0008 = (float)(rand() % 100) / 100.0;
   model.W_n.x0009 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0010 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0011 = (float)(rand() % 100) / 100.0;
   model.W_n.x0100 = (float)(rand() % 100) / 100.0;
   model.W_n.x0101 = (float)(rand() % 100) / 100.0;
   model.W_n.x0102 = (float)(rand() % 100) / 100.0;
@@ -739,6 +857,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.W_n.x0107 = (float)(rand() % 100) / 100.0;
   model.W_n.x0108 = (float)(rand() % 100) / 100.0;
   model.W_n.x0109 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0110 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0111 = (float)(rand() % 100) / 100.0;
   model.W_n.x0200 = (float)(rand() % 100) / 100.0;
   model.W_n.x0201 = (float)(rand() % 100) / 100.0;
   model.W_n.x0202 = (float)(rand() % 100) / 100.0;
@@ -749,6 +869,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.W_n.x0207 = (float)(rand() % 100) / 100.0;
   model.W_n.x0208 = (float)(rand() % 100) / 100.0;
   model.W_n.x0209 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0210 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0211 = (float)(rand() % 100) / 100.0;
   model.W_n.x0300 = (float)(rand() % 100) / 100.0;
   model.W_n.x0301 = (float)(rand() % 100) / 100.0;
   model.W_n.x0302 = (float)(rand() % 100) / 100.0;
@@ -759,6 +881,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.W_n.x0307 = (float)(rand() % 100) / 100.0;
   model.W_n.x0308 = (float)(rand() % 100) / 100.0;
   model.W_n.x0309 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0310 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0311 = (float)(rand() % 100) / 100.0;
   model.W_n.x0400 = (float)(rand() % 100) / 100.0;
   model.W_n.x0401 = (float)(rand() % 100) / 100.0;
   model.W_n.x0402 = (float)(rand() % 100) / 100.0;
@@ -769,6 +893,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.W_n.x0407 = (float)(rand() % 100) / 100.0;
   model.W_n.x0408 = (float)(rand() % 100) / 100.0;
   model.W_n.x0409 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0410 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0411 = (float)(rand() % 100) / 100.0;
   model.W_n.x0500 = (float)(rand() % 100) / 100.0;
   model.W_n.x0501 = (float)(rand() % 100) / 100.0;
   model.W_n.x0502 = (float)(rand() % 100) / 100.0;
@@ -779,6 +905,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.W_n.x0507 = (float)(rand() % 100) / 100.0;
   model.W_n.x0508 = (float)(rand() % 100) / 100.0;
   model.W_n.x0509 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0510 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0511 = (float)(rand() % 100) / 100.0;
   model.W_n.x0600 = (float)(rand() % 100) / 100.0;
   model.W_n.x0601 = (float)(rand() % 100) / 100.0;
   model.W_n.x0602 = (float)(rand() % 100) / 100.0;
@@ -789,6 +917,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.W_n.x0607 = (float)(rand() % 100) / 100.0;
   model.W_n.x0608 = (float)(rand() % 100) / 100.0;
   model.W_n.x0609 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0610 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0611 = (float)(rand() % 100) / 100.0;
   model.W_n.x0700 = (float)(rand() % 100) / 100.0;
   model.W_n.x0701 = (float)(rand() % 100) / 100.0;
   model.W_n.x0702 = (float)(rand() % 100) / 100.0;
@@ -799,6 +929,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.W_n.x0707 = (float)(rand() % 100) / 100.0;
   model.W_n.x0708 = (float)(rand() % 100) / 100.0;
   model.W_n.x0709 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0710 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0711 = (float)(rand() % 100) / 100.0;
   model.W_n.x0800 = (float)(rand() % 100) / 100.0;
   model.W_n.x0801 = (float)(rand() % 100) / 100.0;
   model.W_n.x0802 = (float)(rand() % 100) / 100.0;
@@ -809,6 +941,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.W_n.x0807 = (float)(rand() % 100) / 100.0;
   model.W_n.x0808 = (float)(rand() % 100) / 100.0;
   model.W_n.x0809 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0810 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0811 = (float)(rand() % 100) / 100.0;
   model.W_n.x0900 = (float)(rand() % 100) / 100.0;
   model.W_n.x0901 = (float)(rand() % 100) / 100.0;
   model.W_n.x0902 = (float)(rand() % 100) / 100.0;
@@ -819,6 +953,32 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.W_n.x0907 = (float)(rand() % 100) / 100.0;
   model.W_n.x0908 = (float)(rand() % 100) / 100.0;
   model.W_n.x0909 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0910 = (float)(rand() % 100) / 100.0;
+  model.W_n.x0911 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1000 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1001 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1002 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1003 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1004 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1005 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1006 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1007 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1008 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1009 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1010 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1011 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1100 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1101 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1102 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1103 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1104 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1105 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1106 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1107 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1108 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1109 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1110 = (float)(rand() % 100) / 100.0;
+  model.W_n.x1111 = (float)(rand() % 100) / 100.0;
 
   model.P_n.x0000 = 1.0 / model.delta;
   model.P_n.x0001 = 0.0;
@@ -830,6 +990,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.P_n.x0007 = 0.0;
   model.P_n.x0008 = 0.0;
   model.P_n.x0009 = 0.0;
+  model.P_n.x0010 = 0.0;
+  model.P_n.x0011 = 0.0;
   model.P_n.x0100 = 0.0;
   model.P_n.x0101 = 1.0 / model.delta;
   model.P_n.x0102 = 0.0;
@@ -840,6 +1002,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.P_n.x0107 = 0.0;
   model.P_n.x0108 = 0.0;
   model.P_n.x0109 = 0.0;
+  model.P_n.x0110 = 0.0;
+  model.P_n.x0111 = 0.0;
   model.P_n.x0200 = 0.0;
   model.P_n.x0201 = 0.0;
   model.P_n.x0202 = 1.0 / model.delta;
@@ -850,6 +1014,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.P_n.x0207 = 0.0;
   model.P_n.x0208 = 0.0;
   model.P_n.x0209 = 0.0;
+  model.P_n.x0210 = 0.0;
+  model.P_n.x0211 = 0.0;
   model.P_n.x0300 = 0.0;
   model.P_n.x0301 = 0.0;
   model.P_n.x0302 = 0.0;
@@ -860,6 +1026,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.P_n.x0307 = 0.0;
   model.P_n.x0308 = 0.0;
   model.P_n.x0309 = 0.0;
+  model.P_n.x0310 = 0.0;
+  model.P_n.x0311 = 0.0;
   model.P_n.x0400 = 0.0;
   model.P_n.x0401 = 0.0;
   model.P_n.x0402 = 0.0;
@@ -870,6 +1038,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.P_n.x0407 = 0.0;
   model.P_n.x0408 = 0.0;
   model.P_n.x0409 = 0.0;
+  model.P_n.x0410 = 0.0;
+  model.P_n.x0411 = 0.0;
   model.P_n.x0500 = 0.0;
   model.P_n.x0501 = 0.0;
   model.P_n.x0502 = 0.0;
@@ -880,6 +1050,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.P_n.x0507 = 0.0;
   model.P_n.x0508 = 0.0;
   model.P_n.x0509 = 0.0;
+  model.P_n.x0510 = 0.0;
+  model.P_n.x0511 = 0.0;
   model.P_n.x0600 = 0.0;
   model.P_n.x0601 = 0.0;
   model.P_n.x0602 = 0.0;
@@ -890,6 +1062,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.P_n.x0607 = 0.0;
   model.P_n.x0608 = 0.0;
   model.P_n.x0609 = 0.0;
+  model.P_n.x0610 = 0.0;
+  model.P_n.x0611 = 0.0;
   model.P_n.x0700 = 0.0;
   model.P_n.x0701 = 0.0;
   model.P_n.x0702 = 0.0;
@@ -900,6 +1074,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.P_n.x0707 = 1.0 / model.delta;
   model.P_n.x0708 = 0.0;
   model.P_n.x0709 = 0.0;
+  model.P_n.x0710 = 0.0;
+  model.P_n.x0711 = 0.0;
   model.P_n.x0800 = 0.0;
   model.P_n.x0801 = 0.0;
   model.P_n.x0802 = 0.0;
@@ -910,6 +1086,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.P_n.x0807 = 0.0;
   model.P_n.x0808 = 1.0 / model.delta;
   model.P_n.x0809 = 0.0;
+  model.P_n.x0810 = 0.0;
+  model.P_n.x0811 = 0.0;
   model.P_n.x0900 = 0.0;
   model.P_n.x0901 = 0.0;
   model.P_n.x0902 = 0.0;
@@ -920,6 +1098,32 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.P_n.x0907 = 0.0;
   model.P_n.x0908 = 0.0;
   model.P_n.x0909 = 1.0 / model.delta;
+  model.P_n.x0910 = 0.0;
+  model.P_n.x0911 = 0.0;
+  model.P_n.x1000 = 0.0;
+  model.P_n.x1001 = 0.0;
+  model.P_n.x1002 = 0.0;
+  model.P_n.x1003 = 0.0;
+  model.P_n.x1004 = 0.0;
+  model.P_n.x1005 = 0.0;
+  model.P_n.x1006 = 0.0;
+  model.P_n.x1007 = 0.0;
+  model.P_n.x1008 = 0.0;
+  model.P_n.x1009 = 0.0;
+  model.P_n.x1010 = 1.0 / model.delta;
+  model.P_n.x1011 = 0.0;
+  model.P_n.x1100 = 0.0;
+  model.P_n.x1101 = 0.0;
+  model.P_n.x1102 = 0.0;
+  model.P_n.x1103 = 0.0;
+  model.P_n.x1104 = 0.0;
+  model.P_n.x1105 = 0.0;
+  model.P_n.x1106 = 0.0;
+  model.P_n.x1107 = 0.0;
+  model.P_n.x1108 = 0.0;
+  model.P_n.x1109 = 0.0;
+  model.P_n.x1110 = 0.0;
+  model.P_n.x1111 = 1.0 / model.delta;
 
   model.K_j.x00 = (float)(rand() % 100) / 100.0;
   model.K_j.x01 = (float)(rand() % 100) / 100.0;
@@ -929,6 +1133,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.K_j.x05 = (float)(rand() % 100) / 100.0;
   model.K_j.x06 = (float)(rand() % 100) / 100.0;
   model.K_j.x07 = (float)(rand() % 100) / 100.0;
+  model.K_j.x08 = (float)(rand() % 100) / 100.0;
+  model.K_j.x09 = (float)(rand() % 100) / 100.0;
   model.K_j.x10 = (float)(rand() % 100) / 100.0;
   model.K_j.x11 = (float)(rand() % 100) / 100.0;
   model.K_j.x12 = (float)(rand() % 100) / 100.0;
@@ -937,6 +1143,8 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.K_j.x15 = (float)(rand() % 100) / 100.0;
   model.K_j.x16 = (float)(rand() % 100) / 100.0;
   model.K_j.x17 = (float)(rand() % 100) / 100.0;
+  model.K_j.x18 = (float)(rand() % 100) / 100.0;
+  model.K_j.x19 = (float)(rand() % 100) / 100.0;
 
   model.dataset.x0 = 0.0;
   model.dataset.x1 = 0.0;
@@ -958,10 +1166,16 @@ LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
   model.dataset.x17 = 0.0;
   model.dataset.x18 = 0.0;
   model.dataset.x19 = 0.0;
-  IMU imu = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
-  Encoder encoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
+  model.dataset.x20 = 0.0;
+  model.dataset.x21 = 0.0;
+  model.dataset.x22 = 0.0;
+  model.dataset.x23 = 0.0;
+  IMU imu = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
+  Encoder ReactionEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
+  Encoder RollingEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
   model.imu = imu;
-  model.encoder = encoder;
+  model.ReactionEncoder = ReactionEncoder;
+  model.RollingEncoder = RollingEncoder;
   return model;
 }
 /*
@@ -991,6 +1205,8 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   K_j[0][5] = model.K_j.x05;
   K_j[0][6] = model.K_j.x06;
   K_j[0][7] = model.K_j.x07;
+  K_j[0][8] = model.K_j.x08;
+  K_j[0][9] = model.K_j.x09;
   K_j[1][0] = model.K_j.x10;
   K_j[1][1] = model.K_j.x11;
   K_j[1][2] = model.K_j.x12;
@@ -999,6 +1215,8 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   K_j[1][5] = model.K_j.x15;
   K_j[1][6] = model.K_j.x16;
   K_j[1][7] = model.K_j.x17;
+  K_j[1][8] = model.K_j.x18;
+  K_j[1][9] = model.K_j.x19;
   u_k[0] = 0.0;
   u_k[1] = 0.0;
   // feeback policy
@@ -1011,82 +1229,85 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   }
   // act!
   model.dataset.x0 = model.imu.calibrated_acc_x;
-  model.dataset.x1 = model.imu.calibrated_acc_x_velocity;
-  model.dataset.x2 = model.imu.calibrated_acc_x_acceleration;
+  model.dataset.x1 = (model.imu.calibrated_acc_x_velocity + model.imu.calibrated_gyro_x) / 2.0;
+  model.dataset.x2 = (model.imu.calibrated_acc_x_acceleration + model.imu.calibrated_gyro_x_acceleration) / 2.0;
   model.dataset.x3 = model.imu.calibrated_acc_y;
-  model.dataset.x4 = model.imu.calibrated_acc_y_velocity;
-  model.dataset.x5 = model.imu.calibrated_acc_y_acceleration;
-  model.dataset.x6 = model.encoder.velocity;
-  model.dataset.x7 = model.encoder.acceleration;
-  model.dataset.x8 = u_k[0];
-  model.dataset.x9 = u_k[1];
+  model.dataset.x4 = (model.imu.calibrated_acc_y_velocity + model.imu.calibrated_gyro_y) / 2.0;
+  model.dataset.x5 = (model.imu.calibrated_acc_y_acceleration + model.imu.calibrated_gyro_y_acceleration) / 2.0;
+  model.dataset.x6 = model.ReactionEncoder.velocity;
+  model.dataset.x7 = model.ReactionEncoder.acceleration;
+  model.dataset.x8 = model.RollingEncoder.velocity;
+  model.dataset.x9 = model.RollingEncoder.angle;
+  model.dataset.x10 = u_k[0];
+  model.dataset.x11 = u_k[1];
 
   if (model.active == 1)
   {
-    float action0 = 25.0 * u_k[0];
-    float action1 = 1.0 * u_k[1];
-    reaction_wheel_pwm += action0;
-    rolling_wheel_pwm += action1;
+    reaction_wheel_pwm += 64.0 * u_k[0];
+    rolling_wheel_pwm += 1.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
     rolling_wheel_pwm = fmin(255.0, rolling_wheel_pwm);
     rolling_wheel_pwm = fmax(-255.0, rolling_wheel_pwm);
+    TIM2->CCR1 = 255 * (int)fabs(reaction_wheel_pwm);
+    TIM2->CCR2 = 255 * (int)fabs(rolling_wheel_pwm);
     if (reaction_wheel_pwm < 0)
     {
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
-      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 255 * (int)fabs(reaction_wheel_pwm));
     }
     else
     {
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
-      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 255 * (int)fabs(reaction_wheel_pwm));
     }
     if (rolling_wheel_pwm < 0)
     {
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
-      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 255 * (int)fabs(rolling_wheel_pwm));
     }
     else
     {
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
-      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 255 * (int)fabs(rolling_wheel_pwm));
     }
   }
   else
   {
     reaction_wheel_pwm = 0.0;
     rolling_wheel_pwm = 0.0;
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 0);
-    __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 0);
+    TIM2->CCR1 = 0;
+    TIM2->CCR2 = 0;
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
   }
   // dataset = (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
-  model.encoder = updateEncoder(model.encoder);
+  model.ReactionEncoder = updateEncoder(model.ReactionEncoder, TIM3->CNT);
+  model.RollingEncoder = updateEncoder(model.RollingEncoder, TIM4->CNT);
   model.imu = updateIMU(model.imu);
   // HAL_Delay(1);
-  model.dataset.x10 = model.imu.calibrated_acc_x;
-  model.dataset.x11 = model.imu.calibrated_acc_x_velocity;
-  model.dataset.x12 = model.imu.calibrated_acc_x_acceleration;
-  model.dataset.x13 = model.imu.calibrated_acc_y;
-  model.dataset.x14 = model.imu.calibrated_acc_y_velocity;
-  model.dataset.x15 = model.imu.calibrated_acc_y_acceleration;
-  model.dataset.x16 = model.encoder.velocity;
-  model.dataset.x17 = model.encoder.acceleration;
-  x_k1[0] = model.dataset.x10;
-  x_k1[1] = model.dataset.x11;
-  x_k1[2] = model.dataset.x12;
-  x_k1[3] = model.dataset.x13;
-  x_k1[4] = model.dataset.x14;
-  x_k1[5] = model.dataset.x15;
-  x_k1[6] = model.dataset.x16;
-  x_k1[7] = model.dataset.x17;
+  model.dataset.x12 = model.imu.calibrated_acc_x;
+  model.dataset.x13 = (model.imu.calibrated_acc_x_velocity + model.imu.calibrated_gyro_x) / 2.0;
+  model.dataset.x14 = (model.imu.calibrated_acc_x_acceleration + model.imu.calibrated_gyro_x_acceleration) / 2.0;
+  model.dataset.x15 = model.imu.calibrated_acc_y;
+  model.dataset.x16 = (model.imu.calibrated_acc_y_velocity + model.imu.calibrated_gyro_y) / 2.0;
+  model.dataset.x17 = (model.imu.calibrated_acc_y_acceleration + model.imu.calibrated_gyro_y_acceleration) / 2.0;
+  model.dataset.x18 = model.ReactionEncoder.velocity;
+  model.dataset.x19 = model.ReactionEncoder.acceleration;
+  model.dataset.x20 = model.RollingEncoder.velocity;
+  model.dataset.x21 = model.RollingEncoder.angle;
+  x_k1[0] = model.dataset.x12;
+  x_k1[1] = model.dataset.x13;
+  x_k1[2] = model.dataset.x14;
+  x_k1[3] = model.dataset.x15;
+  x_k1[4] = model.dataset.x16;
+  x_k1[5] = model.dataset.x17;
+  x_k1[6] = model.dataset.x18;
+  x_k1[7] = model.dataset.x19;
+  x_k1[8] = model.dataset.x20;
+  x_k1[9] = model.dataset.x21;
   u_k1[0] = 0.0;
   u_k1[1] = 0.0;
   for (int i = 0; i < model.m; i++)
@@ -1096,8 +1317,8 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
       u_k1[i] += -K_j[i][j] * x_k1[j];
     }
   }
-  model.dataset.x18 = u_k1[0];
-  model.dataset.x19 = u_k1[1];
+  model.dataset.x22 = u_k1[0];
+  model.dataset.x23 = u_k1[1];
   // Compute the quadratic basis sets ϕ(zₖ), ϕ(zₖ₊₁).
   z_k[0] = model.dataset.x0;
   z_k[1] = model.dataset.x1;
@@ -1109,16 +1330,20 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
   z_k[7] = model.dataset.x7;
   z_k[8] = model.dataset.x8;
   z_k[9] = model.dataset.x9;
-  z_k1[0] = model.dataset.x10;
-  z_k1[1] = model.dataset.x11;
-  z_k1[2] = model.dataset.x12;
-  z_k1[3] = model.dataset.x13;
-  z_k1[4] = model.dataset.x14;
-  z_k1[5] = model.dataset.x15;
-  z_k1[6] = model.dataset.x16;
-  z_k1[7] = model.dataset.x17;
-  z_k1[8] = model.dataset.x18;
-  z_k1[9] = model.dataset.x19;
+  z_k[10] = model.dataset.x10;
+  z_k[11] = model.dataset.x11;
+  z_k1[0] = model.dataset.x12;
+  z_k1[1] = model.dataset.x13;
+  z_k1[2] = model.dataset.x14;
+  z_k1[3] = model.dataset.x15;
+  z_k1[4] = model.dataset.x16;
+  z_k1[5] = model.dataset.x17;
+  z_k1[6] = model.dataset.x18;
+  z_k1[7] = model.dataset.x19;
+  z_k1[8] = model.dataset.x20;
+  z_k1[9] = model.dataset.x21;
+  z_k1[10] = model.dataset.x22;
+  z_k1[11] = model.dataset.x23;
   for (int i = 0; i < model.n + model.m; i++)
   {
     basisset0[i] = z_k[i];
@@ -1211,7 +1436,7 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
   // uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
   float determinant = S_uu[1][1] * S_uu[2][2] - S_uu[1][2] * S_uu[2][1];
   // check the rank S_uu to see if it's equal to 2 (invertible matrix)
-  if (fabs(determinant) > 0.001) // greater than zero
+  if (fabs(determinant) > 0.01) // greater than zero
   {
     S_uu_inverse[0][0] = S_uu[1][1] / determinant;
     S_uu_inverse[0][1] = -S_uu[0][1] / determinant;
@@ -1243,6 +1468,8 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
     model.K_j.x05 = K_j[0][5];
     model.K_j.x06 = K_j[0][6];
     model.K_j.x07 = K_j[0][7];
+    model.K_j.x08 = K_j[0][8];
+    model.K_j.x09 = K_j[0][9];
     model.K_j.x10 = K_j[1][0];
     model.K_j.x11 = K_j[1][1];
     model.K_j.x12 = K_j[1][2];
@@ -1251,6 +1478,8 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
     model.K_j.x15 = K_j[1][5];
     model.K_j.x16 = K_j[1][6];
     model.K_j.x17 = K_j[1][7];
+    model.K_j.x18 = K_j[1][8];
+    model.K_j.x19 = K_j[1][9];
   }
   model.updated = 1;
   return model;
@@ -1259,9 +1488,9 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
 /* USER CODE END 0 */
 
 /**
- * @brief  The application entry point.
- * @retval int
- */
+  * @brief  The application entry point.
+  * @retval int
+  */
 int main(void)
 {
 
@@ -1273,17 +1502,12 @@ int main(void)
 
   uint8_t MSG[TRANSMIT_LENGTH] = {'\0'};
   const int LOG_CYCLE = 100;
-  const float max_rolling_speed = 250.0;
-  // const float epsilon = 10.0; // convergence threshold
-  // const int numStates = 3;
   int transmit = 0;
   int log_counter = 0;
   int log_status = 0;
   unsigned long t1 = 0;
   unsigned long t2 = 0;
   unsigned long diff = 0;
-  // fields: p, i, d, windup, safety angle, target angle, setpoint, integrator, output and active.
-  Controller rolling_wheel_controller = {9.0, 20.0, 1.0, 29.0, 12.0, 0.0, 0.0, 0.0, 0.0, 0};
   model = initialize(model);
   /* USER CODE END 1 */
 
@@ -1322,17 +1546,19 @@ int main(void)
   HAL_Delay(1000);
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
+  HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
   HAL_Delay(30);
   // setServoAngle(90.0);
   // initialize the Encoder and IMU
   HAL_Delay(10);
-  model.encoder = updateEncoder(model.encoder);
+  model.ReactionEncoder = updateEncoder(model.ReactionEncoder, TIM3->CNT);
+  model.RollingEncoder = updateEncoder(model.RollingEncoder, TIM4->CNT);
   model.imu = updateIMU(model.imu);
   HAL_Delay(10);
-  model.encoder = updateEncoder(model.encoder);
+  model.ReactionEncoder = updateEncoder(model.ReactionEncoder, TIM3->CNT);
+  model.RollingEncoder = updateEncoder(model.RollingEncoder, TIM4->CNT);
   model.imu = updateIMU(model.imu);
   for (int i = 0; i < encoderWindowLength; i++)
   {
@@ -1360,16 +1586,14 @@ int main(void)
       model.active = 0;
       reaction_wheel_pwm = 0.0;
       rolling_wheel_pwm = 0.0;
-      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 0);
-      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 0);
+      TIM2->CCR1 = 0;
+      TIM2->CCR2 = 0;
     }
 
-    if (fabs(model.imu.calibrated_acc_y) > reaction_wheel_safety_angle || fabs(model.imu.calibrated_acc_x) > rolling_wheel_controller.safety_angle || model.k > max_episode_length)
+    if (fabs(model.imu.calibrated_acc_y) > reaction_wheel_safety_angle || fabs(model.imu.calibrated_acc_x) > rolling_wheel_safety_angle || model.k > max_episode_length)
     {
       model.terminated = 1;
       model.active = 0;
-      rolling_wheel_controller.active = 0;
-      rolling_wheel_controller.output = 0;
       HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
     }
 
@@ -1379,7 +1603,6 @@ int main(void)
       // HAL_Delay(1000);
       model.terminated = 0;
       model.active = 1;
-      rolling_wheel_controller.active = 1;
       model.updated = 0;
     }
     // Rinse and repeat :)
@@ -1392,13 +1615,14 @@ int main(void)
     {
       reaction_wheel_pwm = 0.0;
       rolling_wheel_pwm = 0.0;
-      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 0);
-      __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 0);
+      TIM2->CCR1 = 0;
+      TIM2->CCR2 = 0;
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
-      model.encoder = updateEncoder(model.encoder);
+      model.ReactionEncoder = updateEncoder(model.ReactionEncoder, TIM3->CNT);
+      model.RollingEncoder = updateEncoder(model.RollingEncoder, TIM4->CNT);
       model.imu = updateIMU(model.imu);
     }
     if (model.terminated == 1 && model.updated == 0)
@@ -1423,12 +1647,12 @@ int main(void)
       {
         // z: 0.25, 0.00, -0.37, 0.00, 2.21, -0.04, 0.02, 0.19, 0.25, 0.00, -45332.99, 45594.11, j: 3, k: 1, roll: -13.81, pitch: 1.17, gyro_y: -231.54, enc: 0.50, v1: -0.78, v2: 0.00, dt: 0.000026
         sprintf(MSG,
-                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, encvel: %0.2f, encacc: %0.2f, v1: %0.2f, v2: %0.2f, dt: %0.6f\r\n",
+                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, velocity0: %0.2f, angle: %0.2f, dt: %0.6f\r\n",
                 model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5,
                 model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11,
                 model.dataset.x12, model.dataset.x13, model.dataset.x14, model.dataset.x15,
-                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.encoder.velocity, model.encoder.acceleration,
-                reaction_wheel_speed, rolling_wheel_speed, dt);
+                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.ReactionEncoder.velocity, model.RollingEncoder.angle,
+                dt);
         log_status = 0;
       }
 
@@ -1443,22 +1667,22 @@ int main(void)
 }
 
 /**
- * @brief System Clock Configuration
- * @retval None
- */
+  * @brief System Clock Configuration
+  * @retval None
+  */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-   */
+  */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-   * in the RCC_OscInitTypeDef structure.
-   */
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -1474,8 +1698,9 @@ void SystemClock_Config(void)
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-   */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
@@ -1488,10 +1713,10 @@ void SystemClock_Config(void)
 }
 
 /**
- * @brief ADC1 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_ADC1_Init(void)
 {
 
@@ -1506,17 +1731,18 @@ static void MX_ADC1_Init(void)
   /* USER CODE END ADC1_Init 1 */
 
   /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-   */
+  */
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = ENABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
-  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = ENABLE;
+  hadc1.Init.NbrOfDiscConversion = 1;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.NbrOfConversion = 2;
   hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -1525,7 +1751,7 @@ static void MX_ADC1_Init(void)
   }
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-   */
+  */
   sConfig.Channel = ADC_CHANNEL_8;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
@@ -1533,16 +1759,26 @@ static void MX_ADC1_Init(void)
   {
     Error_Handler();
   }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_9;
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
- * @brief TIM2 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM2_Init(void)
 {
 
@@ -1558,11 +1794,11 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 84 - 1;
+  htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 20000 - 1;
+  htim2.Init.Period = 65535;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
   {
     Error_Handler();
@@ -1590,17 +1826,22 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
   HAL_TIM_MspPostInit(&htim2);
+
 }
 
 /**
- * @brief TIM3 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM3_Init(void)
 {
 
@@ -1642,13 +1883,14 @@ static void MX_TIM3_Init(void)
   /* USER CODE BEGIN TIM3_Init 2 */
 
   /* USER CODE END TIM3_Init 2 */
+
 }
 
 /**
- * @brief TIM4 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM4_Init(void)
 {
 
@@ -1656,9 +1898,8 @@ static void MX_TIM4_Init(void)
 
   /* USER CODE END TIM4_Init 0 */
 
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_Encoder_InitTypeDef sConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
 
   /* USER CODE BEGIN TIM4_Init 1 */
 
@@ -1669,16 +1910,16 @@ static void MX_TIM4_Init(void)
   htim4.Init.Period = 65535;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
-  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_Init(&htim4) != HAL_OK)
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 10;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 10;
+  if (HAL_TIM_Encoder_Init(&htim4, &sConfig) != HAL_OK)
   {
     Error_Handler();
   }
@@ -1688,29 +1929,17 @@ static void MX_TIM4_Init(void)
   {
     Error_Handler();
   }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
   /* USER CODE BEGIN TIM4_Init 2 */
 
   /* USER CODE END TIM4_Init 2 */
-  HAL_TIM_MspPostInit(&htim4);
+
 }
 
 /**
- * @brief USART1 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART1_UART_Init(void)
 {
 
@@ -1736,13 +1965,14 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
+
 }
 
 /**
- * @brief USART2 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART2_UART_Init(void)
 {
 
@@ -1768,13 +1998,14 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
 }
 
 /**
- * @brief USART6 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief USART6 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART6_UART_Init(void)
 {
 
@@ -1800,11 +2031,12 @@ static void MX_USART6_UART_Init(void)
   /* USER CODE BEGIN USART6_Init 2 */
 
   /* USER CODE END USART6_Init 2 */
+
 }
 
 /**
- * Enable DMA controller clock
- */
+  * Enable DMA controller clock
+  */
 static void MX_DMA_Init(void)
 {
 
@@ -1819,18 +2051,19 @@ static void MX_DMA_Init(void)
   /* DMA2_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
+
 }
 
 /**
- * @brief GPIO Initialization Function
- * @param None
- * @retval None
- */
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
-  /* USER CODE END MX_GPIO_Init_1 */
+/* USER CODE BEGIN MX_GPIO_Init_1 */
+/* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -1839,13 +2072,13 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2 | GPIO_PIN_3, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2|GPIO_PIN_3, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13 | GPIO_PIN_14, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13|GPIO_PIN_14, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -1853,14 +2086,27 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PC0 PC1 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1;
+  /*Configure GPIO pin : PC0 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PC1 */
+  GPIO_InitStruct.Pin = GPIO_PIN_1;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PC2 PC3 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_3;
+  /*Configure GPIO pin : PC2 */
+  GPIO_InitStruct.Pin = GPIO_PIN_2;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PC3 */
+  GPIO_InitStruct.Pin = GPIO_PIN_3;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -1874,14 +2120,14 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PB13 PB14 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13 | GPIO_PIN_14;
+  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-  /* USER CODE END MX_GPIO_Init_2 */
+/* USER CODE BEGIN MX_GPIO_Init_2 */
+/* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -1889,9 +2135,9 @@ static void MX_GPIO_Init(void)
 /* USER CODE END 4 */
 
 /**
- * @brief  This function is executed in case of error occurrence.
- * @retval None
- */
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -1903,14 +2149,14 @@ void Error_Handler(void)
   /* USER CODE END Error_Handler_Debug */
 }
 
-#ifdef USE_FULL_ASSERT
+#ifdef  USE_FULL_ASSERT
 /**
- * @brief  Reports the name of the source file and the source line number
- *         where the assert_param error has occurred.
- * @param  file: pointer to the source file name
- * @param  line: assert_param error line source number
- * @retval None
- */
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
