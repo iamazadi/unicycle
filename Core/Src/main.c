@@ -40,6 +40,10 @@
 #define N 10
 #define M 2
 #define WINDOWLENGTH 10
+#define SLAVE_ADDRESS 0xA4
+#define TRANSFER_REQUEST 0x02
+#define MASTER_REQ_ROLL_H 0x14
+#define MASTER_REQ_ROLL_L 0x15
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,6 +53,8 @@
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+
+I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
@@ -75,6 +81,7 @@ static void MX_USART2_UART_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
+static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -94,10 +101,11 @@ const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
 const float sensor_rotation = -30.0 / 180.0 * M_PI; // sensor frame rotation in X-Y plane
-const float xaxis_coefficient = 10.0;
-const float yaxis_coefficient = 10.0;
-const float rolling_wheel_safety_angle = 10.0 / xaxis_coefficient;
-const float reaction_wheel_safety_angle = 10.0 / yaxis_coefficient;
+const float roll_coefficient = 10.0;
+const float pitch_coefficient = 10.0;
+const float yaw_coefficient = 360.0;
+const float rolling_wheel_safety_angle = 10.0 / pitch_coefficient;
+const float reaction_wheel_safety_angle = 10.0 / roll_coefficient;
 const float clip_value = 10000.0;
 const int encoderWindowLength = WINDOWLENGTH;
 float reaction_wheel_pwm = 0.0;
@@ -106,6 +114,7 @@ float reaction_wheel_speed = 0.0;
 float rolling_wheel_speed = 0.0;
 float gyro_tilt_y = 0.0;
 float gyro_velocity_y = 0.0;
+uint8_t transferRequest = MASTER_REQ_ROLL_H;
 // sampling time
 float dt = 0.0;
 int encoder0 = 0;
@@ -117,9 +126,11 @@ int encoderChange = 0;
 int encoderVelocity = 0;
 unsigned long interruptTime = 0;
 unsigned long encoderTime = 0;
+uint8_t raw_data[8] = {0};
 uint16_t AD_RES = 0;
 uint32_t AD_RES_BUFFER[2];
-int encoderWindow[WINDOWLENGTH];
+int reactionEncoderWindow[WINDOWLENGTH];
+int rollingEncoderWindow[WINDOWLENGTH];
 // define arrays for matrix-matrix and matrix-vector multiplication
 float x_k[N];
 float u_k[M];
@@ -170,134 +181,86 @@ typedef struct
 
 typedef struct
 {
-  int16_t acc_x;
-  int16_t acc_y;
-  int16_t acc_z;
-  int16_t gyro_x;
-  int16_t gyro_y;
-  int16_t gyro_z;
   int16_t roll;
   int16_t pitch;
   int16_t yaw;
-  float calibrated_acc_x;
-  float calibrated_acc_y;
-  float calibrated_acc_z;
-  float calibrated_acc_x_velocity;
-  float calibrated_acc_y_velocity;
-  float calibrated_acc_z_velocity;
-  float calibrated_acc_x_acceleration;
-  float calibrated_acc_y_acceleration;
-  float calibrated_acc_z_acceleration;
-  float calibrated_acc_x_jerk;
-  float calibrated_acc_y_jerk;
-  float calibrated_acc_z_jerk;
-  float calibrated_gyro_x;
-  float calibrated_gyro_y;
-  float calibrated_gyro_z;
-  float calibrated_gyro_x_acceleration;
-  float calibrated_gyro_y_acceleration;
-  float acc_x_offset;
-  float acc_y_offset;
-  float acc_z_offset;
-  float gyro_x_offset;
-  float gyro_y_offset;
-  float gyro_z_offset;
+  int16_t temp;
+  float calibrated_roll;
+  float calibrated_pitch;
+  float calibrated_yaw;
+  float calibrated_roll_velocity;
+  float calibrated_pitch_velocity;
+  float calibrated_yaw_velocity;
+  float calibrated_roll_acceleration;
+  float calibrated_pitch_acceleration;
+  float calibrated_yaw_acceleration;
+  int roll_offset;
+  int pitch_offset;
+  int yaw_offset;
 } IMU;
 
-Encoder updateEncoder(Encoder encoder, int newValue)
+void updateEncoder(Encoder *encoder, int *window, int newValue)
 {
-  encoder.value0 = encoder.value1;
-  encoder.value1 = newValue;
+  encoder->value0 = encoder->value1;
+  encoder->value1 = newValue;
   // shift the window one step
   for (int i = 0; i < encoderWindowLength - 1; i++)
   {
-    encoderWindow[i] = encoderWindow[i + 1];
+    window[i] = window[i + 1];
   }
-  encoderWindow[encoderWindowLength - 1] = encoder.value0 - encoder.value1;
-  encoder.accumulator = 0;
+  window[encoderWindowLength - 1] = encoder->value0 - encoder->value1;
+  encoder->accumulator = 0;
   for (int i = 0; i < encoderWindowLength; i++)
   {
-    encoder.accumulator += encoderWindow[i];
+    encoder->accumulator += window[i];
   }
   // compute the angular velocity and acceleration
-  float velocity = 0.1 * (float)encoder.accumulator / (float)encoderWindowLength;
+  float velocity = 0.1 * (float)encoder->accumulator / (float)encoderWindowLength;
   velocity = fmin(1.0, velocity);
   velocity = fmax(-1.0, velocity);
-  float acceleration = encoder.velocity - velocity;
-  encoder.jerk = encoder.acceleration - acceleration;
-  encoder.acceleration = acceleration;
-  encoder.velocity = velocity;
-  encoder.angle = sin((float)(encoder.value0 % 180) / 180.0 * 2.0 * 3.14);
-  return encoder;
+  float acceleration = encoder->velocity - velocity;
+  encoder->jerk = encoder->acceleration - acceleration;
+  encoder->acceleration = acceleration;
+  encoder->velocity = velocity;
+  encoder->angle = sin((float)(encoder->value0 % 180) / 180.0 * 2.0 * 3.14);
+  return;
 }
 
-IMU parsedata(IMU sensor, float theta, uint8_t data[])
+void updateIMU(IMU *sensor)
 {
-  float calibrated_acc_x = sensor.calibrated_acc_x;
-  float calibrated_acc_y = sensor.calibrated_acc_y;
-  float calibrated_acc_z = sensor.calibrated_acc_z;
-  float calibrated_acc_x_velocity = sensor.calibrated_acc_x_velocity;
-  float calibrated_acc_y_velocity = sensor.calibrated_acc_y_velocity;
-  float calibrated_acc_z_velocity = sensor.calibrated_acc_z_velocity;
-  float calibrated_acc_x_acceleration = sensor.calibrated_acc_x_acceleration;
-  float calibrated_acc_y_acceleration = sensor.calibrated_acc_y_acceleration;
-  float calibrated_acc_z_acceleration = sensor.calibrated_acc_z_acceleration;
-  float calibrated_gyro_x = sensor.calibrated_gyro_x;
-  float calibrated_gyro_y = sensor.calibrated_gyro_y;
-  sensor.acc_x = (data[4] << 8) | data[5];
-  sensor.acc_y = (data[6] << 8) | data[7];
-  sensor.acc_z = (data[8] << 8) | data[9];
-  sensor.gyro_x = (data[10] << 8) | data[11];
-  sensor.gyro_y = (data[12] << 8) | data[13];
-  sensor.gyro_z = (data[14] << 8) | data[15];
-  sensor.calibrated_acc_x = (float)sensor.acc_x / 100.0f - sensor.acc_x_offset;
-  sensor.calibrated_acc_y = (float)sensor.acc_y / 100.0f - sensor.acc_y_offset;
-  sensor.calibrated_acc_z = (float)sensor.acc_z / 100.0f - sensor.acc_z_offset;
-  sensor.calibrated_gyro_x = (float)sensor.gyro_x / 100.0f - sensor.gyro_x_offset;
-  sensor.calibrated_gyro_y = (float)sensor.gyro_y / 100.0f - sensor.gyro_y_offset;
-  sensor.calibrated_gyro_z = (float)sensor.gyro_z / 100.0f - sensor.gyro_z_offset;
-  sensor.calibrated_gyro_x = sensor.calibrated_gyro_x / 360.0;
-  sensor.calibrated_gyro_y = sensor.calibrated_gyro_y / 360.0;
-  sensor.calibrated_gyro_z = sensor.calibrated_gyro_z / 360.0;
-  sensor.calibrated_acc_x = cos(theta) * sensor.calibrated_acc_x + -sin(theta) * sensor.calibrated_acc_y;
-  sensor.calibrated_acc_y = sin(theta) * sensor.calibrated_acc_x + cos(theta) * sensor.calibrated_acc_y;
-  sensor.calibrated_gyro_x = cos(theta) * sensor.calibrated_gyro_x + -sin(theta) * sensor.calibrated_gyro_y;
-  sensor.calibrated_gyro_y = sin(theta) * sensor.calibrated_gyro_x + cos(theta) * sensor.calibrated_gyro_y;
-  sensor.calibrated_acc_x = sensor.calibrated_acc_x / xaxis_coefficient;
-  sensor.calibrated_acc_y = sensor.calibrated_acc_y / yaxis_coefficient;
-  sensor.calibrated_acc_z = sensor.calibrated_acc_z / 90.0;
-  sensor.calibrated_acc_x_velocity = calibrated_acc_x - sensor.calibrated_acc_x;
-  sensor.calibrated_acc_y_velocity = calibrated_acc_y - sensor.calibrated_acc_y;
-  sensor.calibrated_acc_z_velocity = calibrated_acc_z - sensor.calibrated_acc_z;
-  sensor.calibrated_acc_x_acceleration = calibrated_acc_x_velocity - sensor.calibrated_acc_x_velocity;
-  sensor.calibrated_acc_y_acceleration = calibrated_acc_y_velocity - sensor.calibrated_acc_y_velocity;
-  sensor.calibrated_acc_z_acceleration = calibrated_acc_z_velocity - sensor.calibrated_acc_z_velocity;
-  sensor.calibrated_acc_x_jerk = calibrated_acc_x_acceleration - sensor.calibrated_acc_x_acceleration;
-  sensor.calibrated_acc_y_jerk = calibrated_acc_y_acceleration - sensor.calibrated_acc_y_acceleration;
-  sensor.calibrated_acc_z_jerk = calibrated_acc_z_acceleration - sensor.calibrated_acc_z_acceleration;
-  sensor.calibrated_gyro_x_acceleration = calibrated_gyro_x - sensor.calibrated_gyro_x;
-  sensor.calibrated_gyro_y_acceleration = calibrated_gyro_y - sensor.calibrated_gyro_y;
-  return sensor;
-}
-
-IMU updateIMU(IMU gy_25t)
-{
-  uint8_t sum = 0, i = 0;
-  if (uart_receive_ok == 1)
+  do
   {
-    for (sum = 0, i = 0; i < (UART1_rxBuffer[3] + 4); i++)
-    {
-      sum += UART1_rxBuffer[i];
-    }
-    // Check sum and frame ID
-    if (sum == UART1_rxBuffer[i] && UART1_rxBuffer[0] == UART1_txBuffer[0])
-    {
-      gy_25t = parsedata(gy_25t, sensor_rotation, UART1_rxBuffer);
-      uart_receive_ok = 0;
-      sensor_updated = 1;
-    }
-  }
-  return gy_25t;
+    HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)SLAVE_ADDRESS, (uint8_t *)&transferRequest, 1, 10);
+    while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
+      ;
+  } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
+
+  do
+  {
+    HAL_I2C_Master_Receive(&hi2c1, (uint16_t)SLAVE_ADDRESS, (uint8_t *)raw_data, 8, 10);
+    while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
+      ;
+    sensor->roll = ((raw_data[0] << 8) | raw_data[1]) - sensor->roll_offset;
+    sensor->pitch = ((raw_data[2] << 8) | raw_data[3]) - sensor->pitch_offset;
+    sensor->yaw = ((raw_data[4] << 8) | raw_data[5]) - sensor->yaw_offset;
+    sensor->temp = (raw_data[6] << 8) | raw_data[7];
+
+    sensor->calibrated_roll = (float)(sensor->roll) / 100.0f;
+    sensor->calibrated_pitch = (float)(sensor->pitch) / 100.0f;
+    sensor->calibrated_yaw = (float)(sensor->yaw) / 100.0f;
+    sensor->calibrated_roll = cos(sensor_rotation) * sensor->calibrated_roll + -sin(sensor_rotation) * sensor->calibrated_pitch;
+    sensor->calibrated_pitch = sin(sensor_rotation) * sensor->calibrated_roll + cos(sensor_rotation) * sensor->calibrated_pitch;
+
+    float dummy = sensor->calibrated_pitch;
+    sensor->calibrated_pitch = sensor->calibrated_roll;
+    sensor->calibrated_roll = dummy;
+
+    sensor->calibrated_roll = sensor->calibrated_roll / roll_coefficient;
+    sensor->calibrated_pitch = sensor->calibrated_pitch / pitch_coefficient;
+    sensor->calibrated_yaw = sensor->calibrated_yaw / yaw_coefficient;
+  } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
+
+  return;
 }
 
 typedef struct
@@ -502,7 +465,7 @@ typedef struct
 {
   Mat12f W_n;     // filter matrix
   Mat12f P_n;     // inverse autocorrelation matrix
-  Mat210f K_j;     // feedback policy
+  Mat210f K_j;    // feedback policy
   Vec24f dataset; // (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
   int j;          // step number
   int k;          // time k
@@ -669,154 +632,154 @@ void putBuffer(int m, int n, float buffer[][n], Mat12f matrix) // function proto
   return;
 }
 
-Mat12f getBuffer(int m, int n, float buffer[][n], Mat12f matrix) // function prototype
+void getBuffer(int m, int n, float buffer[][n], Mat12f *matrix) // function prototype
 {
-  matrix.x0000 = buffer[0][0];
-  matrix.x0001 = buffer[0][1];
-  matrix.x0002 = buffer[0][2];
-  matrix.x0003 = buffer[0][3];
-  matrix.x0004 = buffer[0][4];
-  matrix.x0005 = buffer[0][5];
-  matrix.x0006 = buffer[0][6];
-  matrix.x0007 = buffer[0][7];
-  matrix.x0008 = buffer[0][8];
-  matrix.x0009 = buffer[0][9];
-  matrix.x0010 = buffer[0][10];
-  matrix.x0011 = buffer[0][11];
-  matrix.x0100 = buffer[1][0];
-  matrix.x0101 = buffer[1][1];
-  matrix.x0102 = buffer[1][2];
-  matrix.x0103 = buffer[1][3];
-  matrix.x0104 = buffer[1][4];
-  matrix.x0105 = buffer[1][5];
-  matrix.x0106 = buffer[1][6];
-  matrix.x0107 = buffer[1][7];
-  matrix.x0108 = buffer[1][8];
-  matrix.x0109 = buffer[1][9];
-  matrix.x0110 = buffer[1][10];
-  matrix.x0111 = buffer[1][11];
-  matrix.x0200 = buffer[2][0];
-  matrix.x0201 = buffer[2][1];
-  matrix.x0202 = buffer[2][2];
-  matrix.x0203 = buffer[2][3];
-  matrix.x0204 = buffer[2][4];
-  matrix.x0205 = buffer[2][5];
-  matrix.x0206 = buffer[2][6];
-  matrix.x0207 = buffer[2][7];
-  matrix.x0208 = buffer[2][8];
-  matrix.x0209 = buffer[2][9];
-  matrix.x0210 = buffer[2][10];
-  matrix.x0211 = buffer[2][11];
-  matrix.x0300 = buffer[3][0];
-  matrix.x0301 = buffer[3][1];
-  matrix.x0302 = buffer[3][2];
-  matrix.x0303 = buffer[3][3];
-  matrix.x0304 = buffer[3][4];
-  matrix.x0305 = buffer[3][5];
-  matrix.x0306 = buffer[3][6];
-  matrix.x0307 = buffer[3][7];
-  matrix.x0308 = buffer[3][8];
-  matrix.x0309 = buffer[3][9];
-  matrix.x0310 = buffer[3][10];
-  matrix.x0311 = buffer[3][11];
-  matrix.x0400 = buffer[4][0];
-  matrix.x0401 = buffer[4][1];
-  matrix.x0402 = buffer[4][2];
-  matrix.x0403 = buffer[4][3];
-  matrix.x0404 = buffer[4][4];
-  matrix.x0405 = buffer[4][5];
-  matrix.x0406 = buffer[4][6];
-  matrix.x0407 = buffer[4][7];
-  matrix.x0408 = buffer[4][8];
-  matrix.x0409 = buffer[4][9];
-  matrix.x0410 = buffer[4][10];
-  matrix.x0411 = buffer[4][11];
-  matrix.x0500 = buffer[5][0];
-  matrix.x0501 = buffer[5][1];
-  matrix.x0502 = buffer[5][2];
-  matrix.x0503 = buffer[5][3];
-  matrix.x0504 = buffer[5][4];
-  matrix.x0505 = buffer[5][5];
-  matrix.x0506 = buffer[5][6];
-  matrix.x0507 = buffer[5][7];
-  matrix.x0508 = buffer[5][8];
-  matrix.x0509 = buffer[5][9];
-  matrix.x0510 = buffer[5][10];
-  matrix.x0511 = buffer[5][11];
-  matrix.x0600 = buffer[6][0];
-  matrix.x0601 = buffer[6][1];
-  matrix.x0602 = buffer[6][2];
-  matrix.x0603 = buffer[6][3];
-  matrix.x0604 = buffer[6][4];
-  matrix.x0605 = buffer[6][5];
-  matrix.x0606 = buffer[6][6];
-  matrix.x0607 = buffer[6][7];
-  matrix.x0608 = buffer[6][8];
-  matrix.x0609 = buffer[6][9];
-  matrix.x0610 = buffer[6][10];
-  matrix.x0611 = buffer[6][11];
-  matrix.x0700 = buffer[7][0];
-  matrix.x0701 = buffer[7][1];
-  matrix.x0702 = buffer[7][2];
-  matrix.x0703 = buffer[7][3];
-  matrix.x0704 = buffer[7][4];
-  matrix.x0705 = buffer[7][5];
-  matrix.x0706 = buffer[7][6];
-  matrix.x0707 = buffer[7][7];
-  matrix.x0708 = buffer[7][8];
-  matrix.x0709 = buffer[7][9];
-  matrix.x0710 = buffer[7][10];
-  matrix.x0711 = buffer[7][11];
-  matrix.x0800 = buffer[8][0];
-  matrix.x0801 = buffer[8][1];
-  matrix.x0802 = buffer[8][2];
-  matrix.x0803 = buffer[8][3];
-  matrix.x0804 = buffer[8][4];
-  matrix.x0805 = buffer[8][5];
-  matrix.x0806 = buffer[8][6];
-  matrix.x0807 = buffer[8][7];
-  matrix.x0808 = buffer[8][8];
-  matrix.x0809 = buffer[8][9];
-  matrix.x0810 = buffer[8][10];
-  matrix.x0811 = buffer[8][11];
-  matrix.x0900 = buffer[9][0];
-  matrix.x0901 = buffer[9][1];
-  matrix.x0902 = buffer[9][2];
-  matrix.x0903 = buffer[9][3];
-  matrix.x0904 = buffer[9][4];
-  matrix.x0905 = buffer[9][5];
-  matrix.x0906 = buffer[9][6];
-  matrix.x0907 = buffer[9][7];
-  matrix.x0908 = buffer[9][8];
-  matrix.x0909 = buffer[9][9];
-  matrix.x0910 = buffer[9][10];
-  matrix.x0911 = buffer[9][11];
-  matrix.x1000 = buffer[10][0];
-  matrix.x1001 = buffer[10][1];
-  matrix.x1002 = buffer[10][2];
-  matrix.x1003 = buffer[10][3];
-  matrix.x1004 = buffer[10][4];
-  matrix.x1005 = buffer[10][5];
-  matrix.x1006 = buffer[10][6];
-  matrix.x1007 = buffer[10][7];
-  matrix.x1008 = buffer[10][8];
-  matrix.x1009 = buffer[10][9];
-  matrix.x1010 = buffer[10][10];
-  matrix.x1011 = buffer[10][11];
-  matrix.x1100 = buffer[11][0];
-  matrix.x1101 = buffer[11][1];
-  matrix.x1102 = buffer[11][2];
-  matrix.x1103 = buffer[11][3];
-  matrix.x1104 = buffer[11][4];
-  matrix.x1105 = buffer[11][5];
-  matrix.x1106 = buffer[11][6];
-  matrix.x1107 = buffer[11][7];
-  matrix.x1108 = buffer[11][8];
-  matrix.x1109 = buffer[11][9];
-  matrix.x1110 = buffer[11][10];
-  matrix.x1111 = buffer[11][11];
+  matrix->x0000 = buffer[0][0];
+  matrix->x0001 = buffer[0][1];
+  matrix->x0002 = buffer[0][2];
+  matrix->x0003 = buffer[0][3];
+  matrix->x0004 = buffer[0][4];
+  matrix->x0005 = buffer[0][5];
+  matrix->x0006 = buffer[0][6];
+  matrix->x0007 = buffer[0][7];
+  matrix->x0008 = buffer[0][8];
+  matrix->x0009 = buffer[0][9];
+  matrix->x0010 = buffer[0][10];
+  matrix->x0011 = buffer[0][11];
+  matrix->x0100 = buffer[1][0];
+  matrix->x0101 = buffer[1][1];
+  matrix->x0102 = buffer[1][2];
+  matrix->x0103 = buffer[1][3];
+  matrix->x0104 = buffer[1][4];
+  matrix->x0105 = buffer[1][5];
+  matrix->x0106 = buffer[1][6];
+  matrix->x0107 = buffer[1][7];
+  matrix->x0108 = buffer[1][8];
+  matrix->x0109 = buffer[1][9];
+  matrix->x0110 = buffer[1][10];
+  matrix->x0111 = buffer[1][11];
+  matrix->x0200 = buffer[2][0];
+  matrix->x0201 = buffer[2][1];
+  matrix->x0202 = buffer[2][2];
+  matrix->x0203 = buffer[2][3];
+  matrix->x0204 = buffer[2][4];
+  matrix->x0205 = buffer[2][5];
+  matrix->x0206 = buffer[2][6];
+  matrix->x0207 = buffer[2][7];
+  matrix->x0208 = buffer[2][8];
+  matrix->x0209 = buffer[2][9];
+  matrix->x0210 = buffer[2][10];
+  matrix->x0211 = buffer[2][11];
+  matrix->x0300 = buffer[3][0];
+  matrix->x0301 = buffer[3][1];
+  matrix->x0302 = buffer[3][2];
+  matrix->x0303 = buffer[3][3];
+  matrix->x0304 = buffer[3][4];
+  matrix->x0305 = buffer[3][5];
+  matrix->x0306 = buffer[3][6];
+  matrix->x0307 = buffer[3][7];
+  matrix->x0308 = buffer[3][8];
+  matrix->x0309 = buffer[3][9];
+  matrix->x0310 = buffer[3][10];
+  matrix->x0311 = buffer[3][11];
+  matrix->x0400 = buffer[4][0];
+  matrix->x0401 = buffer[4][1];
+  matrix->x0402 = buffer[4][2];
+  matrix->x0403 = buffer[4][3];
+  matrix->x0404 = buffer[4][4];
+  matrix->x0405 = buffer[4][5];
+  matrix->x0406 = buffer[4][6];
+  matrix->x0407 = buffer[4][7];
+  matrix->x0408 = buffer[4][8];
+  matrix->x0409 = buffer[4][9];
+  matrix->x0410 = buffer[4][10];
+  matrix->x0411 = buffer[4][11];
+  matrix->x0500 = buffer[5][0];
+  matrix->x0501 = buffer[5][1];
+  matrix->x0502 = buffer[5][2];
+  matrix->x0503 = buffer[5][3];
+  matrix->x0504 = buffer[5][4];
+  matrix->x0505 = buffer[5][5];
+  matrix->x0506 = buffer[5][6];
+  matrix->x0507 = buffer[5][7];
+  matrix->x0508 = buffer[5][8];
+  matrix->x0509 = buffer[5][9];
+  matrix->x0510 = buffer[5][10];
+  matrix->x0511 = buffer[5][11];
+  matrix->x0600 = buffer[6][0];
+  matrix->x0601 = buffer[6][1];
+  matrix->x0602 = buffer[6][2];
+  matrix->x0603 = buffer[6][3];
+  matrix->x0604 = buffer[6][4];
+  matrix->x0605 = buffer[6][5];
+  matrix->x0606 = buffer[6][6];
+  matrix->x0607 = buffer[6][7];
+  matrix->x0608 = buffer[6][8];
+  matrix->x0609 = buffer[6][9];
+  matrix->x0610 = buffer[6][10];
+  matrix->x0611 = buffer[6][11];
+  matrix->x0700 = buffer[7][0];
+  matrix->x0701 = buffer[7][1];
+  matrix->x0702 = buffer[7][2];
+  matrix->x0703 = buffer[7][3];
+  matrix->x0704 = buffer[7][4];
+  matrix->x0705 = buffer[7][5];
+  matrix->x0706 = buffer[7][6];
+  matrix->x0707 = buffer[7][7];
+  matrix->x0708 = buffer[7][8];
+  matrix->x0709 = buffer[7][9];
+  matrix->x0710 = buffer[7][10];
+  matrix->x0711 = buffer[7][11];
+  matrix->x0800 = buffer[8][0];
+  matrix->x0801 = buffer[8][1];
+  matrix->x0802 = buffer[8][2];
+  matrix->x0803 = buffer[8][3];
+  matrix->x0804 = buffer[8][4];
+  matrix->x0805 = buffer[8][5];
+  matrix->x0806 = buffer[8][6];
+  matrix->x0807 = buffer[8][7];
+  matrix->x0808 = buffer[8][8];
+  matrix->x0809 = buffer[8][9];
+  matrix->x0810 = buffer[8][10];
+  matrix->x0811 = buffer[8][11];
+  matrix->x0900 = buffer[9][0];
+  matrix->x0901 = buffer[9][1];
+  matrix->x0902 = buffer[9][2];
+  matrix->x0903 = buffer[9][3];
+  matrix->x0904 = buffer[9][4];
+  matrix->x0905 = buffer[9][5];
+  matrix->x0906 = buffer[9][6];
+  matrix->x0907 = buffer[9][7];
+  matrix->x0908 = buffer[9][8];
+  matrix->x0909 = buffer[9][9];
+  matrix->x0910 = buffer[9][10];
+  matrix->x0911 = buffer[9][11];
+  matrix->x1000 = buffer[10][0];
+  matrix->x1001 = buffer[10][1];
+  matrix->x1002 = buffer[10][2];
+  matrix->x1003 = buffer[10][3];
+  matrix->x1004 = buffer[10][4];
+  matrix->x1005 = buffer[10][5];
+  matrix->x1006 = buffer[10][6];
+  matrix->x1007 = buffer[10][7];
+  matrix->x1008 = buffer[10][8];
+  matrix->x1009 = buffer[10][9];
+  matrix->x1010 = buffer[10][10];
+  matrix->x1011 = buffer[10][11];
+  matrix->x1100 = buffer[11][0];
+  matrix->x1101 = buffer[11][1];
+  matrix->x1102 = buffer[11][2];
+  matrix->x1103 = buffer[11][3];
+  matrix->x1104 = buffer[11][4];
+  matrix->x1105 = buffer[11][5];
+  matrix->x1106 = buffer[11][6];
+  matrix->x1107 = buffer[11][7];
+  matrix->x1108 = buffer[11][8];
+  matrix->x1109 = buffer[11][9];
+  matrix->x1110 = buffer[11][10];
+  matrix->x1111 = buffer[11][11];
 
-  return matrix;
+  return;
 }
 
 // instantiate a model and initialize it
@@ -826,361 +789,361 @@ LinearQuadraticRegulator model;
 // (The time() function is provided by the <time.h> header file)
 // srand(time(NULL));
 
-LinearQuadraticRegulator initialize(LinearQuadraticRegulator model)
+void initialize(LinearQuadraticRegulator *model)
 {
-  model.j = 1;
-  model.k = 1;
-  model.reward = 0.0;
-  model.n = dim_n;
-  model.m = dim_m;
-  model.lambda = 0.95;
-  model.delta = 0.001;
-  model.terminated = 0;
-  model.updated = 0;
-  model.active = 0;
+  model->j = 1;
+  model->k = 1;
+  model->reward = 0.0;
+  model->n = dim_n;
+  model->m = dim_m;
+  model->lambda = 0.95;
+  model->delta = 0.001;
+  model->terminated = 0;
+  model->updated = 0;
+  model->active = 0;
 
-  model.W_n.x0000 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0001 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0002 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0003 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0004 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0005 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0006 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0007 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0008 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0009 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0010 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0011 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0100 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0101 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0102 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0103 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0104 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0105 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0106 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0107 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0108 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0109 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0110 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0111 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0200 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0201 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0202 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0203 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0204 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0205 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0206 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0207 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0208 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0209 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0210 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0211 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0300 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0301 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0302 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0303 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0304 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0305 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0306 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0307 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0308 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0309 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0310 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0311 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0400 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0401 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0402 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0403 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0404 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0405 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0406 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0407 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0408 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0409 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0410 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0411 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0500 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0501 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0502 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0503 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0504 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0505 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0506 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0507 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0508 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0509 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0510 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0511 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0600 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0601 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0602 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0603 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0604 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0605 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0606 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0607 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0608 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0609 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0610 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0611 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0700 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0701 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0702 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0703 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0704 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0705 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0706 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0707 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0708 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0709 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0710 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0711 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0800 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0801 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0802 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0803 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0804 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0805 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0806 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0807 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0808 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0809 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0810 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0811 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0900 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0901 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0902 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0903 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0904 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0905 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0906 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0907 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0908 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0909 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0910 = (float)(rand() % 100) / 100.0;
-  model.W_n.x0911 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1000 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1001 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1002 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1003 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1004 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1005 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1006 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1007 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1008 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1009 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1010 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1011 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1100 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1101 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1102 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1103 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1104 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1105 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1106 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1107 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1108 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1109 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1110 = (float)(rand() % 100) / 100.0;
-  model.W_n.x1111 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0000 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0001 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0002 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0003 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0004 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0005 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0006 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0007 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0008 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0009 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0010 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0011 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0100 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0101 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0102 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0103 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0104 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0105 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0106 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0107 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0108 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0109 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0110 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0111 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0200 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0201 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0202 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0203 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0204 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0205 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0206 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0207 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0208 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0209 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0210 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0211 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0300 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0301 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0302 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0303 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0304 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0305 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0306 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0307 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0308 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0309 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0310 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0311 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0400 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0401 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0402 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0403 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0404 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0405 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0406 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0407 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0408 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0409 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0410 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0411 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0500 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0501 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0502 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0503 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0504 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0505 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0506 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0507 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0508 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0509 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0510 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0511 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0600 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0601 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0602 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0603 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0604 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0605 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0606 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0607 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0608 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0609 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0610 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0611 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0700 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0701 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0702 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0703 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0704 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0705 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0706 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0707 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0708 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0709 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0710 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0711 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0800 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0801 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0802 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0803 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0804 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0805 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0806 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0807 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0808 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0809 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0810 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0811 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0900 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0901 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0902 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0903 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0904 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0905 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0906 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0907 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0908 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0909 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0910 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0911 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1000 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1001 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1002 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1003 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1004 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1005 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1006 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1007 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1008 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1009 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1010 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1011 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1100 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1101 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1102 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1103 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1104 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1105 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1106 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1107 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1108 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1109 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1110 = (float)(rand() % 100) / 100.0;
+  model->W_n.x1111 = (float)(rand() % 100) / 100.0;
 
-  model.P_n.x0000 = 1.0 / model.delta;
-  model.P_n.x0001 = 0.0;
-  model.P_n.x0002 = 0.0;
-  model.P_n.x0003 = 0.0;
-  model.P_n.x0004 = 0.0;
-  model.P_n.x0005 = 0.0;
-  model.P_n.x0006 = 0.0;
-  model.P_n.x0007 = 0.0;
-  model.P_n.x0008 = 0.0;
-  model.P_n.x0009 = 0.0;
-  model.P_n.x0010 = 0.0;
-  model.P_n.x0011 = 0.0;
-  model.P_n.x0100 = 0.0;
-  model.P_n.x0101 = 1.0 / model.delta;
-  model.P_n.x0102 = 0.0;
-  model.P_n.x0103 = 0.0;
-  model.P_n.x0104 = 0.0;
-  model.P_n.x0105 = 0.0;
-  model.P_n.x0106 = 0.0;
-  model.P_n.x0107 = 0.0;
-  model.P_n.x0108 = 0.0;
-  model.P_n.x0109 = 0.0;
-  model.P_n.x0110 = 0.0;
-  model.P_n.x0111 = 0.0;
-  model.P_n.x0200 = 0.0;
-  model.P_n.x0201 = 0.0;
-  model.P_n.x0202 = 1.0 / model.delta;
-  model.P_n.x0203 = 0.0;
-  model.P_n.x0204 = 0.0;
-  model.P_n.x0205 = 0.0;
-  model.P_n.x0206 = 0.0;
-  model.P_n.x0207 = 0.0;
-  model.P_n.x0208 = 0.0;
-  model.P_n.x0209 = 0.0;
-  model.P_n.x0210 = 0.0;
-  model.P_n.x0211 = 0.0;
-  model.P_n.x0300 = 0.0;
-  model.P_n.x0301 = 0.0;
-  model.P_n.x0302 = 0.0;
-  model.P_n.x0303 = 1.0 / model.delta;
-  model.P_n.x0304 = 0.0;
-  model.P_n.x0305 = 0.0;
-  model.P_n.x0306 = 0.0;
-  model.P_n.x0307 = 0.0;
-  model.P_n.x0308 = 0.0;
-  model.P_n.x0309 = 0.0;
-  model.P_n.x0310 = 0.0;
-  model.P_n.x0311 = 0.0;
-  model.P_n.x0400 = 0.0;
-  model.P_n.x0401 = 0.0;
-  model.P_n.x0402 = 0.0;
-  model.P_n.x0403 = 0.0;
-  model.P_n.x0404 = 1.0 / model.delta;
-  model.P_n.x0405 = 0.0;
-  model.P_n.x0406 = 0.0;
-  model.P_n.x0407 = 0.0;
-  model.P_n.x0408 = 0.0;
-  model.P_n.x0409 = 0.0;
-  model.P_n.x0410 = 0.0;
-  model.P_n.x0411 = 0.0;
-  model.P_n.x0500 = 0.0;
-  model.P_n.x0501 = 0.0;
-  model.P_n.x0502 = 0.0;
-  model.P_n.x0503 = 0.0;
-  model.P_n.x0504 = 0.0;
-  model.P_n.x0505 = 1.0 / model.delta;
-  model.P_n.x0506 = 0.0;
-  model.P_n.x0507 = 0.0;
-  model.P_n.x0508 = 0.0;
-  model.P_n.x0509 = 0.0;
-  model.P_n.x0510 = 0.0;
-  model.P_n.x0511 = 0.0;
-  model.P_n.x0600 = 0.0;
-  model.P_n.x0601 = 0.0;
-  model.P_n.x0602 = 0.0;
-  model.P_n.x0603 = 0.0;
-  model.P_n.x0604 = 0.0;
-  model.P_n.x0605 = 0.0;
-  model.P_n.x0606 = 1.0 / model.delta;
-  model.P_n.x0607 = 0.0;
-  model.P_n.x0608 = 0.0;
-  model.P_n.x0609 = 0.0;
-  model.P_n.x0610 = 0.0;
-  model.P_n.x0611 = 0.0;
-  model.P_n.x0700 = 0.0;
-  model.P_n.x0701 = 0.0;
-  model.P_n.x0702 = 0.0;
-  model.P_n.x0703 = 0.0;
-  model.P_n.x0704 = 0.0;
-  model.P_n.x0705 = 0.0;
-  model.P_n.x0706 = 0.0;
-  model.P_n.x0707 = 1.0 / model.delta;
-  model.P_n.x0708 = 0.0;
-  model.P_n.x0709 = 0.0;
-  model.P_n.x0710 = 0.0;
-  model.P_n.x0711 = 0.0;
-  model.P_n.x0800 = 0.0;
-  model.P_n.x0801 = 0.0;
-  model.P_n.x0802 = 0.0;
-  model.P_n.x0803 = 0.0;
-  model.P_n.x0804 = 0.0;
-  model.P_n.x0805 = 0.0;
-  model.P_n.x0806 = 0.0;
-  model.P_n.x0807 = 0.0;
-  model.P_n.x0808 = 1.0 / model.delta;
-  model.P_n.x0809 = 0.0;
-  model.P_n.x0810 = 0.0;
-  model.P_n.x0811 = 0.0;
-  model.P_n.x0900 = 0.0;
-  model.P_n.x0901 = 0.0;
-  model.P_n.x0902 = 0.0;
-  model.P_n.x0903 = 0.0;
-  model.P_n.x0904 = 0.0;
-  model.P_n.x0905 = 0.0;
-  model.P_n.x0906 = 0.0;
-  model.P_n.x0907 = 0.0;
-  model.P_n.x0908 = 0.0;
-  model.P_n.x0909 = 1.0 / model.delta;
-  model.P_n.x0910 = 0.0;
-  model.P_n.x0911 = 0.0;
-  model.P_n.x1000 = 0.0;
-  model.P_n.x1001 = 0.0;
-  model.P_n.x1002 = 0.0;
-  model.P_n.x1003 = 0.0;
-  model.P_n.x1004 = 0.0;
-  model.P_n.x1005 = 0.0;
-  model.P_n.x1006 = 0.0;
-  model.P_n.x1007 = 0.0;
-  model.P_n.x1008 = 0.0;
-  model.P_n.x1009 = 0.0;
-  model.P_n.x1010 = 1.0 / model.delta;
-  model.P_n.x1011 = 0.0;
-  model.P_n.x1100 = 0.0;
-  model.P_n.x1101 = 0.0;
-  model.P_n.x1102 = 0.0;
-  model.P_n.x1103 = 0.0;
-  model.P_n.x1104 = 0.0;
-  model.P_n.x1105 = 0.0;
-  model.P_n.x1106 = 0.0;
-  model.P_n.x1107 = 0.0;
-  model.P_n.x1108 = 0.0;
-  model.P_n.x1109 = 0.0;
-  model.P_n.x1110 = 0.0;
-  model.P_n.x1111 = 1.0 / model.delta;
+  model->P_n.x0000 = 1.0 / model->delta;
+  model->P_n.x0001 = 0.0;
+  model->P_n.x0002 = 0.0;
+  model->P_n.x0003 = 0.0;
+  model->P_n.x0004 = 0.0;
+  model->P_n.x0005 = 0.0;
+  model->P_n.x0006 = 0.0;
+  model->P_n.x0007 = 0.0;
+  model->P_n.x0008 = 0.0;
+  model->P_n.x0009 = 0.0;
+  model->P_n.x0010 = 0.0;
+  model->P_n.x0011 = 0.0;
+  model->P_n.x0100 = 0.0;
+  model->P_n.x0101 = 1.0 / model->delta;
+  model->P_n.x0102 = 0.0;
+  model->P_n.x0103 = 0.0;
+  model->P_n.x0104 = 0.0;
+  model->P_n.x0105 = 0.0;
+  model->P_n.x0106 = 0.0;
+  model->P_n.x0107 = 0.0;
+  model->P_n.x0108 = 0.0;
+  model->P_n.x0109 = 0.0;
+  model->P_n.x0110 = 0.0;
+  model->P_n.x0111 = 0.0;
+  model->P_n.x0200 = 0.0;
+  model->P_n.x0201 = 0.0;
+  model->P_n.x0202 = 1.0 / model->delta;
+  model->P_n.x0203 = 0.0;
+  model->P_n.x0204 = 0.0;
+  model->P_n.x0205 = 0.0;
+  model->P_n.x0206 = 0.0;
+  model->P_n.x0207 = 0.0;
+  model->P_n.x0208 = 0.0;
+  model->P_n.x0209 = 0.0;
+  model->P_n.x0210 = 0.0;
+  model->P_n.x0211 = 0.0;
+  model->P_n.x0300 = 0.0;
+  model->P_n.x0301 = 0.0;
+  model->P_n.x0302 = 0.0;
+  model->P_n.x0303 = 1.0 / model->delta;
+  model->P_n.x0304 = 0.0;
+  model->P_n.x0305 = 0.0;
+  model->P_n.x0306 = 0.0;
+  model->P_n.x0307 = 0.0;
+  model->P_n.x0308 = 0.0;
+  model->P_n.x0309 = 0.0;
+  model->P_n.x0310 = 0.0;
+  model->P_n.x0311 = 0.0;
+  model->P_n.x0400 = 0.0;
+  model->P_n.x0401 = 0.0;
+  model->P_n.x0402 = 0.0;
+  model->P_n.x0403 = 0.0;
+  model->P_n.x0404 = 1.0 / model->delta;
+  model->P_n.x0405 = 0.0;
+  model->P_n.x0406 = 0.0;
+  model->P_n.x0407 = 0.0;
+  model->P_n.x0408 = 0.0;
+  model->P_n.x0409 = 0.0;
+  model->P_n.x0410 = 0.0;
+  model->P_n.x0411 = 0.0;
+  model->P_n.x0500 = 0.0;
+  model->P_n.x0501 = 0.0;
+  model->P_n.x0502 = 0.0;
+  model->P_n.x0503 = 0.0;
+  model->P_n.x0504 = 0.0;
+  model->P_n.x0505 = 1.0 / model->delta;
+  model->P_n.x0506 = 0.0;
+  model->P_n.x0507 = 0.0;
+  model->P_n.x0508 = 0.0;
+  model->P_n.x0509 = 0.0;
+  model->P_n.x0510 = 0.0;
+  model->P_n.x0511 = 0.0;
+  model->P_n.x0600 = 0.0;
+  model->P_n.x0601 = 0.0;
+  model->P_n.x0602 = 0.0;
+  model->P_n.x0603 = 0.0;
+  model->P_n.x0604 = 0.0;
+  model->P_n.x0605 = 0.0;
+  model->P_n.x0606 = 1.0 / model->delta;
+  model->P_n.x0607 = 0.0;
+  model->P_n.x0608 = 0.0;
+  model->P_n.x0609 = 0.0;
+  model->P_n.x0610 = 0.0;
+  model->P_n.x0611 = 0.0;
+  model->P_n.x0700 = 0.0;
+  model->P_n.x0701 = 0.0;
+  model->P_n.x0702 = 0.0;
+  model->P_n.x0703 = 0.0;
+  model->P_n.x0704 = 0.0;
+  model->P_n.x0705 = 0.0;
+  model->P_n.x0706 = 0.0;
+  model->P_n.x0707 = 1.0 / model->delta;
+  model->P_n.x0708 = 0.0;
+  model->P_n.x0709 = 0.0;
+  model->P_n.x0710 = 0.0;
+  model->P_n.x0711 = 0.0;
+  model->P_n.x0800 = 0.0;
+  model->P_n.x0801 = 0.0;
+  model->P_n.x0802 = 0.0;
+  model->P_n.x0803 = 0.0;
+  model->P_n.x0804 = 0.0;
+  model->P_n.x0805 = 0.0;
+  model->P_n.x0806 = 0.0;
+  model->P_n.x0807 = 0.0;
+  model->P_n.x0808 = 1.0 / model->delta;
+  model->P_n.x0809 = 0.0;
+  model->P_n.x0810 = 0.0;
+  model->P_n.x0811 = 0.0;
+  model->P_n.x0900 = 0.0;
+  model->P_n.x0901 = 0.0;
+  model->P_n.x0902 = 0.0;
+  model->P_n.x0903 = 0.0;
+  model->P_n.x0904 = 0.0;
+  model->P_n.x0905 = 0.0;
+  model->P_n.x0906 = 0.0;
+  model->P_n.x0907 = 0.0;
+  model->P_n.x0908 = 0.0;
+  model->P_n.x0909 = 1.0 / model->delta;
+  model->P_n.x0910 = 0.0;
+  model->P_n.x0911 = 0.0;
+  model->P_n.x1000 = 0.0;
+  model->P_n.x1001 = 0.0;
+  model->P_n.x1002 = 0.0;
+  model->P_n.x1003 = 0.0;
+  model->P_n.x1004 = 0.0;
+  model->P_n.x1005 = 0.0;
+  model->P_n.x1006 = 0.0;
+  model->P_n.x1007 = 0.0;
+  model->P_n.x1008 = 0.0;
+  model->P_n.x1009 = 0.0;
+  model->P_n.x1010 = 1.0 / model->delta;
+  model->P_n.x1011 = 0.0;
+  model->P_n.x1100 = 0.0;
+  model->P_n.x1101 = 0.0;
+  model->P_n.x1102 = 0.0;
+  model->P_n.x1103 = 0.0;
+  model->P_n.x1104 = 0.0;
+  model->P_n.x1105 = 0.0;
+  model->P_n.x1106 = 0.0;
+  model->P_n.x1107 = 0.0;
+  model->P_n.x1108 = 0.0;
+  model->P_n.x1109 = 0.0;
+  model->P_n.x1110 = 0.0;
+  model->P_n.x1111 = 1.0 / model->delta;
 
-  model.K_j.x00 = (float)(rand() % 100) / 100.0;
-  model.K_j.x01 = (float)(rand() % 100) / 100.0;
-  model.K_j.x02 = (float)(rand() % 100) / 100.0;
-  model.K_j.x03 = (float)(rand() % 100) / 100.0;
-  model.K_j.x04 = (float)(rand() % 100) / 100.0;
-  model.K_j.x05 = (float)(rand() % 100) / 100.0;
-  model.K_j.x06 = (float)(rand() % 100) / 100.0;
-  model.K_j.x07 = (float)(rand() % 100) / 100.0;
-  model.K_j.x08 = (float)(rand() % 100) / 100.0;
-  model.K_j.x09 = (float)(rand() % 100) / 100.0;
-  model.K_j.x10 = (float)(rand() % 100) / 100.0;
-  model.K_j.x11 = (float)(rand() % 100) / 100.0;
-  model.K_j.x12 = (float)(rand() % 100) / 100.0;
-  model.K_j.x13 = (float)(rand() % 100) / 100.0;
-  model.K_j.x14 = (float)(rand() % 100) / 100.0;
-  model.K_j.x15 = (float)(rand() % 100) / 100.0;
-  model.K_j.x16 = (float)(rand() % 100) / 100.0;
-  model.K_j.x17 = (float)(rand() % 100) / 100.0;
-  model.K_j.x18 = (float)(rand() % 100) / 100.0;
-  model.K_j.x19 = (float)(rand() % 100) / 100.0;
+  model->K_j.x00 = (float)(rand() % 100) / 100.0;
+  model->K_j.x01 = (float)(rand() % 100) / 100.0;
+  model->K_j.x02 = (float)(rand() % 100) / 100.0;
+  model->K_j.x03 = (float)(rand() % 100) / 100.0;
+  model->K_j.x04 = (float)(rand() % 100) / 100.0;
+  model->K_j.x05 = (float)(rand() % 100) / 100.0;
+  model->K_j.x06 = (float)(rand() % 100) / 100.0;
+  model->K_j.x07 = (float)(rand() % 100) / 100.0;
+  model->K_j.x08 = (float)(rand() % 100) / 100.0;
+  model->K_j.x09 = (float)(rand() % 100) / 100.0;
+  model->K_j.x10 = (float)(rand() % 100) / 100.0;
+  model->K_j.x11 = (float)(rand() % 100) / 100.0;
+  model->K_j.x12 = (float)(rand() % 100) / 100.0;
+  model->K_j.x13 = (float)(rand() % 100) / 100.0;
+  model->K_j.x14 = (float)(rand() % 100) / 100.0;
+  model->K_j.x15 = (float)(rand() % 100) / 100.0;
+  model->K_j.x16 = (float)(rand() % 100) / 100.0;
+  model->K_j.x17 = (float)(rand() % 100) / 100.0;
+  model->K_j.x18 = (float)(rand() % 100) / 100.0;
+  model->K_j.x19 = (float)(rand() % 100) / 100.0;
 
-  model.dataset.x0 = 0.0;
-  model.dataset.x1 = 0.0;
-  model.dataset.x2 = 0.0;
-  model.dataset.x3 = 0.0;
-  model.dataset.x4 = 0.0;
-  model.dataset.x5 = 0.0;
-  model.dataset.x6 = 0.0;
-  model.dataset.x7 = 0.0;
-  model.dataset.x8 = 0.0;
-  model.dataset.x9 = 0.0;
-  model.dataset.x10 = 0.0;
-  model.dataset.x11 = 0.0;
-  model.dataset.x12 = 0.0;
-  model.dataset.x13 = 0.0;
-  model.dataset.x14 = 0.0;
-  model.dataset.x15 = 0.0;
-  model.dataset.x16 = 0.0;
-  model.dataset.x17 = 0.0;
-  model.dataset.x18 = 0.0;
-  model.dataset.x19 = 0.0;
-  model.dataset.x20 = 0.0;
-  model.dataset.x21 = 0.0;
-  model.dataset.x22 = 0.0;
-  model.dataset.x23 = 0.0;
-  IMU imu = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.51, -0.60, -0.06, 28.25, 137.0, 7.88};
+  model->dataset.x0 = 0.0;
+  model->dataset.x1 = 0.0;
+  model->dataset.x2 = 0.0;
+  model->dataset.x3 = 0.0;
+  model->dataset.x4 = 0.0;
+  model->dataset.x5 = 0.0;
+  model->dataset.x6 = 0.0;
+  model->dataset.x7 = 0.0;
+  model->dataset.x8 = 0.0;
+  model->dataset.x9 = 0.0;
+  model->dataset.x10 = 0.0;
+  model->dataset.x11 = 0.0;
+  model->dataset.x12 = 0.0;
+  model->dataset.x13 = 0.0;
+  model->dataset.x14 = 0.0;
+  model->dataset.x15 = 0.0;
+  model->dataset.x16 = 0.0;
+  model->dataset.x17 = 0.0;
+  model->dataset.x18 = 0.0;
+  model->dataset.x19 = 0.0;
+  model->dataset.x20 = 0.0;
+  model->dataset.x21 = 0.0;
+  model->dataset.x22 = 0.0;
+  model->dataset.x23 = 0.0;
+  IMU imu = {0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 24, 14, 0};
   Encoder ReactionEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
   Encoder RollingEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
-  model.imu = imu;
-  model.ReactionEncoder = ReactionEncoder;
-  model.RollingEncoder = RollingEncoder;
-  return model;
+  model->imu = imu;
+  model->ReactionEncoder = ReactionEncoder;
+  model->RollingEncoder = RollingEncoder;
+  return;
 }
 /*
 Identify the Q function using RLS and update the control policy,
@@ -1188,73 +1151,73 @@ with the given `environment` and `model`.
 The algorithm is terminated when there are no further updates
 to the Q function or the control policy at each step.
 */
-LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
+void stepForward(LinearQuadraticRegulator *model)
 {
-  int k = model.k;
-  x_k[0] = model.dataset.x0;
-  x_k[1] = model.dataset.x1;
-  x_k[2] = model.dataset.x2;
-  x_k[3] = model.dataset.x3;
-  x_k[4] = model.dataset.x4;
-  x_k[5] = model.dataset.x5;
-  x_k[6] = model.dataset.x6;
-  x_k[7] = model.dataset.x7;
-  x_k[8] = model.dataset.x8;
-  x_k[9] = model.dataset.x9;
-  K_j[0][0] = model.K_j.x00;
-  K_j[0][1] = model.K_j.x01;
-  K_j[0][2] = model.K_j.x02;
-  K_j[0][3] = model.K_j.x03;
-  K_j[0][4] = model.K_j.x04;
-  K_j[0][5] = model.K_j.x05;
-  K_j[0][6] = model.K_j.x06;
-  K_j[0][7] = model.K_j.x07;
-  K_j[0][8] = model.K_j.x08;
-  K_j[0][9] = model.K_j.x09;
-  K_j[1][0] = model.K_j.x10;
-  K_j[1][1] = model.K_j.x11;
-  K_j[1][2] = model.K_j.x12;
-  K_j[1][3] = model.K_j.x13;
-  K_j[1][4] = model.K_j.x14;
-  K_j[1][5] = model.K_j.x15;
-  K_j[1][6] = model.K_j.x16;
-  K_j[1][7] = model.K_j.x17;
-  K_j[1][8] = model.K_j.x18;
-  K_j[1][9] = model.K_j.x19;
+  int k = model->k;
+  x_k[0] = model->dataset.x0;
+  x_k[1] = model->dataset.x1;
+  x_k[2] = model->dataset.x2;
+  x_k[3] = model->dataset.x3;
+  x_k[4] = model->dataset.x4;
+  x_k[5] = model->dataset.x5;
+  x_k[6] = model->dataset.x6;
+  x_k[7] = model->dataset.x7;
+  x_k[8] = model->dataset.x8;
+  x_k[9] = model->dataset.x9;
+  K_j[0][0] = model->K_j.x00;
+  K_j[0][1] = model->K_j.x01;
+  K_j[0][2] = model->K_j.x02;
+  K_j[0][3] = model->K_j.x03;
+  K_j[0][4] = model->K_j.x04;
+  K_j[0][5] = model->K_j.x05;
+  K_j[0][6] = model->K_j.x06;
+  K_j[0][7] = model->K_j.x07;
+  K_j[0][8] = model->K_j.x08;
+  K_j[0][9] = model->K_j.x09;
+  K_j[1][0] = model->K_j.x10;
+  K_j[1][1] = model->K_j.x11;
+  K_j[1][2] = model->K_j.x12;
+  K_j[1][3] = model->K_j.x13;
+  K_j[1][4] = model->K_j.x14;
+  K_j[1][5] = model->K_j.x15;
+  K_j[1][6] = model->K_j.x16;
+  K_j[1][7] = model->K_j.x17;
+  K_j[1][8] = model->K_j.x18;
+  K_j[1][9] = model->K_j.x19;
   u_k[0] = 0.0;
   u_k[1] = 0.0;
   // feeback policy
-  for (int i = 0; i < model.m; i++)
+  for (int i = 0; i < model->m; i++)
   {
-    for (int j = 0; j < model.n; j++)
+    for (int j = 0; j < model->n; j++)
     {
       u_k[i] += -K_j[i][j] * x_k[j];
     }
   }
   // act!
-  model.dataset.x0 = model.imu.calibrated_acc_x;
-  model.dataset.x1 = model.imu.calibrated_acc_x_velocity - model.imu.calibrated_acc_x_acceleration;
-  model.dataset.x2 = (model.imu.calibrated_gyro_x_acceleration - model.imu.calibrated_acc_x_acceleration) / 2.0;
-  model.dataset.x3 = model.imu.calibrated_acc_y;
-  model.dataset.x4 = model.imu.calibrated_acc_y_velocity - model.imu.calibrated_acc_y_acceleration;
-  model.dataset.x5 = (model.imu.calibrated_gyro_y_acceleration - model.imu.calibrated_acc_y_acceleration) / 2.0;
-  model.dataset.x6 = pow(model.imu.calibrated_acc_x, 2) + pow(model.imu.calibrated_acc_y, 2) + pow(model.imu.calibrated_acc_z, 2);
-  model.dataset.x7 = model.ReactionEncoder.velocity - model.ReactionEncoder.acceleration;
-  model.dataset.x8 = model.RollingEncoder.velocity - model.RollingEncoder.acceleration;
-  model.dataset.x9 = model.RollingEncoder.angle;
-  model.dataset.x10 = u_k[0];
-  model.dataset.x11 = u_k[1];
+  model->dataset.x0 = model->imu.calibrated_roll;
+  model->dataset.x1 = model->imu.calibrated_roll_velocity;
+  model->dataset.x2 = model->imu.calibrated_roll_acceleration;
+  model->dataset.x3 = model->imu.calibrated_pitch;
+  model->dataset.x4 = model->imu.calibrated_pitch_velocity;
+  model->dataset.x5 = model->imu.calibrated_pitch_acceleration;
+  model->dataset.x6 = model->ReactionEncoder.velocity;
+  model->dataset.x7 = model->ReactionEncoder.acceleration;
+  model->dataset.x8 = model->RollingEncoder.velocity;
+  model->dataset.x9 = model->RollingEncoder.angle;
+  model->dataset.x10 = u_k[0];
+  model->dataset.x11 = u_k[1];
 
-  if (model.active == 1)
+  if (model->active == 1)
   {
-    reaction_wheel_pwm += 16.0 * u_k[0];
+    reaction_wheel_pwm += 64.0 * u_k[0];
     rolling_wheel_pwm += 1.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
     rolling_wheel_pwm = fmin(255.0, rolling_wheel_pwm);
     rolling_wheel_pwm = fmax(-255.0, rolling_wheel_pwm);
-    TIM2->CCR1 = 255 * (int)fabs(reaction_wheel_pwm);
-    TIM2->CCR2 = 255 * (int)fabs(rolling_wheel_pwm);
+    TIM2->CCR1 = 255 * (int)fabs(rolling_wheel_pwm);
+    TIM2->CCR2 = 255 * (int)fabs(reaction_wheel_pwm);
     if (reaction_wheel_pwm < 0)
     {
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
@@ -1288,150 +1251,150 @@ LinearQuadraticRegulator stepForward(LinearQuadraticRegulator model)
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
   }
   // dataset = (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
-  model.ReactionEncoder = updateEncoder(model.ReactionEncoder, TIM3->CNT);
-  model.RollingEncoder = updateEncoder(model.RollingEncoder, TIM4->CNT);
-  model.imu = updateIMU(model.imu);
-  model.dataset.x12 = model.imu.calibrated_acc_x;
-  model.dataset.x13 = model.imu.calibrated_acc_x_velocity - model.imu.calibrated_acc_x_acceleration;
-  model.dataset.x14 = (model.imu.calibrated_gyro_x_acceleration - model.imu.calibrated_acc_x_acceleration) / 2.0;
-  model.dataset.x15 = model.imu.calibrated_acc_y;
-  model.dataset.x16 = model.imu.calibrated_acc_y_velocity - model.imu.calibrated_acc_y_acceleration;
-  model.dataset.x17 = (model.imu.calibrated_gyro_y_acceleration - model.imu.calibrated_acc_y_acceleration) / 2.0;
-  model.dataset.x18 = pow(model.imu.calibrated_acc_x, 2) + pow(model.imu.calibrated_acc_y, 2) + pow(model.imu.calibrated_acc_z, 2);
-  model.dataset.x19 = model.ReactionEncoder.velocity - model.ReactionEncoder.acceleration;
-  model.dataset.x20 = model.RollingEncoder.velocity - model.RollingEncoder.acceleration;
-  model.dataset.x21 = model.RollingEncoder.angle;
-  x_k1[0] = model.dataset.x12;
-  x_k1[1] = model.dataset.x13;
-  x_k1[2] = model.dataset.x14;
-  x_k1[3] = model.dataset.x15;
-  x_k1[4] = model.dataset.x16;
-  x_k1[5] = model.dataset.x17;
-  x_k1[6] = model.dataset.x18;
-  x_k1[7] = model.dataset.x19;
-  x_k1[8] = model.dataset.x20;
-  x_k1[9] = model.dataset.x21;
+  updateEncoder(&(model->ReactionEncoder), reactionEncoderWindow, TIM3->CNT);
+  updateEncoder(&(model->RollingEncoder), rollingEncoderWindow, TIM4->CNT);
+  updateIMU(&(model->imu));
+  model->dataset.x12 = model->imu.calibrated_roll;
+  model->dataset.x13 = model->imu.calibrated_roll_velocity;
+  model->dataset.x14 = model->imu.calibrated_roll_acceleration;
+  model->dataset.x15 = model->imu.calibrated_pitch;
+  model->dataset.x16 = model->imu.calibrated_pitch_velocity;
+  model->dataset.x17 = model->imu.calibrated_pitch_acceleration;
+  model->dataset.x18 = model->ReactionEncoder.velocity;
+  model->dataset.x19 = model->ReactionEncoder.acceleration;
+  model->dataset.x20 = model->RollingEncoder.velocity;
+  model->dataset.x21 = model->RollingEncoder.angle;
+  x_k1[0] = model->dataset.x12;
+  x_k1[1] = model->dataset.x13;
+  x_k1[2] = model->dataset.x14;
+  x_k1[3] = model->dataset.x15;
+  x_k1[4] = model->dataset.x16;
+  x_k1[5] = model->dataset.x17;
+  x_k1[6] = model->dataset.x18;
+  x_k1[7] = model->dataset.x19;
+  x_k1[8] = model->dataset.x20;
+  x_k1[9] = model->dataset.x21;
   u_k1[0] = 0.0;
   u_k1[1] = 0.0;
-  for (int i = 0; i < model.m; i++)
+  for (int i = 0; i < model->m; i++)
   {
-    for (int j = 0; j < model.n; j++)
+    for (int j = 0; j < model->n; j++)
     {
       u_k1[i] += -K_j[i][j] * x_k1[j];
     }
   }
-  model.dataset.x22 = u_k1[0];
-  model.dataset.x23 = u_k1[1];
+  model->dataset.x22 = u_k1[0];
+  model->dataset.x23 = u_k1[1];
   // Compute the quadratic basis sets ϕ(zₖ), ϕ(zₖ₊₁).
-  z_k[0] = model.dataset.x0;
-  z_k[1] = model.dataset.x1;
-  z_k[2] = model.dataset.x2;
-  z_k[3] = model.dataset.x3;
-  z_k[4] = model.dataset.x4;
-  z_k[5] = model.dataset.x5;
-  z_k[6] = model.dataset.x6;
-  z_k[7] = model.dataset.x7;
-  z_k[8] = model.dataset.x8;
-  z_k[9] = model.dataset.x9;
-  z_k[10] = model.dataset.x10;
-  z_k[11] = model.dataset.x11;
-  z_k1[0] = model.dataset.x12;
-  z_k1[1] = model.dataset.x13;
-  z_k1[2] = model.dataset.x14;
-  z_k1[3] = model.dataset.x15;
-  z_k1[4] = model.dataset.x16;
-  z_k1[5] = model.dataset.x17;
-  z_k1[6] = model.dataset.x18;
-  z_k1[7] = model.dataset.x19;
-  z_k1[8] = model.dataset.x20;
-  z_k1[9] = model.dataset.x21;
-  z_k1[10] = model.dataset.x22;
-  z_k1[11] = model.dataset.x23;
-  for (int i = 0; i < model.n + model.m; i++)
+  z_k[0] = model->dataset.x0;
+  z_k[1] = model->dataset.x1;
+  z_k[2] = model->dataset.x2;
+  z_k[3] = model->dataset.x3;
+  z_k[4] = model->dataset.x4;
+  z_k[5] = model->dataset.x5;
+  z_k[6] = model->dataset.x6;
+  z_k[7] = model->dataset.x7;
+  z_k[8] = model->dataset.x8;
+  z_k[9] = model->dataset.x9;
+  z_k[10] = model->dataset.x10;
+  z_k[11] = model->dataset.x11;
+  z_k1[0] = model->dataset.x12;
+  z_k1[1] = model->dataset.x13;
+  z_k1[2] = model->dataset.x14;
+  z_k1[3] = model->dataset.x15;
+  z_k1[4] = model->dataset.x16;
+  z_k1[5] = model->dataset.x17;
+  z_k1[6] = model->dataset.x18;
+  z_k1[7] = model->dataset.x19;
+  z_k1[8] = model->dataset.x20;
+  z_k1[9] = model->dataset.x21;
+  z_k1[10] = model->dataset.x22;
+  z_k1[11] = model->dataset.x23;
+  for (int i = 0; i < model->n + model->m; i++)
   {
     basisset0[i] = z_k[i];
     basisset1[i] = z_k1[i];
   }
   // Now perform a one-step update in the parameter vector W by applying RLS to equation (S27).
-  putBuffer(model.m + model.n, model.m + model.n, P_n, model.P_n);
-  putBuffer(model.m + model.n, model.m + model.n, W_n, model.W_n);
+  putBuffer(model->m + model->n, model->m + model->n, P_n, model->P_n);
+  putBuffer(model->m + model->n, model->m + model->n, W_n, model->W_n);
   // initialize z_n
-  for (int i = 0; i < model.n + model.m; i++)
+  for (int i = 0; i < model->n + model->m; i++)
   {
     z_n[i] = 0.0;
   }
-  for (int i = 0; i < model.n + model.m; i++)
+  for (int i = 0; i < model->n + model->m; i++)
   {
-    for (int j = 0; j < model.n + model.m; j++)
+    for (int j = 0; j < model->n + model->m; j++)
     {
       z_n[i] += P_n[i][j] * z_k[j];
     }
   }
   float z_k_dot_z_n = 0.0;
-  for (int i = 0; i < model.n + model.m; i++)
+  for (int i = 0; i < model->n + model->m; i++)
   {
     z_k_dot_z_n += z_k[i] * z_n[i];
   }
-  for (int i = 0; i < model.n + model.m; i++)
+  for (int i = 0; i < model->n + model->m; i++)
   {
-    g_n[i] = 1.0 / (model.lambda + z_k_dot_z_n) * z_n[i];
+    g_n[i] = 1.0 / (model->lambda + z_k_dot_z_n) * z_n[i];
   }
   // αₙ = dₙ - transpose(wₙ₋₁) * xₙ
   // initialize alpha_n
-  for (int i = 0; i < model.n + model.m; i++)
+  for (int i = 0; i < model->n + model->m; i++)
   {
     alpha_n[i] = 0.0;
   }
-  for (int i = 0; i < model.n + model.m; i++)
+  for (int i = 0; i < model->n + model->m; i++)
   {
-    for (int j = 0; j < model.n + model.m; j++)
+    for (int j = 0; j < model->n + model->m; j++)
     {
       alpha_n[i] += W_n[i][j] * (basisset0[j] - basisset1[j]); // checked manually
     }
   }
-  for (int i = 0; i < model.n + model.m; i++)
+  for (int i = 0; i < model->n + model->m; i++)
   {
-    for (int j = 0; j < model.n + model.m; j++)
+    for (int j = 0; j < model->n + model->m; j++)
     {
       W_n[i][j] = W_n[i][j] + (alpha_n[i] * g_n[j]); // checked manually
     }
   }
-  for (int i = 0; i < model.n + model.m; i++)
+  for (int i = 0; i < model->n + model->m; i++)
   {
-    for (int j = 0; j < model.n + model.m; j++)
+    for (int j = 0; j < model->n + model->m; j++)
     {
-      P_n[i][j] = (1.0 / model.lambda) * (P_n[i][j] - g_n[i] * z_n[j]); // checked manually
+      P_n[i][j] = (1.0 / model->lambda) * (P_n[i][j] - g_n[i] * z_n[j]); // checked manually
     }
   }
-  model.W_n = getBuffer(model.m + model.n, model.m + model.n, W_n, model.W_n);
-  model.P_n = getBuffer(model.m + model.n, model.m + model.n, P_n, model.P_n);
+  getBuffer(model->m + model->n, model->m + model->n, W_n, &(model->W_n));
+  getBuffer(model->m + model->n, model->m + model->n, P_n, &(model->P_n));
 
   // Repeat at the next time k + 1 and continue until RLS converges and the new parameter vector Wⱼ₊₁ is found.
-  model.k = k + 1;
-  return model;
+  model->k = k + 1;
+  return;
 }
 
-LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
+void updateControlPolicy(LinearQuadraticRegulator *model)
 {
   // npack the vector Wⱼ₊₁ into the kernel matrix
   // Q(xₖ, uₖ) ≡ 0.5 * transpose([xₖ; uₖ]) * S * [xₖ; uₖ] = 0.5 * transpose([xₖ; uₖ]) * [Sₓₓ Sₓᵤ; Sᵤₓ Sᵤᵤ] * [xₖ; uₖ]
-  model.k = 1;
-  model.j = model.j + 1;
+  model->k = 1;
+  model->j = model->j + 1;
   // initialize the filter matrix
-  putBuffer(model.m + model.n, model.m + model.n, W_n, model.W_n);
+  putBuffer(model->m + model->n, model->m + model->n, W_n, model->W_n);
 
-  for (int i = 0; i < model.m; i++)
+  for (int i = 0; i < model->m; i++)
   {
-    for (int j = 0; j < model.n; j++)
+    for (int j = 0; j < model->n; j++)
     {
-      S_ux[i][j] = W_n[model.n + i][j];
+      S_ux[i][j] = W_n[model->n + i][j];
     }
   }
-  for (int i = 0; i < model.m; i++)
+  for (int i = 0; i < model->m; i++)
   {
-    for (int j = 0; j < model.m; j++)
+    for (int j = 0; j < model->m; j++)
     {
-      S_uu[i][j] = W_n[model.n + i][model.n + j];
+      S_uu[i][j] = W_n[model->n + i][model->n + j];
     }
   }
 
@@ -1446,54 +1409,54 @@ LinearQuadraticRegulator updateControlPolicy(LinearQuadraticRegulator model)
     S_uu_inverse[1][0] = -S_uu[1][0] / determinant;
     S_uu_inverse[1][1] = S_uu[0][0] / determinant;
     // initialize the gain matrix
-    for (int i = 0; i < model.m; i++)
+    for (int i = 0; i < model->m; i++)
     {
-      for (int j = 0; j < model.n; j++)
+      for (int j = 0; j < model->n; j++)
       {
         K_j[i][j] = 0.0;
       }
     }
-    for (int i = 0; i < model.m; i++)
+    for (int i = 0; i < model->m; i++)
     {
-      for (int j = 0; j < model.n; j++)
+      for (int j = 0; j < model->n; j++)
       {
-        for (int k = 0; k < model.m; k++)
+        for (int k = 0; k < model->m; k++)
         {
           K_j[i][j] += S_uu_inverse[i][k] * S_ux[k][j];
         }
       }
     }
-    model.K_j.x00 = K_j[0][0];
-    model.K_j.x01 = K_j[0][1];
-    model.K_j.x02 = K_j[0][2];
-    model.K_j.x03 = K_j[0][3];
-    model.K_j.x04 = K_j[0][4];
-    model.K_j.x05 = K_j[0][5];
-    model.K_j.x06 = K_j[0][6];
-    model.K_j.x07 = K_j[0][7];
-    model.K_j.x08 = K_j[0][8];
-    model.K_j.x09 = K_j[0][9];
-    model.K_j.x10 = K_j[1][0];
-    model.K_j.x11 = K_j[1][1];
-    model.K_j.x12 = K_j[1][2];
-    model.K_j.x13 = K_j[1][3];
-    model.K_j.x14 = K_j[1][4];
-    model.K_j.x15 = K_j[1][5];
-    model.K_j.x16 = K_j[1][6];
-    model.K_j.x17 = K_j[1][7];
-    model.K_j.x18 = K_j[1][8];
-    model.K_j.x19 = K_j[1][9];
+    model->K_j.x00 = K_j[0][0];
+    model->K_j.x01 = K_j[0][1];
+    model->K_j.x02 = K_j[0][2];
+    model->K_j.x03 = K_j[0][3];
+    model->K_j.x04 = K_j[0][4];
+    model->K_j.x05 = K_j[0][5];
+    model->K_j.x06 = K_j[0][6];
+    model->K_j.x07 = K_j[0][7];
+    model->K_j.x08 = K_j[0][8];
+    model->K_j.x09 = K_j[0][9];
+    model->K_j.x10 = K_j[1][0];
+    model->K_j.x11 = K_j[1][1];
+    model->K_j.x12 = K_j[1][2];
+    model->K_j.x13 = K_j[1][3];
+    model->K_j.x14 = K_j[1][4];
+    model->K_j.x15 = K_j[1][5];
+    model->K_j.x16 = K_j[1][6];
+    model->K_j.x17 = K_j[1][7];
+    model->K_j.x18 = K_j[1][8];
+    model->K_j.x19 = K_j[1][9];
   }
-  model.updated = 1;
-  return model;
+  model->updated = 1;
+  return;
 }
 
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief  The application entry point.
+ * @retval int
+ */
 int main(void)
 {
 
@@ -1511,7 +1474,7 @@ int main(void)
   unsigned long t1 = 0;
   unsigned long t2 = 0;
   unsigned long diff = 0;
-  model = initialize(model);
+  initialize(&model);
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -1540,6 +1503,7 @@ int main(void)
   MX_TIM4_Init();
   MX_ADC1_Init();
   MX_TIM3_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
   HAL_Delay(10);
@@ -1556,16 +1520,17 @@ int main(void)
   // setServoAngle(90.0);
   // initialize the Encoder and IMU
   HAL_Delay(10);
-  model.ReactionEncoder = updateEncoder(model.ReactionEncoder, TIM3->CNT);
-  model.RollingEncoder = updateEncoder(model.RollingEncoder, TIM4->CNT);
-  model.imu = updateIMU(model.imu);
+  updateEncoder(&model.ReactionEncoder, reactionEncoderWindow, TIM3->CNT);
+  updateEncoder(&model.RollingEncoder, rollingEncoderWindow, TIM4->CNT);
+  updateIMU(&(model.imu));
   HAL_Delay(10);
-  model.ReactionEncoder = updateEncoder(model.ReactionEncoder, TIM3->CNT);
-  model.RollingEncoder = updateEncoder(model.RollingEncoder, TIM4->CNT);
-  model.imu = updateIMU(model.imu);
+  updateEncoder(&model.ReactionEncoder, reactionEncoderWindow, TIM3->CNT);
+  updateEncoder(&model.RollingEncoder, rollingEncoderWindow, TIM4->CNT);
+  updateIMU(&(model.imu));
   for (int i = 0; i < encoderWindowLength; i++)
   {
-    encoderWindow[i] = 0;
+    reactionEncoderWindow[i] = 0;
+    rollingEncoderWindow[i] = 0;
   }
   HAL_Delay(3000);
   /* USER CODE END 2 */
@@ -1593,7 +1558,7 @@ int main(void)
       TIM2->CCR2 = 0;
     }
 
-    if (fabs(model.imu.calibrated_acc_y) > reaction_wheel_safety_angle || fabs(model.imu.calibrated_acc_x) > rolling_wheel_safety_angle || model.k > max_episode_length)
+    if (fabs(model.imu.calibrated_roll) > reaction_wheel_safety_angle || fabs(model.imu.calibrated_pitch) > rolling_wheel_safety_angle || model.k > max_episode_length)
     {
       model.terminated = 1;
       model.active = 0;
@@ -1612,7 +1577,7 @@ int main(void)
 
     if (model.terminated == 0)
     {
-      model = stepForward(model);
+      stepForward(&model);
     }
     else
     {
@@ -1624,17 +1589,14 @@ int main(void)
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
-      model.ReactionEncoder = updateEncoder(model.ReactionEncoder, TIM3->CNT);
-      model.RollingEncoder = updateEncoder(model.RollingEncoder, TIM4->CNT);
-      model.imu = updateIMU(model.imu);
+      updateEncoder(&model.ReactionEncoder, reactionEncoderWindow, TIM3->CNT);
+      updateEncoder(&model.RollingEncoder, rollingEncoderWindow, TIM4->CNT);
+      updateIMU(&(model.imu));
     }
     if (model.terminated == 1 && model.updated == 0)
     {
-      model = updateControlPolicy(model);
+      updateControlPolicy(&model);
     }
-
-    reaction_wheel_speed = reaction_wheel_pwm / 255.0;
-    rolling_wheel_speed = rolling_wheel_pwm / 255.0;
 
     log_counter++;
     if (log_counter > LOG_CYCLE && HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == 0)
@@ -1650,11 +1612,10 @@ int main(void)
       {
         // z: 0.25, 0.00, -0.37, 0.00, 2.21, -0.04, 0.02, 0.19, 0.25, 0.00, -45332.99, 45594.11, j: 3, k: 1, roll: -13.81, pitch: 1.17, gyro_y: -231.54, enc: 0.50, v1: -0.78, v2: 0.00, dt: 0.000026
         sprintf(MSG,
-                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, velocity0: %0.2f, velocity1: %0.2f, dt: %0.6f\r\n",
+                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, roll: %0.2f, pitch: %0.2f, yaw: %0.2f, pwm: %0.2f, velocity0: %0.2f, velocity1: %0.2f, dt: %0.6f\r\n",
                 model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5,
                 model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11,
-                model.dataset.x12, model.dataset.x13, model.dataset.x14, model.dataset.x15,
-                model.j, model.k, model.imu.calibrated_acc_y, model.imu.calibrated_acc_x, model.ReactionEncoder.velocity, model.RollingEncoder.velocity,
+                model.j, model.k, model.imu.calibrated_roll, model.imu.calibrated_pitch, model.imu.calibrated_yaw, reaction_wheel_pwm, model.ReactionEncoder.velocity, model.RollingEncoder.velocity,
                 dt);
         log_status = 0;
       }
@@ -1670,22 +1631,22 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
+ * @brief System Clock Configuration
+ * @retval None
+ */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-  */
+   */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+   * in the RCC_OscInitTypeDef structure.
+   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -1701,9 +1662,8 @@ void SystemClock_Config(void)
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+   */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
@@ -1716,10 +1676,10 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief ADC1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief ADC1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_ADC1_Init(void)
 {
 
@@ -1734,7 +1694,7 @@ static void MX_ADC1_Init(void)
   /* USER CODE END ADC1_Init 1 */
 
   /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
+   */
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
@@ -1754,7 +1714,7 @@ static void MX_ADC1_Init(void)
   }
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
+   */
   sConfig.Channel = ADC_CHANNEL_8;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
@@ -1764,7 +1724,7 @@ static void MX_ADC1_Init(void)
   }
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
+   */
   sConfig.Channel = ADC_CHANNEL_9;
   sConfig.Rank = 2;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
@@ -1774,14 +1734,46 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
-
 }
 
 /**
-  * @brief TIM2 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief I2C1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+}
+
+/**
+ * @brief TIM2 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_TIM2_Init(void)
 {
 
@@ -1837,14 +1829,13 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 2 */
   HAL_TIM_MspPostInit(&htim2);
-
 }
 
 /**
-  * @brief TIM3 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief TIM3 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_TIM3_Init(void)
 {
 
@@ -1886,14 +1877,13 @@ static void MX_TIM3_Init(void)
   /* USER CODE BEGIN TIM3_Init 2 */
 
   /* USER CODE END TIM3_Init 2 */
-
 }
 
 /**
-  * @brief TIM4 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief TIM4 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_TIM4_Init(void)
 {
 
@@ -1935,14 +1925,13 @@ static void MX_TIM4_Init(void)
   /* USER CODE BEGIN TIM4_Init 2 */
 
   /* USER CODE END TIM4_Init 2 */
-
 }
 
 /**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART1_UART_Init(void)
 {
 
@@ -1968,14 +1957,13 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
-
 }
 
 /**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART2 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART2_UART_Init(void)
 {
 
@@ -2001,14 +1989,13 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
-
 }
 
 /**
-  * @brief USART6 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART6 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART6_UART_Init(void)
 {
 
@@ -2034,12 +2021,11 @@ static void MX_USART6_UART_Init(void)
   /* USER CODE BEGIN USART6_Init 2 */
 
   /* USER CODE END USART6_Init 2 */
-
 }
 
 /**
-  * Enable DMA controller clock
-  */
+ * Enable DMA controller clock
+ */
 static void MX_DMA_Init(void)
 {
 
@@ -2054,19 +2040,18 @@ static void MX_DMA_Init(void)
   /* DMA2_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
-
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-/* USER CODE BEGIN MX_GPIO_Init_1 */
-/* USER CODE END MX_GPIO_Init_1 */
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+  /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -2075,13 +2060,13 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2|GPIO_PIN_3, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2 | GPIO_PIN_3, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13|GPIO_PIN_14, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13 | GPIO_PIN_14, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -2123,14 +2108,14 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PB13 PB14 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14;
+  GPIO_InitStruct.Pin = GPIO_PIN_13 | GPIO_PIN_14;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-/* USER CODE BEGIN MX_GPIO_Init_2 */
-/* USER CODE END MX_GPIO_Init_2 */
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -2138,9 +2123,9 @@ static void MX_GPIO_Init(void)
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -2152,14 +2137,14 @@ void Error_Handler(void)
   /* USER CODE END Error_Handler_Debug */
 }
 
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */

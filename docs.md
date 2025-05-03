@@ -6,3 +6,8 @@ Set the baudrate of uart6 to 921600, for the wifi module (HC25).
 Print uart6 serial messages bu executing `nc 192.168.4.1 10000`
 
 Set the baudrate of uart1 to 9600 for the GY-25 IMU module.
+
+USART1 -> IMU #1
+USART6 -> WiFi module
+
+Set the Pin6 (PS: IIC/USART output mode selection) of the second GY-25 IMU to zero, in order to use the I2C protocol.
