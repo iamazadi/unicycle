@@ -39,7 +39,7 @@
 #define TRANSMIT_FRAME_LENGTH 5
 #define N 10
 #define M 2
-#define WINDOWLENGTH 10
+#define WINDOWLENGTH 16
 #define SLAVE_ADDRESS 0xA4
 #define TRANSFER_REQUEST 0x02
 #define MASTER_REQ_ROLL_H 0x14
@@ -215,14 +215,14 @@ void updateEncoder(Encoder *encoder, int *window, int newValue)
     encoder->accumulator += window[i];
   }
   // compute the angular velocity and acceleration
-  float velocity = 0.1 * (float)encoder->accumulator / (float)encoderWindowLength;
+  float velocity = 0.05 * (float)encoder->accumulator / (float)encoderWindowLength;
   velocity = fmin(1.0, velocity);
   velocity = fmax(-1.0, velocity);
   float acceleration = encoder->velocity - velocity;
   encoder->jerk = encoder->acceleration - acceleration;
   encoder->acceleration = acceleration;
   encoder->velocity = velocity;
-  encoder->angle = sin((float)(encoder->value0 % 180) / 180.0 * 2.0 * 3.14);
+  encoder->angle = sin((float)(encoder->value0 % 180) / 180.0 * 2.0 * M_PI);
   return;
 }
 
@@ -796,7 +796,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->reward = 0.0;
   model->n = dim_n;
   model->m = dim_m;
-  model->lambda = 0.95;
+  model->lambda = 0.99;
   model->delta = 0.001;
   model->terminated = 0;
   model->updated = 0;
@@ -1210,7 +1210,7 @@ void stepForward(LinearQuadraticRegulator *model)
 
   if (model->active == 1)
   {
-    reaction_wheel_pwm += 64.0 * u_k[0];
+    reaction_wheel_pwm += 24.0 * u_k[0];
     rolling_wheel_pwm += 1.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
