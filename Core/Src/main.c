@@ -106,7 +106,6 @@ const float pitch_coefficient = 10.0;
 const float yaw_coefficient = 360.0;
 const float rolling_wheel_safety_angle = 10.0 / pitch_coefficient;
 const float reaction_wheel_safety_angle = 10.0 / roll_coefficient;
-const float clip_value = 10000.0;
 const int encoderWindowLength = WINDOWLENGTH;
 float reaction_wheel_pwm = 0.0;
 float rolling_wheel_pwm = 0.0;
@@ -127,6 +126,8 @@ int encoderVelocity = 0;
 unsigned long interruptTime = 0;
 unsigned long encoderTime = 0;
 uint8_t raw_data[8] = {0};
+uint8_t i2cAddress[128] = {0};
+int connectedDevices = 0;
 uint16_t AD_RES = 0;
 uint32_t AD_RES_BUFFER[2];
 int reactionEncoderWindow[WINDOWLENGTH];
@@ -1210,7 +1211,7 @@ void stepForward(LinearQuadraticRegulator *model)
 
   if (model->active == 1)
   {
-    reaction_wheel_pwm += 24.0 * u_k[0];
+    reaction_wheel_pwm += 8.0 * u_k[0];
     rolling_wheel_pwm += 1.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
@@ -1474,6 +1475,7 @@ int main(void)
   unsigned long t1 = 0;
   unsigned long t2 = 0;
   unsigned long diff = 0;
+  uint8_t ret;
   initialize(&model);
   /* USER CODE END 1 */
 
@@ -1508,16 +1510,31 @@ int main(void)
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
   HAL_Delay(10);
   HAL_UART_Receive_DMA(&huart1, UART1_rxBuffer, RECEIVE_FRAME_LENGTH);
-  // HAL_Delay(10);
-  // HAL_UART_Receive_DMA(&huart2, UART2_rxBuffer, RECEIVE_FRAME_LENGTH);
-  HAL_Delay(1000);
+  HAL_Delay(10);
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
-  HAL_Delay(30);
-  // setServoAngle(90.0);
+  HAL_Delay(10);
+  
+  // /*-[ I2C Bus Scanning ]-*/
+  // for (int i = 1; i < 128; i++)
+  // {
+  //   ret = HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(i << 1), 5, 10);
+  //   if (ret != HAL_OK) /* No ACK Received At That Address */
+  //   {
+  //     i2cAddress[i] = 0;
+  //   }
+  //   else if (ret == HAL_OK)
+  //   {
+  //     i2cAddress[i] = 1;
+  //     connectedDevices++;
+  //   }
+  //   HAL_Delay(10);
+  // }
+  // /*--[ Scanning Done ]--*/
+
   // initialize the Encoder and IMU
   HAL_Delay(10);
   updateEncoder(&model.ReactionEncoder, reactionEncoderWindow, TIM3->CNT);
@@ -1532,6 +1549,7 @@ int main(void)
     reactionEncoderWindow[i] = 0;
     rollingEncoderWindow[i] = 0;
   }
+
   HAL_Delay(3000);
   /* USER CODE END 2 */
 
@@ -1568,7 +1586,6 @@ int main(void)
     if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == 0)
     {
       HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-      // HAL_Delay(1000);
       model.terminated = 0;
       model.active = 1;
       model.updated = 0;
