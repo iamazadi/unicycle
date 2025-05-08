@@ -53,6 +53,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
 
 I2C_HandleTypeDef hi2c1;
 
@@ -107,6 +108,7 @@ const float yaw_coefficient = 360.0;
 const float rolling_wheel_safety_angle = 10.0 / pitch_coefficient;
 const float reaction_wheel_safety_angle = 10.0 / roll_coefficient;
 const int encoderWindowLength = WINDOWLENGTH;
+const int currentWindowLength = WINDOWLENGTH;
 float reaction_wheel_pwm = 0.0;
 float rolling_wheel_pwm = 0.0;
 float reaction_wheel_speed = 0.0;
@@ -132,10 +134,16 @@ uint16_t AD_RES = 0;
 uint32_t AD_RES_BUFFER[2];
 int reactionEncoderWindow[WINDOWLENGTH];
 int rollingEncoderWindow[WINDOWLENGTH];
+int reactionCurrentWindow[WINDOWLENGTH];
+int rollingCurrentWindow[WINDOWLENGTH];
 float reaction_wheel_current0 = 0.0;
 float reaction_wheel_current1 = 0.0;
-float reaction_wheel_current_acceleration = 0.0;
 float reaction_wheel_current_velocity = 0.0;
+float rolling_wheel_current0 = 0.0;
+float rolling_wheel_current1 = 0.0;
+float rolling_wheel_current_velocity = 0.0;
+int reaction_wheel_accumulator = 0;
+int rolling_wheel_accumulator = 0;
 // define arrays for matrix-matrix and matrix-vector multiplication
 float x_k[N];
 float u_k[M];
@@ -234,17 +242,36 @@ void updateEncoder(Encoder *encoder, int *window, int newValue)
 
 void updateCurrentSensing()
 {
-  // Start ADC Conversion
-  HAL_ADC_Start(&hadc1);
-  // Poll ADC1 Perihperal & TimeOut = 1mSec
-  HAL_ADC_PollForConversion(&hadc1, 1);
-  // Read The ADC Conversion Result & Map It To PWM DutyCycle
-  AD_RES = HAL_ADC_GetValue(&hadc1);
+  // Start ADC Conversion in DMA Mode (Periodically Every 1ms)
+  HAL_ADC_Start_DMA(&hadc1, AD_RES_BUFFER, 2);
   reaction_wheel_current1 = reaction_wheel_current0;
-  reaction_wheel_current0 = (AD_RES << 4);
-  float velocity = (float)(reaction_wheel_current0 - reaction_wheel_current1) / 10000.0;
-  reaction_wheel_current_acceleration = velocity - reaction_wheel_current_velocity;
-  reaction_wheel_current_velocity = velocity;
+  rolling_wheel_current1 = rolling_wheel_current0;
+  reaction_wheel_current0 = (AD_RES_BUFFER[0] << 4);
+  rolling_wheel_current0 = (AD_RES_BUFFER[1] << 4);
+
+  // shift the window one step
+  for (int i = 0; i < currentWindowLength - 1; i++)
+  {
+    reactionCurrentWindow[i] = reactionCurrentWindow[i + 1];
+    rollingCurrentWindow[i] = rollingCurrentWindow[i + 1];
+  }
+  reactionCurrentWindow[currentWindowLength - 1] = reaction_wheel_current0 - reaction_wheel_current1;
+  rollingCurrentWindow[currentWindowLength - 1] = rolling_wheel_current0 - rolling_wheel_current1;
+  reaction_wheel_accumulator = 0;
+  rolling_wheel_accumulator = 0;
+  for (int i = 0; i < currentWindowLength; i++)
+  {
+    reaction_wheel_accumulator += reactionCurrentWindow[i];
+    rolling_wheel_accumulator += rollingCurrentWindow[i];
+  }
+  // compute the angular velocity and acceleration
+  reaction_wheel_current_velocity = (float)reaction_wheel_accumulator / (float)currentWindowLength / 20000.0;
+  ;
+  rolling_wheel_current_velocity = (float)rolling_wheel_accumulator / (float)currentWindowLength / 20000.0;
+  reaction_wheel_current_velocity = fmin(1.0, reaction_wheel_current_velocity);
+  reaction_wheel_current_velocity = fmax(-1.0, reaction_wheel_current_velocity);
+  rolling_wheel_current_velocity = fmin(1.0, rolling_wheel_current_velocity);
+  rolling_wheel_current_velocity = fmax(-1.0, rolling_wheel_current_velocity);
 }
 
 void updateIMU(IMU *sensor)
@@ -1223,16 +1250,16 @@ void stepForward(LinearQuadraticRegulator *model)
   model->dataset.x4 = model->imu.calibrated_pitch_velocity;
   model->dataset.x5 = model->imu.calibrated_pitch_acceleration;
   model->dataset.x6 = model->ReactionEncoder.velocity;
-  model->dataset.x7 = model->ReactionEncoder.acceleration;
-  model->dataset.x8 = reaction_wheel_current_acceleration;
-  model->dataset.x9 = model->RollingEncoder.angle;
+  model->dataset.x7 = model->RollingEncoder.angle;
+  model->dataset.x8 = reaction_wheel_current_velocity;
+  model->dataset.x9 = rolling_wheel_current_velocity;
   model->dataset.x10 = u_k[0];
   model->dataset.x11 = u_k[1];
 
   if (model->active == 1)
   {
-    reaction_wheel_pwm += (12.0 + 10.0 * fabs(model->imu.calibrated_roll)) * u_k[0];
-    rolling_wheel_pwm += (1.0 + 1.0 * fabs(model->imu.calibrated_pitch)) * u_k[1];
+    reaction_wheel_pwm += 10.0 * u_k[0];
+    rolling_wheel_pwm += 1.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
     rolling_wheel_pwm = fmin(255.0, rolling_wheel_pwm);
@@ -1283,9 +1310,9 @@ void stepForward(LinearQuadraticRegulator *model)
   model->dataset.x16 = model->imu.calibrated_pitch_velocity;
   model->dataset.x17 = model->imu.calibrated_pitch_acceleration;
   model->dataset.x18 = model->ReactionEncoder.velocity;
-  model->dataset.x19 = model->ReactionEncoder.acceleration;
-  model->dataset.x20 = reaction_wheel_current_acceleration;
-  model->dataset.x21 = model->RollingEncoder.angle;
+  model->dataset.x19 = model->RollingEncoder.angle;
+  model->dataset.x20 = reaction_wheel_current_velocity;
+  model->dataset.x21 = rolling_wheel_current_velocity;
   x_k1[0] = model->dataset.x12;
   x_k1[1] = model->dataset.x13;
   x_k1[2] = model->dataset.x14;
@@ -1496,7 +1523,6 @@ int main(void)
   unsigned long t1 = 0;
   unsigned long t2 = 0;
   unsigned long diff = 0;
-  uint8_t ret;
   initialize(&model);
   /* USER CODE END 1 */
 
@@ -1537,8 +1563,6 @@ int main(void)
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
-  HAL_Delay(1);
-  HAL_ADC_Start_DMA(&hadc1, AD_RES_BUFFER, 2);
   HAL_Delay(10);
 
   // /*-[ I2C Bus Scanning ]-*/
@@ -1740,13 +1764,14 @@ static void MX_ADC1_Init(void)
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = ENABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
-  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = ENABLE;
+  hadc1.Init.NbrOfDiscConversion = 1;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.NbrOfConversion = 2;
   hadc1.Init.DMAContinuousRequests = DISABLE;
-  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
     Error_Handler();
@@ -1757,6 +1782,15 @@ static void MX_ADC1_Init(void)
   sConfig.Channel = ADC_CHANNEL_14;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+   */
+  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Rank = 2;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -2067,6 +2101,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Stream5_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
   /* DMA2_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
