@@ -139,9 +139,11 @@ int rollingCurrentWindow[WINDOWLENGTH];
 float reaction_wheel_current0 = 0.0;
 float reaction_wheel_current1 = 0.0;
 float reaction_wheel_current_velocity = 0.0;
+float reaction_wheel_current_acceleration = 0.0;
 float rolling_wheel_current0 = 0.0;
 float rolling_wheel_current1 = 0.0;
 float rolling_wheel_current_velocity = 0.0;
+float rolling_wheel_current_acceleration = 0.0;
 int reaction_wheel_accumulator = 0;
 int rolling_wheel_accumulator = 0;
 // define arrays for matrix-matrix and matrix-vector multiplication
@@ -265,8 +267,9 @@ void updateCurrentSensing()
     rolling_wheel_accumulator += rollingCurrentWindow[i];
   }
   // compute the angular velocity and acceleration
+  reaction_wheel_current_acceleration = (float)reaction_wheel_accumulator / (float)currentWindowLength / 20000.0 - reaction_wheel_current_velocity;
+  rolling_wheel_current_acceleration = (float)rolling_wheel_accumulator / (float)currentWindowLength / 20000.0 - rolling_wheel_current_velocity;
   reaction_wheel_current_velocity = (float)reaction_wheel_accumulator / (float)currentWindowLength / 20000.0;
-  ;
   rolling_wheel_current_velocity = (float)rolling_wheel_accumulator / (float)currentWindowLength / 20000.0;
   reaction_wheel_current_velocity = fmin(1.0, reaction_wheel_current_velocity);
   reaction_wheel_current_velocity = fmax(-1.0, reaction_wheel_current_velocity);
@@ -1251,8 +1254,8 @@ void stepForward(LinearQuadraticRegulator *model)
   model->dataset.x5 = model->imu.calibrated_pitch_acceleration;
   model->dataset.x6 = model->ReactionEncoder.velocity;
   model->dataset.x7 = model->RollingEncoder.angle;
-  model->dataset.x8 = reaction_wheel_current_velocity;
-  model->dataset.x9 = rolling_wheel_current_velocity;
+  model->dataset.x8 = reaction_wheel_current_acceleration;
+  model->dataset.x9 = rolling_wheel_current_acceleration;
   model->dataset.x10 = u_k[0];
   model->dataset.x11 = u_k[1];
 
@@ -1311,8 +1314,8 @@ void stepForward(LinearQuadraticRegulator *model)
   model->dataset.x17 = model->imu.calibrated_pitch_acceleration;
   model->dataset.x18 = model->ReactionEncoder.velocity;
   model->dataset.x19 = model->RollingEncoder.angle;
-  model->dataset.x20 = reaction_wheel_current_velocity;
-  model->dataset.x21 = rolling_wheel_current_velocity;
+  model->dataset.x20 = reaction_wheel_current_acceleration;
+  model->dataset.x21 = rolling_wheel_current_acceleration;
   x_k1[0] = model->dataset.x12;
   x_k1[1] = model->dataset.x13;
   x_k1[2] = model->dataset.x14;
