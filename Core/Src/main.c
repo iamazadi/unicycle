@@ -39,7 +39,7 @@
 #define TRANSMIT_FRAME_LENGTH 5
 #define N 10
 #define M 2
-#define WINDOWLENGTH 16
+#define WINDOWLENGTH 32
 #define SLAVE_ADDRESS 0xA4
 #define TRANSFER_REQUEST 0x02
 #define MASTER_REQ_ROLL_H 0x14
@@ -296,19 +296,34 @@ void updateIMU(IMU *sensor)
     sensor->yaw = ((raw_data[4] << 8) | raw_data[5]) - sensor->yaw_offset;
     sensor->temp = (raw_data[6] << 8) | raw_data[7];
 
-    sensor->calibrated_roll = (float)(sensor->roll) / 100.0f;
-    sensor->calibrated_pitch = (float)(sensor->pitch) / 100.0f;
-    sensor->calibrated_yaw = (float)(sensor->yaw) / 100.0f;
-    sensor->calibrated_roll = cos(sensor_rotation) * sensor->calibrated_roll + -sin(sensor_rotation) * sensor->calibrated_pitch;
-    sensor->calibrated_pitch = sin(sensor_rotation) * sensor->calibrated_roll + cos(sensor_rotation) * sensor->calibrated_pitch;
+    float roll = (float)(sensor->roll) / 100.0f;
+    float pitch = (float)(sensor->pitch) / 100.0f;
+    float yaw = (float)(sensor->yaw) / 100.0f;
+    roll = cos(sensor_rotation) * roll + -sin(sensor_rotation) * pitch;
+    pitch = sin(sensor_rotation) * roll + cos(sensor_rotation) * pitch;
 
-    float dummy = sensor->calibrated_pitch;
-    sensor->calibrated_pitch = sensor->calibrated_roll;
-    sensor->calibrated_roll = dummy;
+    float dummy = pitch;
+    pitch = roll;
+    roll = dummy;
 
-    sensor->calibrated_roll = sensor->calibrated_roll / roll_coefficient;
-    sensor->calibrated_pitch = sensor->calibrated_pitch / pitch_coefficient;
-    sensor->calibrated_yaw = sensor->calibrated_yaw / yaw_coefficient;
+    roll = roll / roll_coefficient;
+    pitch = pitch / pitch_coefficient;
+    yaw = yaw / yaw_coefficient;
+
+    float roll_velocity = roll - sensor->calibrated_roll;
+    float pitch_velocity = pitch - sensor->calibrated_pitch;
+    float yaw_velocity = yaw - sensor->calibrated_yaw;
+
+    sensor->calibrated_roll_velocity = roll_velocity;
+    sensor->calibrated_pitch_velocity = pitch_velocity;
+    sensor->calibrated_yaw_velocity = yaw_velocity;
+    sensor->calibrated_roll_acceleration = roll_velocity - sensor->calibrated_roll_velocity;
+    sensor->calibrated_pitch_acceleration = pitch_velocity - sensor->calibrated_pitch_velocity;
+    sensor->calibrated_yaw_acceleration = yaw_velocity - sensor->calibrated_yaw_velocity;
+
+    sensor->calibrated_roll = roll;
+    sensor->calibrated_pitch = pitch;
+    sensor->calibrated_yaw = yaw;
   } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
 
   return;
@@ -1248,10 +1263,10 @@ void stepForward(LinearQuadraticRegulator *model)
   // act!
   model->dataset.x0 = model->imu.calibrated_roll;
   model->dataset.x1 = model->imu.calibrated_roll_velocity;
-  model->dataset.x2 = model->imu.calibrated_roll_acceleration;
+  model->dataset.x2 = 0.0;
   model->dataset.x3 = model->imu.calibrated_pitch;
   model->dataset.x4 = model->imu.calibrated_pitch_velocity;
-  model->dataset.x5 = model->imu.calibrated_pitch_acceleration;
+  model->dataset.x5 = 0.0;
   model->dataset.x6 = model->ReactionEncoder.velocity;
   model->dataset.x7 = model->RollingEncoder.angle;
   model->dataset.x8 = reaction_wheel_current_acceleration;
@@ -1261,7 +1276,7 @@ void stepForward(LinearQuadraticRegulator *model)
 
   if (model->active == 1)
   {
-    reaction_wheel_pwm += 10.0 * u_k[0];
+    reaction_wheel_pwm += 9.0 * u_k[0];
     rolling_wheel_pwm += 1.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
@@ -1308,10 +1323,10 @@ void stepForward(LinearQuadraticRegulator *model)
   updateCurrentSensing();
   model->dataset.x12 = model->imu.calibrated_roll;
   model->dataset.x13 = model->imu.calibrated_roll_velocity;
-  model->dataset.x14 = model->imu.calibrated_roll_acceleration;
+  model->dataset.x14 = 0.0;
   model->dataset.x15 = model->imu.calibrated_pitch;
   model->dataset.x16 = model->imu.calibrated_pitch_velocity;
-  model->dataset.x17 = model->imu.calibrated_pitch_acceleration;
+  model->dataset.x17 = 0.0;
   model->dataset.x18 = model->ReactionEncoder.velocity;
   model->dataset.x19 = model->RollingEncoder.angle;
   model->dataset.x20 = reaction_wheel_current_acceleration;
@@ -1506,9 +1521,9 @@ void updateControlPolicy(LinearQuadraticRegulator *model)
 /* USER CODE END 0 */
 
 /**
- * @brief  The application entry point.
- * @retval int
- */
+  * @brief  The application entry point.
+  * @retval int
+  */
 int main(void)
 {
 
@@ -1698,22 +1713,22 @@ int main(void)
 }
 
 /**
- * @brief System Clock Configuration
- * @retval None
- */
+  * @brief System Clock Configuration
+  * @retval None
+  */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-   */
+  */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-   * in the RCC_OscInitTypeDef structure.
-   */
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -1729,8 +1744,9 @@ void SystemClock_Config(void)
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-   */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
@@ -1743,10 +1759,10 @@ void SystemClock_Config(void)
 }
 
 /**
- * @brief ADC1 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_ADC1_Init(void)
 {
 
@@ -1761,7 +1777,7 @@ static void MX_ADC1_Init(void)
   /* USER CODE END ADC1_Init 1 */
 
   /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-   */
+  */
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
@@ -1781,7 +1797,7 @@ static void MX_ADC1_Init(void)
   }
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-   */
+  */
   sConfig.Channel = ADC_CHANNEL_14;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
@@ -1791,7 +1807,7 @@ static void MX_ADC1_Init(void)
   }
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-   */
+  */
   sConfig.Channel = ADC_CHANNEL_4;
   sConfig.Rank = 2;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
@@ -1801,13 +1817,14 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
- * @brief I2C1 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_I2C1_Init(void)
 {
 
@@ -1834,13 +1851,14 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
 }
 
 /**
- * @brief TIM2 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM2_Init(void)
 {
 
@@ -1896,13 +1914,14 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 2 */
   HAL_TIM_MspPostInit(&htim2);
+
 }
 
 /**
- * @brief TIM3 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM3_Init(void)
 {
 
@@ -1944,13 +1963,14 @@ static void MX_TIM3_Init(void)
   /* USER CODE BEGIN TIM3_Init 2 */
 
   /* USER CODE END TIM3_Init 2 */
+
 }
 
 /**
- * @brief TIM4 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_TIM4_Init(void)
 {
 
@@ -1992,13 +2012,14 @@ static void MX_TIM4_Init(void)
   /* USER CODE BEGIN TIM4_Init 2 */
 
   /* USER CODE END TIM4_Init 2 */
+
 }
 
 /**
- * @brief USART1 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART1_UART_Init(void)
 {
 
@@ -2024,13 +2045,14 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
+
 }
 
 /**
- * @brief USART2 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART2_UART_Init(void)
 {
 
@@ -2056,13 +2078,14 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
 }
 
 /**
- * @brief USART6 Initialization Function
- * @param None
- * @retval None
- */
+  * @brief USART6 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART6_UART_Init(void)
 {
 
@@ -2088,11 +2111,12 @@ static void MX_USART6_UART_Init(void)
   /* USER CODE BEGIN USART6_Init 2 */
 
   /* USER CODE END USART6_Init 2 */
+
 }
 
 /**
- * Enable DMA controller clock
- */
+  * Enable DMA controller clock
+  */
 static void MX_DMA_Init(void)
 {
 
@@ -2110,18 +2134,19 @@ static void MX_DMA_Init(void)
   /* DMA2_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
+
 }
 
 /**
- * @brief GPIO Initialization Function
- * @param None
- * @retval None
- */
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
-  /* USER CODE END MX_GPIO_Init_1 */
+/* USER CODE BEGIN MX_GPIO_Init_1 */
+/* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -2130,13 +2155,13 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2 | GPIO_PIN_3, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_5|GPIO_PIN_8, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13 | GPIO_PIN_14, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13|GPIO_PIN_14, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -2156,8 +2181,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PC2 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2;
+  /*Configure GPIO pins : PC2 PC5 PC8 */
+  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_5|GPIO_PIN_8;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -2178,14 +2203,14 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PB13 PB14 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13 | GPIO_PIN_14;
+  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-  /* USER CODE END MX_GPIO_Init_2 */
+/* USER CODE BEGIN MX_GPIO_Init_2 */
+/* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -2193,9 +2218,9 @@ static void MX_GPIO_Init(void)
 /* USER CODE END 4 */
 
 /**
- * @brief  This function is executed in case of error occurrence.
- * @retval None
- */
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -2207,14 +2232,14 @@ void Error_Handler(void)
   /* USER CODE END Error_Handler_Debug */
 }
 
-#ifdef USE_FULL_ASSERT
+#ifdef  USE_FULL_ASSERT
 /**
- * @brief  Reports the name of the source file and the source line number
- *         where the assert_param error has occurred.
- * @param  file: pointer to the source file name
- * @param  line: assert_param error line source number
- * @retval None
- */
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
