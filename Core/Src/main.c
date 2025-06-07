@@ -39,7 +39,7 @@
 #define TRANSMIT_FRAME_LENGTH 5
 #define N 10
 #define M 2
-#define WINDOWLENGTH 32
+#define WINDOWLENGTH 16
 #define SLAVE_ADDRESS 0xA4
 #define TRANSFER_REQUEST 0x02
 #define MASTER_REQ_ROLL_H 0x14
@@ -128,7 +128,7 @@ int encoderVelocity = 0;
 unsigned long interruptTime = 0;
 unsigned long encoderTime = 0;
 uint8_t raw_data[8] = {0};
-uint8_t i2cAddress[128] = {0};
+// uint8_t i2cAddress[128] = {0};
 int connectedDevices = 0;
 uint16_t AD_RES = 0;
 uint32_t AD_RES_BUFFER[2];
@@ -299,14 +299,14 @@ void updateIMU(IMU *sensor)
     float roll = (float)(sensor->roll) / 100.0f;
     float pitch = (float)(sensor->pitch) / 100.0f;
     float yaw = (float)(sensor->yaw) / 100.0f;
-    roll = cos(sensor_rotation) * roll + -sin(sensor_rotation) * pitch;
-    pitch = sin(sensor_rotation) * roll + cos(sensor_rotation) * pitch;
+    // roll = cos(sensor_rotation) * roll + -sin(sensor_rotation) * pitch;
+    // pitch = sin(sensor_rotation) * roll + cos(sensor_rotation) * pitch;
 
     float dummy = pitch;
     pitch = roll;
     roll = dummy;
 
-    roll = roll / roll_coefficient;
+    roll = -roll / roll_coefficient;
     pitch = pitch / pitch_coefficient;
     yaw = yaw / yaw_coefficient;
 
@@ -1203,7 +1203,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->dataset.x21 = 0.0;
   model->dataset.x22 = 0.0;
   model->dataset.x23 = 0.0;
-  IMU imu = {0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 24, 14, 0};
+  IMU imu = {0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0};
   Encoder ReactionEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
   Encoder RollingEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
   model->imu = imu;
@@ -1276,7 +1276,7 @@ void stepForward(LinearQuadraticRegulator *model)
 
   if (model->active == 1)
   {
-    reaction_wheel_pwm += 9.0 * u_k[0];
+    reaction_wheel_pwm += 10.0 * u_k[0];
     rolling_wheel_pwm += 1.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
@@ -1469,7 +1469,7 @@ void updateControlPolicy(LinearQuadraticRegulator *model)
   // uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
   float determinant = S_uu[1][1] * S_uu[2][2] - S_uu[1][2] * S_uu[2][1];
   // check the rank S_uu to see if it's equal to 2 (invertible matrix)
-  if (fabs(determinant) > 0.01) // greater than zero
+  if (fabs(determinant) > 0.001) // greater than zero
   {
     S_uu_inverse[0][0] = S_uu[1][1] / determinant;
     S_uu_inverse[0][1] = -S_uu[0][1] / determinant;
@@ -2169,14 +2169,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PC0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PC1 */
-  GPIO_InitStruct.Pin = GPIO_PIN_1;
+  /*Configure GPIO pins : PC0 PC1 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
