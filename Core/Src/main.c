@@ -1203,7 +1203,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->dataset.x21 = 0.0;
   model->dataset.x22 = 0.0;
   model->dataset.x23 = 0.0;
-  IMU imu = {0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0};
+  IMU imu = {0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -189, 43, 0};
   Encoder ReactionEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
   Encoder RollingEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
   model->imu = imu;
@@ -1276,8 +1276,8 @@ void stepForward(LinearQuadraticRegulator *model)
 
   if (model->active == 1)
   {
-    reaction_wheel_pwm += 10.0 * u_k[0];
-    rolling_wheel_pwm += 1.0 * u_k[1];
+    reaction_wheel_pwm += 32.0 * u_k[0];
+    rolling_wheel_pwm += 4.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
     rolling_wheel_pwm = fmin(255.0, rolling_wheel_pwm);
@@ -1695,10 +1695,8 @@ int main(void)
       {
         // z: 0.25, 0.00, -0.37, 0.00, 2.21, -0.04, 0.02, 0.19, 0.25, 0.00, -45332.99, 45594.11, j: 3, k: 1, roll: -13.81, pitch: 1.17, gyro_y: -231.54, enc: 0.50, v1: -0.78, v2: 0.00, dt: 0.000026
         sprintf(MSG,
-                "z: %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, %0.2f, j: %d, k: %d, dt: %0.6f\r\n",
-                model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5,
-                model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11,
-                model.j, model.k, dt);
+                "r: %0.2f, p: %0.2f, v: %0.2f, a: %0.2f, dt: %0.6f\r\n",
+                model.imu.calibrated_roll, model.imu.calibrated_pitch, model.ReactionEncoder.velocity, model.RollingEncoder.angle, dt);
         log_status = 0;
       }
 
