@@ -39,7 +39,7 @@
 #define TRANSMIT_FRAME_LENGTH 5
 #define N 10
 #define M 2
-#define WINDOWLENGTH 16
+#define WINDOWLENGTH 5
 #define SLAVE_ADDRESS 0xA4
 #define TRANSFER_REQUEST 0x02
 #define MASTER_REQ_ROLL_H 0x14
@@ -238,7 +238,7 @@ void updateEncoder(Encoder *encoder, int *window, int newValue)
   encoder->jerk = encoder->acceleration - acceleration;
   encoder->acceleration = acceleration;
   encoder->velocity = velocity;
-  encoder->angle = sin((float)(encoder->value0 % 180) / 180.0 * 2.0 * M_PI);
+  encoder->angle = sin((float)(encoder->value1 % 3072) / 3072.0 * 2.0 * M_PI);
   return;
 }
 
@@ -307,7 +307,7 @@ void updateIMU(IMU *sensor)
     roll = dummy;
 
     roll = -roll / roll_coefficient;
-    pitch = pitch / pitch_coefficient;
+    pitch = -pitch / pitch_coefficient;
     yaw = yaw / yaw_coefficient;
 
     float roll_velocity = roll - sensor->calibrated_roll;
@@ -862,7 +862,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->reward = 0.0;
   model->n = dim_n;
   model->m = dim_m;
-  model->lambda = 0.95;
+  model->lambda = 0.97;
   model->delta = 0.001;
   model->terminated = 0;
   model->updated = 0;
@@ -1266,7 +1266,7 @@ void stepForward(LinearQuadraticRegulator *model)
   model->dataset.x2 = 0.0;
   model->dataset.x3 = model->imu.calibrated_pitch;
   model->dataset.x4 = model->imu.calibrated_pitch_velocity;
-  model->dataset.x5 = 0.0;
+  model->dataset.x5 = model->RollingEncoder.acceleration;
   model->dataset.x6 = model->ReactionEncoder.velocity;
   model->dataset.x7 = model->RollingEncoder.angle;
   model->dataset.x8 = reaction_wheel_current_acceleration;
@@ -1276,8 +1276,8 @@ void stepForward(LinearQuadraticRegulator *model)
 
   if (model->active == 1)
   {
-    reaction_wheel_pwm += 32.0 * u_k[0];
-    rolling_wheel_pwm += 4.0 * u_k[1];
+    reaction_wheel_pwm += 16.0 * u_k[0];
+    rolling_wheel_pwm += 2.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
     rolling_wheel_pwm = fmin(255.0, rolling_wheel_pwm);
@@ -1326,7 +1326,7 @@ void stepForward(LinearQuadraticRegulator *model)
   model->dataset.x14 = 0.0;
   model->dataset.x15 = model->imu.calibrated_pitch;
   model->dataset.x16 = model->imu.calibrated_pitch_velocity;
-  model->dataset.x17 = 0.0;
+  model->dataset.x17 = model->RollingEncoder.acceleration;
   model->dataset.x18 = model->ReactionEncoder.velocity;
   model->dataset.x19 = model->RollingEncoder.angle;
   model->dataset.x20 = reaction_wheel_current_acceleration;
@@ -1695,8 +1695,8 @@ int main(void)
       {
         // z: 0.25, 0.00, -0.37, 0.00, 2.21, -0.04, 0.02, 0.19, 0.25, 0.00, -45332.99, 45594.11, j: 3, k: 1, roll: -13.81, pitch: 1.17, gyro_y: -231.54, enc: 0.50, v1: -0.78, v2: 0.00, dt: 0.000026
         sprintf(MSG,
-                "r: %0.2f, p: %0.2f, v: %0.2f, a: %0.2f, dt: %0.6f\r\n",
-                model.imu.calibrated_roll, model.imu.calibrated_pitch, model.ReactionEncoder.velocity, model.RollingEncoder.angle, dt);
+                "r: %0.2f, p: %0.2f, v: %0.2f, a: %0.2f, cnt: %d, dt: %0.6f\r\n",
+                model.imu.calibrated_roll, model.imu.calibrated_pitch, model.ReactionEncoder.velocity, model.RollingEncoder.angle, TIM4->CNT, dt);
         log_status = 0;
       }
 
