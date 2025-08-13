@@ -139,7 +139,7 @@ int encoderChange = 0;
 int encoderVelocity = 0;
 unsigned long interruptTime = 0;
 unsigned long encoderTime = 0;
-uint8_t raw_data[12] = {0};
+uint8_t raw_data[14] = {0};
 // uint8_t i2cAddress[128] = {0};
 int connectedDevices = 0;
 uint16_t AD_RES = 0;
@@ -208,28 +208,27 @@ typedef struct
 
 typedef struct
 {
-  int16_t roll;
-  int16_t pitch;
-  int16_t yaw;
-  int16_t temp;
   int16_t accX;
   int16_t accY;
   int16_t accZ;
   int16_t gyrX;
   int16_t gyrY;
   int16_t gyrZ;
-  float calibrated_roll;
-  float calibrated_pitch;
-  float calibrated_yaw;
-  float calibrated_roll_velocity;
-  float calibrated_pitch_velocity;
-  float calibrated_yaw_velocity;
-  float calibrated_roll_acceleration;
-  float calibrated_pitch_acceleration;
-  float calibrated_yaw_acceleration;
-  int roll_offset;
-  int pitch_offset;
-  int yaw_offset;
+  int16_t accX_offset;
+  int16_t accY_offset;
+  int16_t accZ_offset;
+  int16_t gyrX_offset;
+  int16_t gyrY_offset;
+  int16_t gyrZ_offset;
+  float roll;
+  float pitch;
+  float yaw;
+  float roll_velocity;
+  float pitch_velocity;
+  float yaw_velocity;
+  float roll_acceleration;
+  float pitch_acceleration;
+  float yaw_acceleration;
 } IMU;
 
 void updateEncoder(Encoder *encoder, int *window, int newValue)
@@ -295,33 +294,33 @@ void updateCurrentSensing()
 }
 
 
-void updateIMU2(IMU *sensor)
+void updateIMU1(IMU *sensor) // GY-25 I2C
 {
-  uint8_t _transferRequest = 0x3B;
   do
   {
-    HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 6, 100);
+    HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)SLAVE_ADDRESS, (uint8_t *)&transferRequest, 1, 10);
     while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
       ;
-      sensor->accX = ((raw_data[0] << 8) | raw_data[1]);
-      sensor->accY = ((raw_data[2] << 8) | raw_data[3]);
-      sensor->accZ = ((raw_data[4] << 8) | raw_data[5]);
   } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
 
-  _transferRequest = 0x43;
   do
   {
-    HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 6, 100);
+    HAL_I2C_Master_Receive(&hi2c1, (uint16_t)SLAVE_ADDRESS, (uint8_t *)raw_data, 12, 10);
     while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
       ;
-      sensor->gyrX = ((raw_data[0] << 8) | raw_data[1]);
-      sensor->gyrY = ((raw_data[2] << 8) | raw_data[3]);
-      sensor->gyrZ = ((raw_data[4] << 8) | raw_data[5]);
+    sensor->accX = (raw_data[0] << 8) | raw_data[1];
+    sensor->accY = (raw_data[2] << 8) | raw_data[3];
+    sensor->accZ = (raw_data[4] << 8) | raw_data[5];
+    sensor->gyrX = (raw_data[6] << 8) | raw_data[7];
+    sensor->gyrY = (raw_data[8] << 8) | raw_data[9];
+    sensor->gyrZ = (raw_data[10] << 8) | raw_data[11];
   } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
+
+  return;
 }
 
 
-void updateIMU3(IMU *sensor)
+void updateIMU2(IMU *sensor) // GY-25 USART
 {
   uint8_t sum = 0, i = 0;
   if (uart_receive_ok == 1)
@@ -347,57 +346,44 @@ void updateIMU3(IMU *sensor)
 }
 
 
-void updateIMUpreprocessed(IMU *sensor)
+void updateIMU3(IMU *sensor) // MPU9250 I2C
 {
-  do
-  {
-    HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)SLAVE_ADDRESS, (uint8_t *)&transferRequest, 1, 10);
-    while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
-      ;
-  } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
+  uint8_t _transferRequest = 0x3B;
+  // do
+  // {
+  //   HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 14, 10);
+  //   while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
+  //     ;
+  //     sensor->accX = ((raw_data[0] << 8) | raw_data[1]);
+  //     sensor->accY = ((raw_data[2] << 8) | raw_data[3]);
+  //     sensor->accZ = ((raw_data[4] << 8) | raw_data[5]);
+  //     sensor->gyrX = ((raw_data[8] << 8) | raw_data[9]);
+  //     sensor->gyrY = ((raw_data[10] << 8) | raw_data[11]);
+  //     sensor->gyrZ = ((raw_data[12] << 8) | raw_data[13]);
+  // } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
 
   do
   {
-    HAL_I2C_Master_Receive(&hi2c1, (uint16_t)SLAVE_ADDRESS, (uint8_t *)raw_data, 8, 10);
+    HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 6, 100);
     while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
       ;
-    sensor->roll = ((raw_data[0] << 8) | raw_data[1]) - sensor->roll_offset;
-    sensor->pitch = ((raw_data[2] << 8) | raw_data[3]) - sensor->pitch_offset;
-    sensor->yaw = ((raw_data[4] << 8) | raw_data[5]) - sensor->yaw_offset;
-    sensor->temp = (raw_data[6] << 8) | raw_data[7];
-
-    float roll = (float)(sensor->roll) / 100.0f;
-    float pitch = (float)(sensor->pitch) / 100.0f;
-    float yaw = (float)(sensor->yaw) / 100.0f;
-    // roll = cos(sensor_rotation) * roll + -sin(sensor_rotation) * pitch;
-    // pitch = sin(sensor_rotation) * roll + cos(sensor_rotation) * pitch;
-
-    float dummy = pitch;
-    pitch = roll;
-    roll = dummy;
-
-    roll = -roll / roll_coefficient;
-    pitch = -pitch / pitch_coefficient;
-    yaw = yaw / yaw_coefficient;
-
-    float roll_velocity = roll - sensor->calibrated_roll;
-    float pitch_velocity = pitch - sensor->calibrated_pitch;
-    float yaw_velocity = yaw - sensor->calibrated_yaw;
-
-    sensor->calibrated_roll_velocity = roll_velocity;
-    sensor->calibrated_pitch_velocity = pitch_velocity;
-    sensor->calibrated_yaw_velocity = yaw_velocity;
-    sensor->calibrated_roll_acceleration = roll_velocity - sensor->calibrated_roll_velocity;
-    sensor->calibrated_pitch_acceleration = pitch_velocity - sensor->calibrated_pitch_velocity;
-    sensor->calibrated_yaw_acceleration = yaw_velocity - sensor->calibrated_yaw_velocity;
-
-    sensor->calibrated_roll = roll;
-    sensor->calibrated_pitch = pitch;
-    sensor->calibrated_yaw = yaw;
+      sensor->accX = ((raw_data[0] << 8) | raw_data[1]);
+      sensor->accY = ((raw_data[2] << 8) | raw_data[3]);
+      sensor->accZ = ((raw_data[4] << 8) | raw_data[5]);
   } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
 
-  return;
+  _transferRequest = 0x43;
+  do
+  {
+    HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 6, 100);
+    while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
+      ;
+      sensor->gyrX = ((raw_data[0] << 8) | raw_data[1]);
+      sensor->gyrY = ((raw_data[2] << 8) | raw_data[3]);
+      sensor->gyrZ = ((raw_data[4] << 8) | raw_data[5]);
+  } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
 }
+
 
 typedef struct
 {
@@ -623,27 +609,9 @@ typedef struct
 
 void updateIMU(LinearQuadraticRegulator *model)
 {
+  updateIMU1(&(model->imu1));
   updateIMU2(&(model->imu2));
-  updateIMU3(&(model->imu3));
-  // do
-  // {
-  //   HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)SLAVE_ADDRESS, (uint8_t *)&transferRequest, 1, 10);
-  //   while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
-  //     ;
-  // } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
-
-  // do
-  // {
-  //   HAL_I2C_Master_Receive(&hi2c1, (uint16_t)SLAVE_ADDRESS, (uint8_t *)raw_data, 12, 10);
-  //   while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
-  //     ;
-  //   sensor->accX = ((raw_data[0] << 8) | raw_data[1]);
-  //   sensor->accY = ((raw_data[2] << 8) | raw_data[3]);
-  //   sensor->accZ = ((raw_data[4] << 8) | raw_data[5]);
-  //   sensor->gyrX = ((raw_data[6] << 8) | raw_data[7]);
-  //   sensor->gyrY = ((raw_data[8] << 8) | raw_data[9]);
-  //   sensor->gyrZ = ((raw_data[10] << 8) | raw_data[11]);
-  // } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
+  // updateIMU3(&(model->imu3)); // causes too large of a delay
 }
 
 
@@ -1302,9 +1270,9 @@ void initialize(LinearQuadraticRegulator *model)
   model->dataset.x21 = 0.0;
   model->dataset.x22 = 0.0;
   model->dataset.x23 = 0.0;
-  IMU imu1 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -189, 43, 0};
-  IMU imu2 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0};
-  IMU imu3 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0};
+  IMU imu1 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  IMU imu2 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  IMU imu3 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   Encoder ReactionEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
   Encoder RollingEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
   model->imu1 = imu1;
@@ -1364,11 +1332,11 @@ void stepForward(LinearQuadraticRegulator *model)
     }
   }
   // act!
-  model->dataset.x0 = model->imu1.calibrated_roll;
-  model->dataset.x1 = model->imu1.calibrated_roll_velocity;
+  model->dataset.x0 = model->imu1.roll;
+  model->dataset.x1 = model->imu1.roll_velocity;
   model->dataset.x2 = 0.0;
-  model->dataset.x3 = model->imu1.calibrated_pitch;
-  model->dataset.x4 = model->imu1.calibrated_pitch_velocity;
+  model->dataset.x3 = model->imu1.pitch;
+  model->dataset.x4 = model->imu1.pitch_velocity;
   model->dataset.x5 = model->RollingEncoder.acceleration;
   model->dataset.x6 = model->ReactionEncoder.velocity;
   model->dataset.x7 = model->RollingEncoder.angle;
@@ -1424,11 +1392,11 @@ void stepForward(LinearQuadraticRegulator *model)
   updateEncoder(&(model->RollingEncoder), rollingEncoderWindow, TIM4->CNT);
   updateIMU(model);
   updateCurrentSensing();
-  model->dataset.x12 = model->imu1.calibrated_roll;
-  model->dataset.x13 = model->imu1.calibrated_roll_velocity;
+  model->dataset.x12 = model->imu1.roll;
+  model->dataset.x13 = model->imu1.roll_velocity;
   model->dataset.x14 = 0.0;
-  model->dataset.x15 = model->imu1.calibrated_pitch;
-  model->dataset.x16 = model->imu1.calibrated_pitch_velocity;
+  model->dataset.x15 = model->imu1.pitch;
+  model->dataset.x16 = model->imu1.pitch_velocity;
   model->dataset.x17 = model->RollingEncoder.acceleration;
   model->dataset.x18 = model->ReactionEncoder.velocity;
   model->dataset.x19 = model->RollingEncoder.angle;
@@ -1686,23 +1654,6 @@ int main(void)
   HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
   HAL_Delay(10);
 
-  // /*-[ I2C Bus Scanning ]-*/
-  // for (int i = 1; i < 128; i++)
-  // {
-  //   ret = HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(i << 1), 5, 10);
-  //   if (ret != HAL_OK) /* No ACK Received At That Address */
-  //   {
-  //     i2cAddress[i] = 0;
-  //   }
-  //   else if (ret == HAL_OK)
-  //   {
-  //     i2cAddress[i] = 1;
-  //     connectedDevices++;
-  //   }
-  //   HAL_Delay(10);
-  // }
-  // /*--[ Scanning Done ]--*/
-
   // initialize the Encoder and IMU
   HAL_Delay(10);
   updateEncoder(&model.ReactionEncoder, reactionEncoderWindow, TIM3->CNT);
@@ -1744,7 +1695,7 @@ int main(void)
       TIM2->CCR2 = 0;
     }
 
-    if (fabs(model.imu1.calibrated_roll) > reaction_wheel_safety_angle || fabs(model.imu1.calibrated_pitch) > rolling_wheel_safety_angle || model.k > max_episode_length)
+    if (fabs(model.imu1.roll) > reaction_wheel_safety_angle || fabs(model.imu1.pitch) > rolling_wheel_safety_angle || model.k > max_episode_length)
     {
       model.terminated = 1;
       model.active = 0;
@@ -1796,13 +1747,9 @@ int main(void)
 
       if (log_status == 0)
       {
-        // z: 0.25, 0.00, -0.37, 0.00, 2.21, -0.04, 0.02, 0.19, 0.25, 0.00, -45332.99, 45594.11, j: 3, k: 1, roll: -13.81, pitch: 1.17, gyro_y: -231.54, enc: 0.50, v1: -0.78, v2: 0.00, dt: 0.000026
-        // sprintf(MSG,
-        //         "r: %0.2f, p: %0.2f, v: %0.2f, a: %0.2f, cnt: %d, dt: %0.6f\r\n",
-        //         model.imu.calibrated_roll, model.imu.calibrated_pitch, model.ReactionEncoder.velocity, model.RollingEncoder.angle, TIM4->CNT, dt);
         sprintf(MSG,
-          "aX1: %d, aY1: %d, aZ1: %d, gX1: %d, gY1: %d, gZ1: %d, aX2: %d, aY2: %d, aZ2: %d, gX2: %d, gY2: %d, gZ2: %d, aX3: %d, aY3: %d, aZ3: %d, gX3: %d, gY3: %d, gZ3: %d, dt: %0.6f\r\n",
-          model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu1.gyrX, model.imu1.gyrY, model.imu1.gyrZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, model.imu3.accX, model.imu3.accY, model.imu3.accZ, model.imu3.gyrX, model.imu3.gyrY, model.imu3.gyrZ, dt);
+          "aX1: %d, aY1: %d, aZ1: %d, | gX1: %d, gY1: %d, gZ1: %d, | aX2: %d, aY2: %d, aZ2: %d, | gX2: %d, gY2: %d, gZ2: %d, encB: %0.2f, encT: %0.2f, dt: %0.6f\r\n",
+          model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu1.gyrX, model.imu1.gyrY, model.imu1.gyrZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, model.RollingEncoder.angle, model.ReactionEncoder.angle, dt);
         log_status = 0;
       }
 
