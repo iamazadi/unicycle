@@ -116,8 +116,8 @@ const float sensor_rotation = -30.0 / 180.0 * M_PI; // sensor frame rotation in 
 const float roll_coefficient = 10.0;
 const float pitch_coefficient = 10.0;
 const float yaw_coefficient = 360.0;
-const float rolling_wheel_safety_angle = 10.0 / pitch_coefficient;
-const float reaction_wheel_safety_angle = 10.0 / roll_coefficient;
+const float roll_safety_angle = 0.30;
+const float pitch_safety_angle = 0.10;
 const int encoderWindowLength = WINDOWLENGTH;
 const int currentWindowLength = WINDOWLENGTH;
 const float angle = -30.0 / 180.0 * M_PI;
@@ -219,8 +219,8 @@ float fused_beta = 0.0;
 float gamma1 = 0.0;
 float fused_gamma = 0.0;
 // tuning parameters to minimize estimate variance
-float kappa1 = 0.01;
-float kappa2 = 0.01;
+float kappa1 = 0.05;
+float kappa2 = 0.05;
 // the average of the body angular rate from rate gyro
 float r[3] = {0.0, 0.0, 0.0};
 // the average of the body angular rate in Euler angles
@@ -776,21 +776,20 @@ void updateIMU(LinearQuadraticRegulator *model)
   fused_beta = kappa1 * beta + (1.0 - kappa1) * (fused_beta + model->dt * (r_dot[1] / 180.0 * M_PI));
   fused_gamma = kappa2 * gamma1 + (1.0 - kappa2) * (fused_gamma + model->dt * (r_dot[2] / 180.0 * M_PI));
 
-  float _roll = fused_beta / 0.50;
-  float _pitch = -fused_gamma / 0.20;
-  model->imu1.roll_acceleration = _roll - model->imu1.roll - model->imu1.roll_velocity;
-  model->imu1.pitch_acceleration = _pitch - model->imu1.pitch - model->imu1.pitch_velocity;
-  model->imu1.roll_velocity = _roll - model->imu1.roll;
-  model->imu1.pitch_velocity = _pitch - model->imu1.pitch;
+  float _roll = fused_beta;
+  float _pitch = -fused_gamma;
+  float _roll_velocity = r_dot[1] / 180.0 * M_PI;
+  float _pitch_velocity = -r_dot[2] / 180.0 * M_PI;
+  model->imu1.roll_acceleration = _roll_velocity - model->imu1.roll_velocity;
+  model->imu1.pitch_acceleration = _pitch_velocity - model->imu1.pitch_velocity;
+  model->imu1.roll_velocity = _roll_velocity;
+  model->imu1.pitch_velocity = _pitch_velocity;
   model->imu1.roll = _roll;
   model->imu1.pitch = _pitch;
-  model->imu1.roll_velocity = r_dot[1] / 180.0;
-  model->imu1.pitch_velocity = -r_dot[2] / 180.0;
   model->imu1.roll_velocity = fmax(-1.0, model->imu1.roll_velocity);
   model->imu1.roll_velocity = fmin(1.0, model->imu1.roll_velocity);
   model->imu1.pitch_velocity = fmax(-1.0, model->imu1.pitch_velocity);
   model->imu1.pitch_velocity = fmin(1.0, model->imu1.pitch_velocity);
-
 }
 
 
@@ -1514,7 +1513,7 @@ void stepForward(LinearQuadraticRegulator *model)
   // act!
   model->dataset.x0 = model->imu1.roll;
   model->dataset.x1 = model->imu1.roll_velocity;
-  model->dataset.x2 = model->imu1.roll_acceleration * model->imu1.pitch_velocity - model->imu1.pitch_acceleration * model->imu1.roll_velocity;
+  model->dataset.x2 = model->imu1.pitch_acceleration * model->imu1.roll_velocity - model->imu1.roll_acceleration * model->imu1.pitch_velocity;
   model->dataset.x3 = model->imu1.pitch;
   model->dataset.x4 = model->imu1.pitch_velocity;
   model->dataset.x5 = model->RollingEncoder.acceleration;
@@ -1528,7 +1527,7 @@ void stepForward(LinearQuadraticRegulator *model)
   if (model->active == 1)
   {
     reaction_wheel_pwm += 32.0 * u_k[0];
-    rolling_wheel_pwm += 7.0 * u_k[1];
+    rolling_wheel_pwm += 8.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
     rolling_wheel_pwm = fmin(255.0, rolling_wheel_pwm);
@@ -1574,7 +1573,7 @@ void stepForward(LinearQuadraticRegulator *model)
   updateCurrentSensing();
   model->dataset.x12 = model->imu1.roll;
   model->dataset.x13 = model->imu1.roll_velocity;
-  model->dataset.x14 = model->imu1.roll_acceleration * model->imu1.pitch_velocity - model->imu1.pitch_acceleration * model->imu1.roll_velocity;
+  model->dataset.x14 = model->imu1.pitch_acceleration * model->imu1.roll_velocity - model->imu1.roll_acceleration * model->imu1.pitch_velocity;
   model->dataset.x15 = model->imu1.pitch;
   model->dataset.x16 = model->imu1.pitch_velocity;
   model->dataset.x17 = model->RollingEncoder.acceleration;
@@ -1875,7 +1874,7 @@ int main(void)
       TIM2->CCR2 = 0;
     }
 
-    if (fabs(model.imu1.roll) > reaction_wheel_safety_angle || fabs(model.imu1.pitch) > rolling_wheel_safety_angle || model.k > max_episode_length)
+    if (fabs(model.imu1.roll) > roll_safety_angle || fabs(model.imu1.pitch) > pitch_safety_angle || model.k > max_episode_length)
     {
       model.terminated = 1;
       model.active = 0;
