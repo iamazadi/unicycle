@@ -214,8 +214,25 @@ float Matrix[3][2] = {{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
 float g[3] = {0.0, 0.0, 0.0};
 // y-Euler angle (pitch)
 float beta = 0.0;
+float fused_beta = 0.0;
 // x-Euler angle (roll)
 float gamma1 = 0.0;
+float fused_gamma = 0.0;
+// tuning parameters to minimize estimate variance
+float kappa1 = 0.01;
+float kappa2 = 0.01;
+// the average of the body angular rate from rate gyro
+float r[3] = {0.0, 0.0, 0.0};
+// the average of the body angular rate in Euler angles
+float r_dot[3] = {0.0, 0.0, 0.0};
+// gyro sensor measurements in the local frame of the sensors
+float G1[3] = {0.0, 0.0, 0.0};
+float G2[3] = {0.0, 0.0, 0.0};
+// gyro sensor measurements in the robot body frame
+float _G1[3] = {0.0, 0.0, 0.0};
+float _G2[3] = {0.0, 0.0, 0.0};
+// a matrix transfom from body rates to Euler angular rates
+float E[3][3] = {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -251,9 +268,9 @@ typedef struct
   float accX;
   float accY;
   float accZ;
-  int16_t gyrX;
-  int16_t gyrY;
-  int16_t gyrZ;
+  float gyrX;
+  float gyrY;
+  float gyrZ;
   int16_t accX_offset;
   int16_t accY_offset;
   int16_t accZ_offset;
@@ -354,9 +371,12 @@ void updateIMU1(IMU *sensor) // GY-25 I2C
     sensor->accX = (1.0 * rawX) / imuScale;
     sensor->accY = (1.0 * rawY) / imuScale;
     sensor->accZ = (1.0 * rawZ) / imuScale;
-    sensor->gyrX = (raw_data[6] << 8) | raw_data[7];
-    sensor->gyrY = (raw_data[8] << 8) | raw_data[9];
-    sensor->gyrZ = (raw_data[10] << 8) | raw_data[11];
+    rawX = (raw_data[6] << 8) | raw_data[7];
+    rawY = (raw_data[8] << 8) | raw_data[9];
+    rawZ = (raw_data[10] << 8) | raw_data[11];
+    sensor->gyrX = (1.0 * rawX) / 180.0 * M_PI;
+    sensor->gyrY = (1.0 * rawY) / 180.0 * M_PI;
+    sensor->gyrZ = (1.0 * rawZ) / 180.0 * M_PI;
   } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
 
   return;
@@ -384,9 +404,15 @@ void updateIMU2(IMU *sensor) // GY-25 USART
       sensor->accX = -(sin(angle) * scaledX + cos(angle) * scaledY);
       sensor->accY = -(cos(angle) * scaledY - sin(angle) * scaledX);
       sensor->accZ = -scaledZ;
-      sensor->gyrX = (UART1_rxBuffer[10] << 8) | UART1_rxBuffer[11];
-      sensor->gyrY = (UART1_rxBuffer[12] << 8) | UART1_rxBuffer[13];
-      sensor->gyrZ = (UART1_rxBuffer[14] << 8) | UART1_rxBuffer[15];
+      rawX = (UART1_rxBuffer[10] << 8) | UART1_rxBuffer[11];
+      rawY = (UART1_rxBuffer[12] << 8) | UART1_rxBuffer[13];
+      rawZ = (UART1_rxBuffer[14] << 8) | UART1_rxBuffer[15];
+      scaledX = (1.0 * rawX) / (1024.0) / 180.0 * M_PI;
+      scaledY = (1.0 * rawY) / (1024.0) / 180.0 * M_PI;
+      scaledZ = (1.0 * rawZ) / (1024.0) / 180.0 * M_PI;
+      sensor->gyrX = -(sin(angle) * scaledX + cos(angle) * scaledY);
+      sensor->gyrY = -(cos(angle) * scaledY - sin(angle) * scaledX);
+      sensor->gyrZ = -scaledZ;
       uart_receive_ok = 0;
       sensor_updated = 1;
     }
@@ -648,6 +674,7 @@ typedef struct
   int terminated; // has the environment been reset
   int updated;    // whether the policy has been updated since episode termination and parameter convegence
   int active;     // is the model controller active
+  float dt;       // period in seconds
   IMU imu1;
   IMU imu2;
   IMU imu3;
@@ -699,14 +726,71 @@ void updateIMU(LinearQuadraticRegulator *model)
   g[2] = Q[2][0];
   beta = atan2(-g[0], sqrt(pow(g[1], 2) + pow(g[2], 2)));
   gamma1 = atan2(g[1], g[2]);
-  
-  float _roll = beta / 0.50;
-  float _pitch = -gamma1 / 0.20;
 
+  G1[0] = model->imu1.gyrX;
+  G1[1] = model->imu1.gyrY;
+  G1[2] = model->imu1.gyrZ;
+  G2[0] = model->imu2.gyrX;
+  G2[1] = model->imu2.gyrY;
+  G2[2] = model->imu2.gyrZ;
+
+  _G1[0] = 0.0;
+  _G1[1] = 0.0;
+  _G1[2] = 0.0;
+  _G2[0] = 0.0;
+  _G2[1] = 0.0;
+  _G2[2] = 0.0;
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      _G1[i] += B_A1_R[i][j] * G1[j];
+      _G2[i] += B_A2_R[i][j] * G2[j];
+    }
+  }
+  for (int i = 0; i < 3; i++) {
+    // r[i] = (_G1[i] + _G2[i]) / 2.0;
+    r[i] = _G1[i];
+  }
+
+  E[0][0] = 0.0;
+  E[0][1] = sin(gamma1) / cos(beta);
+  E[0][2] = cos(gamma1) / cos(beta);
+  E[1][0] = 0.0;
+  E[1][1] = cos(gamma1);
+  E[1][2] = -sin(gamma1);
+  E[2][0] = 1.0;
+  E[2][1] = sin(gamma1) * tan(beta);
+  E[2][2] = cos(gamma1) * tan(beta);
+
+  r_dot[0] = 0.0;
+  r_dot[1] = 0.0;
+  r_dot[2] = 0.0;
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      r_dot[i] += E[i][j] * r[j];
+      r_dot[i] += E[i][j] * r[j];
+      r_dot[i] += E[i][j] * r[j];
+      r_dot[i] += E[i][j] * r[j];
+    }
+  }
+
+  fused_beta = kappa1 * beta + (1.0 - kappa1) * (fused_beta + model->dt * (r_dot[1] / 180.0 * M_PI));
+  fused_gamma = kappa2 * gamma1 + (1.0 - kappa2) * (fused_gamma + model->dt * (r_dot[2] / 180.0 * M_PI));
+
+  float _roll = fused_beta / 0.50;
+  float _pitch = -fused_gamma / 0.20;
+  model->imu1.roll_acceleration = _roll - model->imu1.roll - model->imu1.roll_velocity;
+  model->imu1.pitch_acceleration = _pitch - model->imu1.pitch - model->imu1.pitch_velocity;
   model->imu1.roll_velocity = _roll - model->imu1.roll;
   model->imu1.pitch_velocity = _pitch - model->imu1.pitch;
   model->imu1.roll = _roll;
   model->imu1.pitch = _pitch;
+  model->imu1.roll_velocity = r_dot[1] / 180.0;
+  model->imu1.pitch_velocity = -r_dot[2] / 180.0;
+  model->imu1.roll_velocity = fmax(-1.0, model->imu1.roll_velocity);
+  model->imu1.roll_velocity = fmin(1.0, model->imu1.roll_velocity);
+  model->imu1.pitch_velocity = fmax(-1.0, model->imu1.pitch_velocity);
+  model->imu1.pitch_velocity = fmin(1.0, model->imu1.pitch_velocity);
+
 }
 
 
@@ -1029,6 +1113,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->terminated = 0;
   model->updated = 0;
   model->active = 0;
+  model->dt = 0.0;
 
   model->W_n.x0000 = (float)(rand() % 100) / 100.0;
   model->W_n.x0001 = (float)(rand() % 100) / 100.0;
@@ -1429,7 +1514,7 @@ void stepForward(LinearQuadraticRegulator *model)
   // act!
   model->dataset.x0 = model->imu1.roll;
   model->dataset.x1 = model->imu1.roll_velocity;
-  model->dataset.x2 = 0.0;
+  model->dataset.x2 = model->imu1.roll_acceleration * model->imu1.pitch_velocity - model->imu1.pitch_acceleration * model->imu1.roll_velocity;
   model->dataset.x3 = model->imu1.pitch;
   model->dataset.x4 = model->imu1.pitch_velocity;
   model->dataset.x5 = model->RollingEncoder.acceleration;
@@ -1442,8 +1527,8 @@ void stepForward(LinearQuadraticRegulator *model)
 
   if (model->active == 1)
   {
-    reaction_wheel_pwm += 20.0 * u_k[0];
-    rolling_wheel_pwm += 3.0 * u_k[1];
+    reaction_wheel_pwm += 32.0 * u_k[0];
+    rolling_wheel_pwm += 7.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
     rolling_wheel_pwm = fmin(255.0, rolling_wheel_pwm);
@@ -1489,7 +1574,7 @@ void stepForward(LinearQuadraticRegulator *model)
   updateCurrentSensing();
   model->dataset.x12 = model->imu1.roll;
   model->dataset.x13 = model->imu1.roll_velocity;
-  model->dataset.x14 = 0.0;
+  model->dataset.x14 = model->imu1.roll_acceleration * model->imu1.pitch_velocity - model->imu1.pitch_acceleration * model->imu1.roll_velocity;
   model->dataset.x15 = model->imu1.pitch;
   model->dataset.x16 = model->imu1.pitch_velocity;
   model->dataset.x17 = model->RollingEncoder.acceleration;
@@ -1830,6 +1915,8 @@ int main(void)
       updateControlPolicy(&model);
     }
 
+    model.imu1.yaw += dt * r_dot[2];
+
     log_counter++;
     if (log_counter > LOG_CYCLE && HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == 0)
     {
@@ -1845,7 +1932,10 @@ int main(void)
         sprintf(MSG,
           "roll: %0.2f, rollv: %0.2f, pitch: %0.2f, pitchv: %0.2f, | aX1: %0.2f, aY1: %0.2f, aZ1: %0.2f, | aX2: %0.2f, aY2: %0.2f, aZ2: %0.2f, | encB: %0.2f, encT: %0.2f, dt: %0.6f\r\n",
           model.imu1.roll, model.imu1.roll_velocity, model.imu1.pitch, model.imu1.pitch_velocity, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.RollingEncoder.angle, model.ReactionEncoder.angle, dt);
-        log_status = 0;
+          // sprintf(MSG,
+          //   "gX1: %0.2f, gY1: %0.2f, gZ1: %0.2f, | gX2: %0.2f, gY2: %0.2f, gZ2: %0.2f, dt: %0.6f\r\n",
+          //   model.imu1.gyrX, model.imu1.gyrY, model.imu1.gyrZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, dt);
+          log_status = 0;
       }
 
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 1000);
@@ -1854,6 +1944,7 @@ int main(void)
     t2 = DWT->CYCCNT;
     diff = t2 - t1;
     dt = (float)diff / CPU_CLOCK;
+    model.dt = dt;
   }
   /* USER CODE END 3 */
 }
