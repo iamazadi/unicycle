@@ -120,6 +120,8 @@ const float rolling_wheel_safety_angle = 10.0 / pitch_coefficient;
 const float reaction_wheel_safety_angle = 10.0 / roll_coefficient;
 const int encoderWindowLength = WINDOWLENGTH;
 const int currentWindowLength = WINDOWLENGTH;
+const float angle = -30.0 / 180.0 * M_PI;
+const float imuScale = 2048.0;
 float reaction_wheel_pwm = 0.0;
 float rolling_wheel_pwm = 0.0;
 float reaction_wheel_speed = 0.0;
@@ -176,6 +178,44 @@ float alpha_n[N + M];
 float S_ux[M][N];
 float S_uu[M][M];
 float S_uu_inverse[M][M];
+// tilt estimation
+// the pivot point B̂ in the inertial frame Ô
+float pivot[3] = {-0.097, -0.1, -0.032};
+// the position of sensors mounted on the body in the body frame of reference
+float p1[3] = {-0.035, -0.19, -0.04};
+float p2[3] = {0.025, -0.144, -0.07};
+// the vectors of the standard basis for the input space ℝ³
+float e1[3] = {1.0, 0.0, 0.0};
+float e2[3] = {0.0, 1.0, 0.0};
+float e3[3] = {0.0, 0.0, 1.0};
+// The rotation of the inertial frame Ô to the body frame B̂
+float O_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
+float B_O_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
+// The rotation of the local frame of the sensor i to the robot frame B̂
+float A1_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // [ê[2] ê[1] ê[3]]
+float A2_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // [ê[1] ê[2] ê[3]]
+float B_A1_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // LinearAlgebra.inv(A1_B_R)
+float B_A2_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // LinearAlgebra.inv(A2_B_R)
+// The matrix of unknown parameters
+float Q[3][4] = {{0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}};
+// The matrix of sensor locations (known parameters)
+float P[4][2] = {{1.0, 1.0}, {-0.043, 0.057}, {0.035, 0.04}, {-0.03, -0.028}}; // [[1.0; vec(p1 - pivot)] [1.0; vec(p2 - pivot)] [1.0; vec(p3 - pivot)] [1.0; vec(p4 - pivot)]]
+// The optimal fusion matrix
+float X[2][4] = {{0.586913, -11.3087, 0.747681, 0.0}, {0.446183, 8.92749, -3.54337, 0.0}}; // transpose(P) * LinearAlgebra.inv(P * transpose(P))
+// accelerometer sensor measurements in the local frame of the sensors
+float R1[3] = {0.0, 0.0, 0.0};
+float R2[3] = {0.0, 0.0, 0.0};
+// accelerometer sensor measurements in the robot body frame
+float _R1[3] = {0.0, 0.0, 0.0};
+float _R2[3] = {0.0, 0.0, 0.0};
+// all sensor measurements combined
+float Matrix[3][2] = {{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
+// The gravity vector
+float g[3] = {0.0, 0.0, 0.0};
+// y-Euler angle (pitch)
+float beta = 0.0;
+// x-Euler angle (roll)
+float gamma1 = 0.0;
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -208,9 +248,9 @@ typedef struct
 
 typedef struct
 {
-  int16_t accX;
-  int16_t accY;
-  int16_t accZ;
+  float accX;
+  float accY;
+  float accZ;
   int16_t gyrX;
   int16_t gyrY;
   int16_t gyrZ;
@@ -308,9 +348,12 @@ void updateIMU1(IMU *sensor) // GY-25 I2C
     HAL_I2C_Master_Receive(&hi2c1, (uint16_t)SLAVE_ADDRESS, (uint8_t *)raw_data, 12, 10);
     while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
       ;
-    sensor->accX = (raw_data[0] << 8) | raw_data[1];
-    sensor->accY = (raw_data[2] << 8) | raw_data[3];
-    sensor->accZ = (raw_data[4] << 8) | raw_data[5];
+    int16_t rawX = (raw_data[0] << 8) | raw_data[1];
+    int16_t rawY = (raw_data[2] << 8) | raw_data[3];
+    int16_t rawZ = (raw_data[4] << 8) | raw_data[5];
+    sensor->accX = (1.0 * rawX) / imuScale;
+    sensor->accY = (1.0 * rawY) / imuScale;
+    sensor->accZ = (1.0 * rawZ) / imuScale;
     sensor->gyrX = (raw_data[6] << 8) | raw_data[7];
     sensor->gyrY = (raw_data[8] << 8) | raw_data[9];
     sensor->gyrZ = (raw_data[10] << 8) | raw_data[11];
@@ -332,9 +375,15 @@ void updateIMU2(IMU *sensor) // GY-25 USART
     // Check sum and frame ID
     if (sum == UART1_rxBuffer[i] && UART1_rxBuffer[0] == UART1_txBuffer[0])
     {
-      sensor->accX = (UART1_rxBuffer[4] << 8) | UART1_rxBuffer[5];
-      sensor->accY = (UART1_rxBuffer[6] << 8) | UART1_rxBuffer[7];
-      sensor->accZ = (UART1_rxBuffer[8] << 8) | UART1_rxBuffer[9];
+      int16_t rawX = (UART1_rxBuffer[4] << 8) | UART1_rxBuffer[5];
+      int16_t rawY = (UART1_rxBuffer[6] << 8) | UART1_rxBuffer[7];
+      int16_t rawZ = (UART1_rxBuffer[8] << 8) | UART1_rxBuffer[9];
+      float scaledX = (1.0 * rawX) / (5.0 * imuScale);
+      float scaledY = (1.0 * rawY) / (5.0 * imuScale);
+      float scaledZ = (1.0 * rawZ) / (5.0 * imuScale);
+      sensor->accX = -(sin(angle) * scaledX + cos(angle) * scaledY);
+      sensor->accY = -(cos(angle) * scaledY - sin(angle) * scaledX);
+      sensor->accZ = -scaledZ;
       sensor->gyrX = (UART1_rxBuffer[10] << 8) | UART1_rxBuffer[11];
       sensor->gyrY = (UART1_rxBuffer[12] << 8) | UART1_rxBuffer[13];
       sensor->gyrZ = (UART1_rxBuffer[14] << 8) | UART1_rxBuffer[15];
@@ -346,43 +395,43 @@ void updateIMU2(IMU *sensor) // GY-25 USART
 }
 
 
-void updateIMU3(IMU *sensor) // MPU9250 I2C
-{
-  uint8_t _transferRequest = 0x3B;
-  // do
-  // {
-  //   HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 14, 10);
-  //   while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
-  //     ;
-  //     sensor->accX = ((raw_data[0] << 8) | raw_data[1]);
-  //     sensor->accY = ((raw_data[2] << 8) | raw_data[3]);
-  //     sensor->accZ = ((raw_data[4] << 8) | raw_data[5]);
-  //     sensor->gyrX = ((raw_data[8] << 8) | raw_data[9]);
-  //     sensor->gyrY = ((raw_data[10] << 8) | raw_data[11]);
-  //     sensor->gyrZ = ((raw_data[12] << 8) | raw_data[13]);
-  // } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
+// void updateIMU3(IMU *sensor) // MPU9250 I2C
+// {
+//   uint8_t _transferRequest = 0x3B;
+//   // do
+//   // {
+//   //   HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 14, 10);
+//   //   while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
+//   //     ;
+//   //     sensor->accX = ((raw_data[0] << 8) | raw_data[1]);
+//   //     sensor->accY = ((raw_data[2] << 8) | raw_data[3]);
+//   //     sensor->accZ = ((raw_data[4] << 8) | raw_data[5]);
+//   //     sensor->gyrX = ((raw_data[8] << 8) | raw_data[9]);
+//   //     sensor->gyrY = ((raw_data[10] << 8) | raw_data[11]);
+//   //     sensor->gyrZ = ((raw_data[12] << 8) | raw_data[13]);
+//   // } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
 
-  do
-  {
-    HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 6, 100);
-    while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
-      ;
-      sensor->accX = ((raw_data[0] << 8) | raw_data[1]);
-      sensor->accY = ((raw_data[2] << 8) | raw_data[3]);
-      sensor->accZ = ((raw_data[4] << 8) | raw_data[5]);
-  } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
+//   do
+//   {
+//     HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 6, 100);
+//     while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
+//       ;
+//       sensor->accX = ((raw_data[0] << 8) | raw_data[1]);
+//       sensor->accY = ((raw_data[2] << 8) | raw_data[3]);
+//       sensor->accZ = ((raw_data[4] << 8) | raw_data[5]);
+//   } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
 
-  _transferRequest = 0x43;
-  do
-  {
-    HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 6, 100);
-    while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
-      ;
-      sensor->gyrX = ((raw_data[0] << 8) | raw_data[1]);
-      sensor->gyrY = ((raw_data[2] << 8) | raw_data[3]);
-      sensor->gyrZ = ((raw_data[4] << 8) | raw_data[5]);
-  } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
-}
+//   _transferRequest = 0x43;
+//   do
+//   {
+//     HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 6, 100);
+//     while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
+//       ;
+//       sensor->gyrX = ((raw_data[0] << 8) | raw_data[1]);
+//       sensor->gyrY = ((raw_data[2] << 8) | raw_data[3]);
+//       sensor->gyrZ = ((raw_data[4] << 8) | raw_data[5]);
+//   } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
+// }
 
 
 typedef struct
@@ -612,6 +661,52 @@ void updateIMU(LinearQuadraticRegulator *model)
   updateIMU1(&(model->imu1));
   updateIMU2(&(model->imu2));
   // updateIMU3(&(model->imu3)); // causes too large of a delay
+  R1[0] = model->imu1.accX;
+  R1[1] = model->imu1.accY;
+  R1[2] = model->imu1.accZ;
+  R2[0] = model->imu2.accX;
+  R2[1] = model->imu2.accY;
+  R2[2] = model->imu2.accZ;
+
+  _R1[0] = 0.0;
+  _R1[1] = 0.0;
+  _R1[2] = 0.0;
+  _R2[0] = 0.0;
+  _R2[1] = 0.0;
+  _R2[2] = 0.0;
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      _R1[i] += B_A1_R[i][j] * R1[j];
+      _R2[i] += B_A2_R[i][j] * R2[j];
+    }
+  }
+
+  for (int i = 0; i < 3; i++) {
+    Matrix[i][0] = _R1[i];
+    Matrix[i][1] = _R2[i];
+  }
+
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 4; j++) {
+      Q[i][j] = 0.0;
+      for (int k = 0; k < 2; k++) {
+        Q[i][j] += Matrix[i][k] * X[k][j];
+      }
+    }
+  }
+  g[0] = Q[0][0];
+  g[1] = Q[1][0];
+  g[2] = Q[2][0];
+  beta = atan2(-g[0], sqrt(pow(g[1], 2) + pow(g[2], 2)));
+  gamma1 = atan2(g[1], g[2]);
+  
+  float _roll = beta / 0.50;
+  float _pitch = -gamma1 / 0.20;
+
+  model->imu1.roll_velocity = _roll - model->imu1.roll;
+  model->imu1.pitch_velocity = _pitch - model->imu1.pitch;
+  model->imu1.roll = _roll;
+  model->imu1.pitch = _pitch;
 }
 
 
@@ -1347,8 +1442,8 @@ void stepForward(LinearQuadraticRegulator *model)
 
   if (model->active == 1)
   {
-    reaction_wheel_pwm += 16.0 * u_k[0];
-    rolling_wheel_pwm += 2.0 * u_k[1];
+    reaction_wheel_pwm += 20.0 * u_k[0];
+    rolling_wheel_pwm += 3.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
     rolling_wheel_pwm = fmin(255.0, rolling_wheel_pwm);
@@ -1367,13 +1462,13 @@ void stepForward(LinearQuadraticRegulator *model)
     }
     if (rolling_wheel_pwm < 0)
     {
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
     }
     else
     {
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
+      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
     }
   }
   else
@@ -1748,8 +1843,8 @@ int main(void)
       if (log_status == 0)
       {
         sprintf(MSG,
-          "aX1: %d, aY1: %d, aZ1: %d, | gX1: %d, gY1: %d, gZ1: %d, | aX2: %d, aY2: %d, aZ2: %d, | gX2: %d, gY2: %d, gZ2: %d, encB: %0.2f, encT: %0.2f, dt: %0.6f\r\n",
-          model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu1.gyrX, model.imu1.gyrY, model.imu1.gyrZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, model.RollingEncoder.angle, model.ReactionEncoder.angle, dt);
+          "roll: %0.2f, rollv: %0.2f, pitch: %0.2f, pitchv: %0.2f, | aX1: %0.2f, aY1: %0.2f, aZ1: %0.2f, | aX2: %0.2f, aY2: %0.2f, aZ2: %0.2f, | encB: %0.2f, encT: %0.2f, dt: %0.6f\r\n",
+          model.imu1.roll, model.imu1.roll_velocity, model.imu1.pitch, model.imu1.pitch_velocity, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.RollingEncoder.angle, model.ReactionEncoder.angle, dt);
         log_status = 0;
       }
 
