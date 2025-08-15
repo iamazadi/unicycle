@@ -35,7 +35,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define TRANSMIT_LENGTH 300
-#define RECEIVE_FRAME_LENGTH 23
+#define RECEIVE_FRAME_LENGTH 32
 #define TRANSMIT_FRAME_LENGTH 5
 #define N 10
 #define M 2
@@ -100,14 +100,13 @@ static void MX_I2C1_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 uint8_t UART1_rxBuffer[RECEIVE_FRAME_LENGTH] = {0};
-uint8_t UART1_txBuffer[TRANSMIT_FRAME_LENGTH] = {0xA4, 0x03, 0x08, 0x12, 0xC1};
+uint8_t UART1_txBuffer[TRANSMIT_FRAME_LENGTH] = {0xA4, 0x03, 0x08, 0x1B, 0xCA};
 uint8_t UART1_txBuffer_cfg[TRANSMIT_FRAME_LENGTH] = {0xA4, 0x06, 0x01, 0x06, 0xB1};
 // response: a4030812f93dfbcf002a000100010001ddb416bafffa48
 // response: a4030812f93dfbce0028000100010002ddae16b9ffe227
 int deviceReady = 0;
 int uart_receive_ok = 0;
 int adc_receive_ok = 0;
-int sensor_updated = 0;
 const float CPU_CLOCK = 84000000.0;
 const int dim_n = N;
 const int dim_m = M;
@@ -121,14 +120,8 @@ const float pitch_safety_angle = 0.10;
 const int encoderWindowLength = WINDOWLENGTH;
 const int currentWindowLength = WINDOWLENGTH;
 const float angle = -30.0 / 180.0 * M_PI;
-const float imuScale = 2048.0;
 float reaction_wheel_pwm = 0.0;
 float rolling_wheel_pwm = 0.0;
-float reaction_wheel_speed = 0.0;
-float rolling_wheel_speed = 0.0;
-float gyro_tilt_y = 0.0;
-float gyro_velocity_y = 0.0;
-// uint8_t transferRequest = MASTER_REQ_ROLL_H;
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // sampling time
 float dt = 0.0;
@@ -219,8 +212,8 @@ float fused_beta = 0.0;
 float gamma1 = 0.0;
 float fused_gamma = 0.0;
 // tuning parameters to minimize estimate variance
-float kappa1 = 0.05;
-float kappa2 = 0.05;
+float kappa1 = 0.02;
+float kappa2 = 0.02;
 // the average of the body angular rate from rate gyro
 float r[3] = {0.0, 0.0, 0.0};
 // the average of the body angular rate in Euler angles
@@ -265,27 +258,39 @@ typedef struct
 
 typedef struct
 {
-  float accX;
-  float accY;
-  float accZ;
-  float gyrX;
-  float gyrY;
-  float gyrZ;
   int16_t accX_offset;
   int16_t accY_offset;
   int16_t accZ_offset;
+  double accX_scale;
+  double accY_scale;
+  double accZ_scale;
   int16_t gyrX_offset;
   int16_t gyrY_offset;
   int16_t gyrZ_offset;
-  float roll;
-  float pitch;
-  float yaw;
-  float roll_velocity;
-  float pitch_velocity;
-  float yaw_velocity;
-  float roll_acceleration;
-  float pitch_acceleration;
-  float yaw_acceleration;
+  double gyrX_scale;
+  double gyrY_scale;
+  double gyrZ_scale;
+  int16_t rawAccX;
+  int16_t rawAccY;
+  int16_t rawAccZ;
+  int16_t rawGyrX;
+  int16_t rawGyrY;
+  int16_t rawGyrZ;
+  double accX;
+  double accY;
+  double accZ;
+  double gyrX;
+  double gyrY;
+  double gyrZ;
+  double roll;
+  double pitch;
+  double yaw;
+  double roll_velocity;
+  double pitch_velocity;
+  double yaw_velocity;
+  double roll_acceleration;
+  double pitch_acceleration;
+  double yaw_acceleration;
 } IMU;
 
 void updateEncoder(Encoder *encoder, int *window, int newValue)
@@ -365,18 +370,18 @@ void updateIMU1(IMU *sensor) // GY-25 I2C
     HAL_I2C_Master_Receive(&hi2c1, (uint16_t)SLAVE_ADDRESS, (uint8_t *)raw_data, 12, 10);
     while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
       ;
-    int16_t rawX = (raw_data[0] << 8) | raw_data[1];
-    int16_t rawY = (raw_data[2] << 8) | raw_data[3];
-    int16_t rawZ = (raw_data[4] << 8) | raw_data[5];
-    sensor->accX = (1.0 * rawX) / imuScale;
-    sensor->accY = (1.0 * rawY) / imuScale;
-    sensor->accZ = (1.0 * rawZ) / imuScale;
-    rawX = (raw_data[6] << 8) | raw_data[7];
-    rawY = (raw_data[8] << 8) | raw_data[9];
-    rawZ = (raw_data[10] << 8) | raw_data[11];
-    sensor->gyrX = (1.0 * rawX) / 180.0 * M_PI;
-    sensor->gyrY = (1.0 * rawY) / 180.0 * M_PI;
-    sensor->gyrZ = (1.0 * rawZ) / 180.0 * M_PI;
+    sensor->rawAccX = (raw_data[0] << 8) | raw_data[1];
+    sensor->rawAccY = (raw_data[2] << 8) | raw_data[3];
+    sensor->rawAccZ = (raw_data[4] << 8) | raw_data[5];
+    sensor->rawGyrX = (raw_data[6] << 8) | raw_data[7];
+    sensor->rawGyrY = (raw_data[8] << 8) | raw_data[9];
+    sensor->rawGyrZ = (raw_data[10] << 8) | raw_data[11];
+    sensor->accX = sensor->accX_scale * (sensor->rawAccX - sensor->accX_offset);
+    sensor->accY = sensor->accY_scale * (sensor->rawAccY - sensor->accY_offset);
+    sensor->accZ = sensor->accZ_scale * (sensor->rawAccZ - sensor->accZ_offset);
+    sensor->gyrX = sensor->gyrX_scale * (sensor->rawGyrX - sensor->gyrX_offset);
+    sensor->gyrY = sensor->gyrY_scale * (sensor->rawGyrY - sensor->gyrY_offset);
+    sensor->gyrZ = sensor->gyrZ_scale * (sensor->rawGyrZ - sensor->gyrZ_offset);
   } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
 
   return;
@@ -385,36 +390,39 @@ void updateIMU1(IMU *sensor) // GY-25 I2C
 
 void updateIMU2(IMU *sensor) // GY-25 USART
 {
-  uint8_t sum = 0, i = 0;
+  // uint8_t sum = 0, i = 0;
   if (uart_receive_ok == 1)
   {
-    for (sum = 0, i = 0; i < (UART1_rxBuffer[3] + 4); i++)
-    {
-      sum += UART1_rxBuffer[i];
-    }
-    // Check sum and frame ID
-    if (sum == UART1_rxBuffer[i] && UART1_rxBuffer[0] == UART1_txBuffer[0])
-    {
-      int16_t rawX = (UART1_rxBuffer[4] << 8) | UART1_rxBuffer[5];
-      int16_t rawY = (UART1_rxBuffer[6] << 8) | UART1_rxBuffer[7];
-      int16_t rawZ = (UART1_rxBuffer[8] << 8) | UART1_rxBuffer[9];
-      float scaledX = (1.0 * rawX) / (5.0 * imuScale);
-      float scaledY = (1.0 * rawY) / (5.0 * imuScale);
-      float scaledZ = (1.0 * rawZ) / (5.0 * imuScale);
-      sensor->accX = -(sin(angle) * scaledX + cos(angle) * scaledY);
-      sensor->accY = -(cos(angle) * scaledY - sin(angle) * scaledX);
-      sensor->accZ = -scaledZ;
-      rawX = (UART1_rxBuffer[10] << 8) | UART1_rxBuffer[11];
-      rawY = (UART1_rxBuffer[12] << 8) | UART1_rxBuffer[13];
-      rawZ = (UART1_rxBuffer[14] << 8) | UART1_rxBuffer[15];
-      scaledX = (1.0 * rawX) / (1024.0) / 180.0 * M_PI;
-      scaledY = (1.0 * rawY) / (1024.0) / 180.0 * M_PI;
-      scaledZ = (1.0 * rawZ) / (1024.0) / 180.0 * M_PI;
-      sensor->gyrX = -(sin(angle) * scaledX + cos(angle) * scaledY);
-      sensor->gyrY = -(cos(angle) * scaledY - sin(angle) * scaledX);
-      sensor->gyrZ = -scaledZ;
+    // for (sum = 0, i = 0; i < (UART1_rxBuffer[3] + 4); i++)
+    // {
+    //   sum += UART1_rxBuffer[i];
+    // }
+    // // Check sum and frame ID
+    // if (sum == UART1_rxBuffer[i] && UART1_rxBuffer[0] == UART1_txBuffer[0])
+    // {
+    if (UART1_rxBuffer[0] == UART1_txBuffer[0] && UART1_rxBuffer[1] == UART1_txBuffer[1] && UART1_rxBuffer[2] == UART1_txBuffer[2] && UART1_rxBuffer[3] == UART1_txBuffer[3])
+      {
+      sensor->rawAccX = (UART1_rxBuffer[5] << 8) | UART1_rxBuffer[4];
+      sensor->rawAccY = (UART1_rxBuffer[7] << 8) | UART1_rxBuffer[6];
+      sensor->rawAccZ = (UART1_rxBuffer[9] << 8) | UART1_rxBuffer[8];
+      sensor->rawGyrX = (UART1_rxBuffer[11] << 8) | UART1_rxBuffer[10];
+      sensor->rawGyrY = (UART1_rxBuffer[13] << 8) | UART1_rxBuffer[12];
+      sensor->rawGyrZ = (UART1_rxBuffer[15] << 8) | UART1_rxBuffer[14];
+      sensor->accX = sensor->accX_scale * (sensor->rawAccX - sensor->accX_offset);
+      sensor->accY = sensor->accY_scale * (sensor->rawAccY - sensor->accY_offset);
+      sensor->accZ = sensor->accZ_scale * (sensor->rawAccZ - sensor->accZ_offset);
+      sensor->gyrX = sensor->gyrX_scale * (sensor->rawGyrX - sensor->gyrX_offset);
+      sensor->gyrY = sensor->gyrY_scale * (sensor->rawGyrY - sensor->gyrY_offset);
+      sensor->gyrZ = sensor->gyrZ_scale * (sensor->rawGyrZ - sensor->gyrZ_offset);
+      double dummyx = cos(angle) * sensor->accX - sin(angle) * sensor->accY;
+      double dummyy = sin(angle) * sensor->accX + cos(angle) * sensor->accY;
+      sensor->accX = -dummyy;
+      sensor->accY = dummyx;
+      dummyx = cos(angle) * sensor->gyrX - sin(angle) * sensor->gyrY;
+      dummyy = sin(angle) * sensor->gyrX + cos(angle) * sensor->gyrY;
+      sensor->gyrX = -dummyy;
+      sensor->gyrY = dummyx;
       uart_receive_ok = 0;
-      sensor_updated = 1;
     }
   }
   return;
@@ -747,8 +755,7 @@ void updateIMU(LinearQuadraticRegulator *model)
     }
   }
   for (int i = 0; i < 3; i++) {
-    // r[i] = (_G1[i] + _G2[i]) / 2.0;
-    r[i] = _G1[i];
+    r[i] = (_G1[i] + _G2[i]) / 2.0;
   }
 
   E[0][0] = 0.0;
@@ -775,21 +782,18 @@ void updateIMU(LinearQuadraticRegulator *model)
 
   fused_beta = kappa1 * beta + (1.0 - kappa1) * (fused_beta + model->dt * (r_dot[1] / 180.0 * M_PI));
   fused_gamma = kappa2 * gamma1 + (1.0 - kappa2) * (fused_gamma + model->dt * (r_dot[2] / 180.0 * M_PI));
+  model->imu1.yaw += model->dt * r_dot[0];
 
   float _roll = fused_beta;
   float _pitch = -fused_gamma;
-  float _roll_velocity = r_dot[1] / 180.0 * M_PI;
-  float _pitch_velocity = -r_dot[2] / 180.0 * M_PI;
+  float _roll_velocity = ((r_dot[1] / 180.0 * M_PI) + (_roll - model->imu1.roll) / model->dt) / 2.0;
+  float _pitch_velocity = ((-r_dot[2] / 180.0 * M_PI) + (_pitch - model->imu1.pitch) / model->dt) / 2.0;
   model->imu1.roll_acceleration = _roll_velocity - model->imu1.roll_velocity;
   model->imu1.pitch_acceleration = _pitch_velocity - model->imu1.pitch_velocity;
   model->imu1.roll_velocity = _roll_velocity;
   model->imu1.pitch_velocity = _pitch_velocity;
   model->imu1.roll = _roll;
   model->imu1.pitch = _pitch;
-  model->imu1.roll_velocity = fmax(-1.0, model->imu1.roll_velocity);
-  model->imu1.roll_velocity = fmin(1.0, model->imu1.roll_velocity);
-  model->imu1.pitch_velocity = fmax(-1.0, model->imu1.pitch_velocity);
-  model->imu1.pitch_velocity = fmin(1.0, model->imu1.pitch_velocity);
 }
 
 
@@ -1449,9 +1453,10 @@ void initialize(LinearQuadraticRegulator *model)
   model->dataset.x21 = 0.0;
   model->dataset.x22 = 0.0;
   model->dataset.x23 = 0.0;
-  IMU imu1 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-  IMU imu2 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-  IMU imu3 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  // scale : 1 / 2048
+  IMU imu1 = {-24, -60, 27, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  IMU imu2 = {75, -25, -18, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  IMU imu3 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   Encoder ReactionEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
   Encoder RollingEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
   model->imu1 = imu1;
@@ -1929,11 +1934,14 @@ int main(void)
       if (log_status == 0)
       {
         sprintf(MSG,
-          "roll: %0.2f, rollv: %0.2f, pitch: %0.2f, pitchv: %0.2f, | aX1: %0.2f, aY1: %0.2f, aZ1: %0.2f, | aX2: %0.2f, aY2: %0.2f, aZ2: %0.2f, | encB: %0.2f, encT: %0.2f, dt: %0.6f\r\n",
-          model.imu1.roll, model.imu1.roll_velocity, model.imu1.pitch, model.imu1.pitch_velocity, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.RollingEncoder.angle, model.ReactionEncoder.angle, dt);
+          "yaw: %0.2f, roll: %0.2f, rollv: %0.2f, pitch: %0.2f, pitchv: %0.2f, | aX1: %0.2f, aY1: %0.2f, aZ1: %0.2f, | aX2: %0.2f, aY2: %0.2f, aZ2: %0.2f, | encB: %0.2f, encT: %0.2f, dt: %0.6f\r\n",
+          model.imu1.yaw, model.imu1.roll, model.imu1.roll_velocity, model.imu1.pitch, model.imu1.pitch_velocity, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.RollingEncoder.angle, model.ReactionEncoder.angle, dt);
           // sprintf(MSG,
-          //   "gX1: %0.2f, gY1: %0.2f, gZ1: %0.2f, | gX2: %0.2f, gY2: %0.2f, gZ2: %0.2f, dt: %0.6f\r\n",
-          //   model.imu1.gyrX, model.imu1.gyrY, model.imu1.gyrZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, dt);
+          //   "ax2: %d, ay2: %d, az2: %d, | gx2: %d, gy2: %d, gz2: %d, dt: %0.6f\r\n",
+          //   model.imu2.rawAccX, model.imu2.rawAccY, model.imu2.rawAccZ, model.imu2.rawGyrX, model.imu2.rawGyrY, model.imu2.rawGyrZ, dt);
+          // sprintf(MSG,
+          //   "ax2: %0.2f, ay2: %0.2f, az2: %0.2f, | gx2: %0.2f, gy2: %0.2f, gz2: %0.2f, dt: %0.6f\r\n",
+          //   model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, dt);
           log_status = 0;
       }
 
@@ -2267,7 +2275,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 9600;
+  huart1.Init.BaudRate = 115200;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
