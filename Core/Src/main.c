@@ -116,7 +116,7 @@ const float roll_coefficient = 10.0;
 const float pitch_coefficient = 10.0;
 const float yaw_coefficient = 360.0;
 const float roll_safety_angle = 0.30;
-const float pitch_safety_angle = 0.10;
+const float pitch_safety_angle = 0.15;
 const int encoderWindowLength = WINDOWLENGTH;
 const int currentWindowLength = WINDOWLENGTH;
 const float angle = -30.0 / 180.0 * M_PI;
@@ -212,8 +212,8 @@ float fused_beta = 0.0;
 float gamma1 = 0.0;
 float fused_gamma = 0.0;
 // tuning parameters to minimize estimate variance
-float kappa1 = 0.02;
-float kappa2 = 0.02;
+float kappa1 = 0.05;
+float kappa2 = 0.05;
 // the average of the body angular rate from rate gyro
 float r[3] = {0.0, 0.0, 0.0};
 // the average of the body angular rate in Euler angles
@@ -1518,7 +1518,7 @@ void stepForward(LinearQuadraticRegulator *model)
   // act!
   model->dataset.x0 = model->imu1.roll;
   model->dataset.x1 = model->imu1.roll_velocity;
-  model->dataset.x2 = model->imu1.pitch_acceleration * model->imu1.roll_velocity - model->imu1.roll_acceleration * model->imu1.pitch_velocity;
+  model->dataset.x2 = model->imu1.roll_velocity * model->imu1.pitch_acceleration - model->imu1.pitch_velocity * model->imu1.roll_acceleration;
   model->dataset.x3 = model->imu1.pitch;
   model->dataset.x4 = model->imu1.pitch_velocity;
   model->dataset.x5 = model->RollingEncoder.acceleration;
@@ -1531,8 +1531,8 @@ void stepForward(LinearQuadraticRegulator *model)
 
   if (model->active == 1)
   {
-    reaction_wheel_pwm += 32.0 * u_k[0];
-    rolling_wheel_pwm += 8.0 * u_k[1];
+    reaction_wheel_pwm += 10.0 * u_k[0];
+    rolling_wheel_pwm += 10.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
     rolling_wheel_pwm = fmin(255.0, rolling_wheel_pwm);
@@ -1541,13 +1541,13 @@ void stepForward(LinearQuadraticRegulator *model)
     TIM2->CCR2 = 255 * (int)fabs(reaction_wheel_pwm);
     if (reaction_wheel_pwm < 0)
     {
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
     }
     else
     {
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
     }
     if (rolling_wheel_pwm < 0)
     {
@@ -1578,7 +1578,7 @@ void stepForward(LinearQuadraticRegulator *model)
   updateCurrentSensing();
   model->dataset.x12 = model->imu1.roll;
   model->dataset.x13 = model->imu1.roll_velocity;
-  model->dataset.x14 = model->imu1.pitch_acceleration * model->imu1.roll_velocity - model->imu1.roll_acceleration * model->imu1.pitch_velocity;
+  model->dataset.x14 = model->imu1.roll_velocity * model->imu1.pitch_acceleration - model->imu1.pitch_velocity * model->imu1.roll_acceleration;
   model->dataset.x15 = model->imu1.pitch;
   model->dataset.x16 = model->imu1.pitch_velocity;
   model->dataset.x17 = model->RollingEncoder.acceleration;
