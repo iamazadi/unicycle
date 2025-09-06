@@ -112,8 +112,8 @@ const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
 const float sensor_rotation = -30.0 / 180.0 * M_PI; // sensor frame rotation in X-Y plane
-const float roll_safety_angle = 0.30;
-const float pitch_safety_angle = 0.15;
+const float roll_safety_angle = 0.32;
+const float pitch_safety_angle = 0.20;
 const int encoderWindowLength = WINDOWLENGTH;
 const int currentWindowLength = WINDOWLENGTH;
 const float angle = -30.0 / 180.0 * M_PI;
@@ -1500,8 +1500,8 @@ void stepForward(LinearQuadraticRegulator *model)
 
   if (model->active == 1)
   {
-    reaction_wheel_pwm += 8.0 * u_k[0];
-    rolling_wheel_pwm += 8.0 * u_k[1];
+    reaction_wheel_pwm += 16.0 * u_k[0];
+    rolling_wheel_pwm += 16.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
     rolling_wheel_pwm = fmin(255.0, rolling_wheel_pwm);
