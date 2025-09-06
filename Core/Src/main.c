@@ -112,9 +112,6 @@ const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
 const float sensor_rotation = -30.0 / 180.0 * M_PI; // sensor frame rotation in X-Y plane
-const float roll_coefficient = 10.0;
-const float pitch_coefficient = 10.0;
-const float yaw_coefficient = 360.0;
 const float roll_safety_angle = 0.30;
 const float pitch_safety_angle = 0.15;
 const int encoderWindowLength = WINDOWLENGTH;
@@ -125,15 +122,6 @@ float rolling_wheel_pwm = 0.0;
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // sampling time
 float dt = 0.0;
-int encoder0 = 0;
-int encoder1 = 0;
-int encoderState = 0;
-int encoderLastState = 0;
-int encoderCounter = 0;
-int encoderChange = 0;
-int encoderVelocity = 0;
-unsigned long interruptTime = 0;
-unsigned long encoderTime = 0;
 uint8_t raw_data[14] = {0};
 // uint8_t i2cAddress[128] = {0};
 int connectedDevices = 0;
@@ -143,12 +131,12 @@ int reactionEncoderWindow[WINDOWLENGTH];
 int rollingEncoderWindow[WINDOWLENGTH];
 int reactionCurrentWindow[WINDOWLENGTH];
 int rollingCurrentWindow[WINDOWLENGTH];
-float reaction_wheel_current0 = 0.0;
-float reaction_wheel_current1 = 0.0;
+int reaction_wheel_current0 = 0.0;
+int reaction_wheel_current1 = 0.0;
 float reaction_wheel_current_velocity = 0.0;
 float reaction_wheel_current_acceleration = 0.0;
-float rolling_wheel_current0 = 0.0;
-float rolling_wheel_current1 = 0.0;
+int rolling_wheel_current0 = 0.0;
+int rolling_wheel_current1 = 0.0;
 float rolling_wheel_current_velocity = 0.0;
 float rolling_wheel_current_acceleration = 0.0;
 int reaction_wheel_accumulator = 0;
@@ -212,8 +200,8 @@ float fused_beta = 0.0;
 float gamma1 = 0.0;
 float fused_gamma = 0.0;
 // tuning parameters to minimize estimate variance
-float kappa1 = 0.05;
-float kappa2 = 0.05;
+float kappa1 = 0.03;
+float kappa2 = 0.03;
 // the average of the body angular rate from rate gyro
 float r[3] = {0.0, 0.0, 0.0};
 // the average of the body angular rate in Euler angles
@@ -237,23 +225,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 typedef struct
 {
-  int value0; // the value of the adc measurement on channel A
-  int value1; // the value of the adc measurement on channel B
-  int channelA;
-  int channelB;
-  int counter;
-  float angle;
-  int aState;
-  int aLastState;
-  int direction;              // clockwise or anticlockwise rotation
-  int accumulator;            // accumultes the instantanoius changes over a number of intervals
-  int interval_counter;       // the number of intervals accumulated
-  int intervals;              // maximum number intervals before averaging
-  float pulse_per_revolution; // the number of pulses per revolution
-  float threshold;            // the threshold for binarizing sensor readings
-  float velocity;             // the angular velocity
-  float acceleration;         // the angular acceleration
-  float jerk;                 // the angular jerk
+  int value;
+  double angle;
+  double velocity;             // the angular velocity
+  double acceleration;         // the angular acceleration
+  int pulse_per_revolution; // the number of pulses per revolution
 } Encoder;
 
 typedef struct
@@ -293,30 +269,15 @@ typedef struct
   double yaw_acceleration;
 } IMU;
 
-void updateEncoder(Encoder *encoder, int *window, int newValue)
+void updateEncoder(Encoder *encoder, int newValue)
 {
-  encoder->value0 = encoder->value1;
-  encoder->value1 = newValue;
-  // shift the window one step
-  for (int i = 0; i < encoderWindowLength - 1; i++)
-  {
-    window[i] = window[i + 1];
-  }
-  window[encoderWindowLength - 1] = encoder->value0 - encoder->value1;
-  encoder->accumulator = 0;
-  for (int i = 0; i < encoderWindowLength; i++)
-  {
-    encoder->accumulator += window[i];
-  }
-  // compute the angular velocity and acceleration
-  float velocity = 0.05 * (float)encoder->accumulator / (float)encoderWindowLength;
-  velocity = fmin(1.0, velocity);
-  velocity = fmax(-1.0, velocity);
-  float acceleration = encoder->velocity - velocity;
-  encoder->jerk = encoder->acceleration - acceleration;
-  encoder->acceleration = acceleration;
+  encoder->value = newValue;
+  double angle = sin((float)(encoder->value % encoder->pulse_per_revolution) / (double) encoder->pulse_per_revolution * 2.0 * M_PI);
+  double velocity = angle - encoder->angle;
+  double acceleration = velocity - encoder->velocity;
+  encoder->angle = angle;
   encoder->velocity = velocity;
-  encoder->angle = sin((float)(encoder->value1 % 3072) / 3072.0 * 2.0 * M_PI);
+  encoder->acceleration = acceleration;
   return;
 }
 
@@ -328,31 +289,39 @@ void updateCurrentSensing()
   rolling_wheel_current1 = rolling_wheel_current0;
   reaction_wheel_current0 = (AD_RES_BUFFER[0] << 4);
   rolling_wheel_current0 = (AD_RES_BUFFER[1] << 4);
+  double reaction_velocity = (double) (reaction_wheel_current0 - reaction_wheel_current1) / 32000.0;
+  double rolling_velocity = (double) (rolling_wheel_current0 - rolling_wheel_current1) / 32000.0;
+  rolling_wheel_current_acceleration = rolling_velocity - rolling_wheel_current_velocity;
+  reaction_wheel_current_acceleration = reaction_velocity - reaction_wheel_current_velocity;
+  reaction_wheel_current_velocity = reaction_velocity;
+  rolling_wheel_current_velocity = rolling_velocity;
 
   // shift the window one step
-  for (int i = 0; i < currentWindowLength - 1; i++)
-  {
-    reactionCurrentWindow[i] = reactionCurrentWindow[i + 1];
-    rollingCurrentWindow[i] = rollingCurrentWindow[i + 1];
-  }
-  reactionCurrentWindow[currentWindowLength - 1] = reaction_wheel_current0 - reaction_wheel_current1;
-  rollingCurrentWindow[currentWindowLength - 1] = rolling_wheel_current0 - rolling_wheel_current1;
-  reaction_wheel_accumulator = 0;
-  rolling_wheel_accumulator = 0;
-  for (int i = 0; i < currentWindowLength; i++)
-  {
-    reaction_wheel_accumulator += reactionCurrentWindow[i];
-    rolling_wheel_accumulator += rollingCurrentWindow[i];
-  }
-  // compute the angular velocity and acceleration
-  reaction_wheel_current_acceleration = (float)reaction_wheel_accumulator / (float)currentWindowLength / 20000.0 - reaction_wheel_current_velocity;
-  rolling_wheel_current_acceleration = (float)rolling_wheel_accumulator / (float)currentWindowLength / 20000.0 - rolling_wheel_current_velocity;
-  reaction_wheel_current_velocity = (float)reaction_wheel_accumulator / (float)currentWindowLength / 20000.0;
-  rolling_wheel_current_velocity = (float)rolling_wheel_accumulator / (float)currentWindowLength / 20000.0;
-  reaction_wheel_current_velocity = fmin(1.0, reaction_wheel_current_velocity);
-  reaction_wheel_current_velocity = fmax(-1.0, reaction_wheel_current_velocity);
-  rolling_wheel_current_velocity = fmin(1.0, rolling_wheel_current_velocity);
-  rolling_wheel_current_velocity = fmax(-1.0, rolling_wheel_current_velocity);
+  // for (int i = 0; i < currentWindowLength - 1; i++)
+  // {
+  //   reactionCurrentWindow[i] = reactionCurrentWindow[i + 1];
+  //   rollingCurrentWindow[i] = rollingCurrentWindow[i + 1];
+  // }
+  // reactionCurrentWindow[currentWindowLength - 1] = reaction_wheel_current0 - reaction_wheel_current1;
+  // rollingCurrentWindow[currentWindowLength - 1] = rolling_wheel_current0 - rolling_wheel_current1;
+  // reaction_wheel_accumulator = 0;
+  // rolling_wheel_accumulator = 0;
+  // for (int i = 0; i < currentWindowLength; i++)
+  // {
+  //   reaction_wheel_accumulator += reactionCurrentWindow[i];
+  //   rolling_wheel_accumulator += rollingCurrentWindow[i];
+  // }
+  // compute the current velocity and acceleration
+  // reaction_wheel_current_acceleration = (float)reaction_wheel_accumulator / (float)currentWindowLength / 20000.0 - reaction_wheel_current_velocity;
+  // rolling_wheel_current_acceleration = (float)rolling_wheel_accumulator / (float)currentWindowLength / 20000.0 - rolling_wheel_current_velocity;
+  // reaction_wheel_current_velocity = (float)reaction_wheel_accumulator / (float)currentWindowLength / 20000.0;
+  // rolling_wheel_current_velocity = (float)rolling_wheel_accumulator / (float)currentWindowLength / 20000.0;
+  // reaction_wheel_current_velocity = (double) reaction_wheel_current0 / 20000.0;
+  // rolling_wheel_current_velocity = (double) rolling_wheel_current0 / 20000.0;
+  // reaction_wheel_current_velocity = fmin(1.0, reaction_wheel_current_velocity);
+  // reaction_wheel_current_velocity = fmax(-1.0, reaction_wheel_current_velocity);
+  // rolling_wheel_current_velocity = fmin(1.0, rolling_wheel_current_velocity);
+  // rolling_wheel_current_velocity = fmax(-1.0, rolling_wheel_current_velocity);
 }
 
 
@@ -1457,8 +1426,8 @@ void initialize(LinearQuadraticRegulator *model)
   IMU imu1 = {-24, -60, 27, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   IMU imu2 = {75, -25, -18, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   IMU imu3 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  Encoder ReactionEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
-  Encoder RollingEncoder = {0, 0, 0, 0, 0, 0.0, 0, 0, 0, 0, 0, 50, 2.0, 900.0, 0.0, 0.0, 0.0};
+  Encoder ReactionEncoder = {0, 0, 0, 0, 1736};
+  Encoder RollingEncoder = {0, 0, 0, 0, 3020};
   model->imu1 = imu1;
   model->imu2 = imu2;
   model->imu3 = imu3;
@@ -1518,21 +1487,21 @@ void stepForward(LinearQuadraticRegulator *model)
   // act!
   model->dataset.x0 = model->imu1.roll;
   model->dataset.x1 = model->imu1.roll_velocity;
-  model->dataset.x2 = model->imu1.roll_velocity * model->imu1.pitch_acceleration - model->imu1.pitch_velocity * model->imu1.roll_acceleration;
+  model->dataset.x2 = model->imu1.roll_acceleration;
   model->dataset.x3 = model->imu1.pitch;
   model->dataset.x4 = model->imu1.pitch_velocity;
-  model->dataset.x5 = model->RollingEncoder.acceleration;
+  model->dataset.x5 = model->imu1.pitch_acceleration;
   model->dataset.x6 = model->ReactionEncoder.velocity;
-  model->dataset.x7 = model->RollingEncoder.angle;
-  model->dataset.x8 = reaction_wheel_current_acceleration;
-  model->dataset.x9 = rolling_wheel_current_acceleration;
+  model->dataset.x7 = model->RollingEncoder.velocity;
+  model->dataset.x8 = reaction_wheel_current_velocity;
+  model->dataset.x9 = rolling_wheel_current_velocity;
   model->dataset.x10 = u_k[0];
   model->dataset.x11 = u_k[1];
 
   if (model->active == 1)
   {
-    reaction_wheel_pwm += 10.0 * u_k[0];
-    rolling_wheel_pwm += 10.0 * u_k[1];
+    reaction_wheel_pwm += 8.0 * u_k[0];
+    rolling_wheel_pwm += 8.0 * u_k[1];
     reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
     reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
     rolling_wheel_pwm = fmin(255.0, rolling_wheel_pwm);
@@ -1572,20 +1541,20 @@ void stepForward(LinearQuadraticRegulator *model)
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
   }
   // dataset = (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
-  updateEncoder(&(model->ReactionEncoder), reactionEncoderWindow, TIM3->CNT);
-  updateEncoder(&(model->RollingEncoder), rollingEncoderWindow, TIM4->CNT);
+  updateEncoder(&(model->ReactionEncoder), TIM3->CNT);
+  updateEncoder(&(model->RollingEncoder), TIM4->CNT);
   updateIMU(model);
   updateCurrentSensing();
   model->dataset.x12 = model->imu1.roll;
   model->dataset.x13 = model->imu1.roll_velocity;
-  model->dataset.x14 = model->imu1.roll_velocity * model->imu1.pitch_acceleration - model->imu1.pitch_velocity * model->imu1.roll_acceleration;
+  model->dataset.x14 = model->imu1.roll_acceleration;
   model->dataset.x15 = model->imu1.pitch;
   model->dataset.x16 = model->imu1.pitch_velocity;
-  model->dataset.x17 = model->RollingEncoder.acceleration;
+  model->dataset.x17 = model->imu1.pitch_acceleration;
   model->dataset.x18 = model->ReactionEncoder.velocity;
-  model->dataset.x19 = model->RollingEncoder.angle;
-  model->dataset.x20 = reaction_wheel_current_acceleration;
-  model->dataset.x21 = rolling_wheel_current_acceleration;
+  model->dataset.x19 = model->RollingEncoder.velocity;
+  model->dataset.x20 = reaction_wheel_current_velocity;
+  model->dataset.x21 = rolling_wheel_current_velocity;
   x_k1[0] = model->dataset.x12;
   x_k1[1] = model->dataset.x13;
   x_k1[2] = model->dataset.x14;
@@ -1724,7 +1693,7 @@ void updateControlPolicy(LinearQuadraticRegulator *model)
   // uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
   float determinant = S_uu[1][1] * S_uu[2][2] - S_uu[1][2] * S_uu[2][1];
   // check the rank S_uu to see if it's equal to 2 (invertible matrix)
-  if (fabs(determinant) > 0.001) // greater than zero
+  if (fabs(determinant) > 0.0001) // greater than zero
   {
     S_uu_inverse[0][0] = S_uu[1][1] / determinant;
     S_uu_inverse[0][1] = -S_uu[0][1] / determinant;
@@ -1840,18 +1809,13 @@ int main(void)
 
   // initialize the Encoder and IMU
   HAL_Delay(10);
-  updateEncoder(&model.ReactionEncoder, reactionEncoderWindow, TIM3->CNT);
-  updateEncoder(&model.RollingEncoder, rollingEncoderWindow, TIM4->CNT);
+  updateEncoder(&model.ReactionEncoder, TIM3->CNT);
+  updateEncoder(&model.RollingEncoder, TIM4->CNT);
   updateIMU(&model);
   HAL_Delay(10);
-  updateEncoder(&model.ReactionEncoder, reactionEncoderWindow, TIM3->CNT);
-  updateEncoder(&model.RollingEncoder, rollingEncoderWindow, TIM4->CNT);
+  updateEncoder(&model.ReactionEncoder, TIM3->CNT);
+  updateEncoder(&model.RollingEncoder, TIM4->CNT);
   updateIMU(&model);
-  for (int i = 0; i < encoderWindowLength; i++)
-  {
-    reactionEncoderWindow[i] = 0;
-    rollingEncoderWindow[i] = 0;
-  }
 
   HAL_Delay(3000);
   /* USER CODE END 2 */
@@ -1909,12 +1873,16 @@ int main(void)
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
-      updateEncoder(&model.ReactionEncoder, reactionEncoderWindow, TIM3->CNT);
-      updateEncoder(&model.RollingEncoder, rollingEncoderWindow, TIM4->CNT);
+      updateEncoder(&model.ReactionEncoder, TIM3->CNT);
+      updateEncoder(&model.RollingEncoder, TIM4->CNT);
       updateIMU(&model);
       updateCurrentSensing();
     }
     if (model.terminated == 1 && model.updated == 0)
+    {
+      updateControlPolicy(&model);
+    }
+    if (model.k % 500 == 0)
     {
       updateControlPolicy(&model);
     }
@@ -1933,9 +1901,13 @@ int main(void)
 
       if (log_status == 0)
       {
-        sprintf(MSG,
-          "yaw: %0.2f, roll: %0.2f, rollv: %0.2f, pitch: %0.2f, pitchv: %0.2f, | aX1: %0.2f, aY1: %0.2f, aZ1: %0.2f, | aX2: %0.2f, aY2: %0.2f, aZ2: %0.2f, | encB: %0.2f, encT: %0.2f, dt: %0.6f\r\n",
-          model.imu1.yaw, model.imu1.roll, model.imu1.roll_velocity, model.imu1.pitch, model.imu1.pitch_velocity, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.RollingEncoder.angle, model.ReactionEncoder.angle, dt);
+        // sprintf(MSG,
+          // "yaw: %0.2f, roll: %0.2f, rollv: %0.2f, pitch: %0.2f, pitchv: %0.2f, | aX1: %0.2f, aY1: %0.2f, aZ1: %0.2f, | aX2: %0.2f, aY2: %0.2f, aZ2: %0.2f, | encB: %d, encT: %d, dt: %0.6f\r\n",
+          // model.imu1.yaw, model.imu1.roll, model.imu1.roll_velocity, model.imu1.pitch, model.imu1.pitch_velocity, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, TIM3->CNT, TIM4->CNT, dt);
+          sprintf(MSG, "Bottom: current: %d, curVel: %0.2f, enc: %d, angle: %0.2f, velocity: %0.2f, acceleration: %0.2f, | Top: current: %d, curvel: %0.2f, enc: %d, angle: %0.2f, velocity: %0.2f, acceleration: %0.2f, dt: %0.6f\r\n",
+            rolling_wheel_current0, rolling_wheel_current_velocity, TIM4->CNT, model.RollingEncoder.angle, model.RollingEncoder.velocity, model.RollingEncoder.acceleration,
+            reaction_wheel_current0, reaction_wheel_current_velocity, TIM3->CNT, model.ReactionEncoder.angle, model.ReactionEncoder.velocity, model.ReactionEncoder.acceleration, dt);
+          
           // sprintf(MSG,
           //   "ax2: %d, ay2: %d, az2: %d, | gx2: %d, gy2: %d, gz2: %d, dt: %0.6f\r\n",
           //   model.imu2.rawAccX, model.imu2.rawAccY, model.imu2.rawAccZ, model.imu2.rawGyrX, model.imu2.rawGyrY, model.imu2.rawGyrZ, dt);
