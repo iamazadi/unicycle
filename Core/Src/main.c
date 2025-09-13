@@ -111,36 +111,19 @@ const float CPU_CLOCK = 84000000.0;
 const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
-const float sensor_rotation = -30.0 / 180.0 * M_PI; // sensor frame rotation in X-Y plane
+const int updatePolicyPeriod = 100;
+const int LOG_CYCLE = 100;
 const float roll_safety_angle = 0.32;
 const float pitch_safety_angle = 0.20;
-const int encoderWindowLength = WINDOWLENGTH;
-const int currentWindowLength = WINDOWLENGTH;
-const float angle = -30.0 / 180.0 * M_PI;
+const float sensorAngle = -30.0 / 180.0 * M_PI;
 float reaction_wheel_pwm = 0.0;
 float rolling_wheel_pwm = 0.0;
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // sampling time
 float dt = 0.0;
 uint8_t raw_data[14] = {0};
-// uint8_t i2cAddress[128] = {0};
-int connectedDevices = 0;
 uint16_t AD_RES = 0;
 uint32_t AD_RES_BUFFER[2];
-int reactionEncoderWindow[WINDOWLENGTH];
-int rollingEncoderWindow[WINDOWLENGTH];
-int reactionCurrentWindow[WINDOWLENGTH];
-int rollingCurrentWindow[WINDOWLENGTH];
-int reaction_wheel_current0 = 0.0;
-int reaction_wheel_current1 = 0.0;
-float reaction_wheel_current_velocity = 0.0;
-float reaction_wheel_current_acceleration = 0.0;
-int rolling_wheel_current0 = 0.0;
-int rolling_wheel_current1 = 0.0;
-float rolling_wheel_current_velocity = 0.0;
-float rolling_wheel_current_acceleration = 0.0;
-int reaction_wheel_accumulator = 0;
-int rolling_wheel_accumulator = 0;
 // define arrays for matrix-matrix and matrix-vector multiplication
 float x_k[N];
 float u_k[M];
@@ -225,12 +208,21 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 typedef struct
 {
-  int value;
-  double angle;
+  int pulse_per_revolution;    // the number of pulses per revolution
+  int value;                   // the counter
+  double angle;                // the absolute angle
   double velocity;             // the angular velocity
   double acceleration;         // the angular acceleration
-  int pulse_per_revolution; // the number of pulses per revolution
 } Encoder;
+
+typedef struct
+{
+  double currentScale;
+  int current0;
+  int current1;
+  double currentVelocity;
+} CurrentSensor;
+
 
 typedef struct
 {
@@ -269,7 +261,7 @@ typedef struct
   double yaw_acceleration;
 } IMU;
 
-void updateEncoder(Encoder *encoder, int newValue)
+void encodeWheel(Encoder *encoder, int newValue)
 {
   encoder->value = newValue;
   double angle = sin((float)(encoder->value % encoder->pulse_per_revolution) / (double) encoder->pulse_per_revolution * 2.0 * M_PI);
@@ -281,47 +273,16 @@ void updateEncoder(Encoder *encoder, int newValue)
   return;
 }
 
-void updateCurrentSensing()
+void senseCurrent(CurrentSensor *reactionCurrentSensor, CurrentSensor *rollingCurrentSensor)
 {
   // Start ADC Conversion in DMA Mode (Periodically Every 1ms)
   HAL_ADC_Start_DMA(&hadc1, AD_RES_BUFFER, 2);
-  reaction_wheel_current1 = reaction_wheel_current0;
-  rolling_wheel_current1 = rolling_wheel_current0;
-  reaction_wheel_current0 = (AD_RES_BUFFER[0] << 4);
-  rolling_wheel_current0 = (AD_RES_BUFFER[1] << 4);
-  double reaction_velocity = (double) (reaction_wheel_current0 - reaction_wheel_current1) / 32000.0;
-  double rolling_velocity = (double) (rolling_wheel_current0 - rolling_wheel_current1) / 32000.0;
-  rolling_wheel_current_acceleration = rolling_velocity - rolling_wheel_current_velocity;
-  reaction_wheel_current_acceleration = reaction_velocity - reaction_wheel_current_velocity;
-  reaction_wheel_current_velocity = reaction_velocity;
-  rolling_wheel_current_velocity = rolling_velocity;
-
-  // shift the window one step
-  // for (int i = 0; i < currentWindowLength - 1; i++)
-  // {
-  //   reactionCurrentWindow[i] = reactionCurrentWindow[i + 1];
-  //   rollingCurrentWindow[i] = rollingCurrentWindow[i + 1];
-  // }
-  // reactionCurrentWindow[currentWindowLength - 1] = reaction_wheel_current0 - reaction_wheel_current1;
-  // rollingCurrentWindow[currentWindowLength - 1] = rolling_wheel_current0 - rolling_wheel_current1;
-  // reaction_wheel_accumulator = 0;
-  // rolling_wheel_accumulator = 0;
-  // for (int i = 0; i < currentWindowLength; i++)
-  // {
-  //   reaction_wheel_accumulator += reactionCurrentWindow[i];
-  //   rolling_wheel_accumulator += rollingCurrentWindow[i];
-  // }
-  // compute the current velocity and acceleration
-  // reaction_wheel_current_acceleration = (float)reaction_wheel_accumulator / (float)currentWindowLength / 20000.0 - reaction_wheel_current_velocity;
-  // rolling_wheel_current_acceleration = (float)rolling_wheel_accumulator / (float)currentWindowLength / 20000.0 - rolling_wheel_current_velocity;
-  // reaction_wheel_current_velocity = (float)reaction_wheel_accumulator / (float)currentWindowLength / 20000.0;
-  // rolling_wheel_current_velocity = (float)rolling_wheel_accumulator / (float)currentWindowLength / 20000.0;
-  // reaction_wheel_current_velocity = (double) reaction_wheel_current0 / 20000.0;
-  // rolling_wheel_current_velocity = (double) rolling_wheel_current0 / 20000.0;
-  // reaction_wheel_current_velocity = fmin(1.0, reaction_wheel_current_velocity);
-  // reaction_wheel_current_velocity = fmax(-1.0, reaction_wheel_current_velocity);
-  // rolling_wheel_current_velocity = fmin(1.0, rolling_wheel_current_velocity);
-  // rolling_wheel_current_velocity = fmax(-1.0, rolling_wheel_current_velocity);
+  reactionCurrentSensor->current1 = reactionCurrentSensor->current0;
+  rollingCurrentSensor->current1 = rollingCurrentSensor->current0;
+  reactionCurrentSensor->current0 = (AD_RES_BUFFER[0] << 4);
+  rollingCurrentSensor->current0 = (AD_RES_BUFFER[1] << 4);
+  reactionCurrentSensor->currentVelocity = (double) (reactionCurrentSensor->current0 - reactionCurrentSensor->current1) / reactionCurrentSensor->currentScale;
+  rollingCurrentSensor->currentVelocity = (double) (rollingCurrentSensor->current0 - rollingCurrentSensor->current1) / rollingCurrentSensor->currentScale;
 }
 
 
@@ -357,18 +318,10 @@ void updateIMU1(IMU *sensor) // GY-25 I2C
 }
 
 
-void updateIMU2(IMU *sensor) // GY-25 USART
+void updateIMU2(IMU *sensor) // GY-95 USART
 {
-  // uint8_t sum = 0, i = 0;
   if (uart_receive_ok == 1)
   {
-    // for (sum = 0, i = 0; i < (UART1_rxBuffer[3] + 4); i++)
-    // {
-    //   sum += UART1_rxBuffer[i];
-    // }
-    // // Check sum and frame ID
-    // if (sum == UART1_rxBuffer[i] && UART1_rxBuffer[0] == UART1_txBuffer[0])
-    // {
     if (UART1_rxBuffer[0] == UART1_txBuffer[0] && UART1_rxBuffer[1] == UART1_txBuffer[1] && UART1_rxBuffer[2] == UART1_txBuffer[2] && UART1_rxBuffer[3] == UART1_txBuffer[3])
       {
       sensor->rawAccX = (UART1_rxBuffer[5] << 8) | UART1_rxBuffer[4];
@@ -383,12 +336,12 @@ void updateIMU2(IMU *sensor) // GY-25 USART
       sensor->gyrX = sensor->gyrX_scale * (sensor->rawGyrX - sensor->gyrX_offset);
       sensor->gyrY = sensor->gyrY_scale * (sensor->rawGyrY - sensor->gyrY_offset);
       sensor->gyrZ = sensor->gyrZ_scale * (sensor->rawGyrZ - sensor->gyrZ_offset);
-      double dummyx = cos(angle) * sensor->accX - sin(angle) * sensor->accY;
-      double dummyy = sin(angle) * sensor->accX + cos(angle) * sensor->accY;
+      double dummyx = cos(sensorAngle) * sensor->accX - sin(sensorAngle) * sensor->accY;
+      double dummyy = sin(sensorAngle) * sensor->accX + cos(sensorAngle) * sensor->accY;
       sensor->accX = -dummyy;
       sensor->accY = dummyx;
-      dummyx = cos(angle) * sensor->gyrX - sin(angle) * sensor->gyrY;
-      dummyy = sin(angle) * sensor->gyrX + cos(angle) * sensor->gyrY;
+      dummyx = cos(sensorAngle) * sensor->gyrX - sin(sensorAngle) * sensor->gyrY;
+      dummyy = sin(sensorAngle) * sensor->gyrX + cos(sensorAngle) * sensor->gyrY;
       sensor->gyrX = -dummyy;
       sensor->gyrY = dummyx;
       uart_receive_ok = 0;
@@ -396,46 +349,6 @@ void updateIMU2(IMU *sensor) // GY-25 USART
   }
   return;
 }
-
-
-// void updateIMU3(IMU *sensor) // MPU9250 I2C
-// {
-//   uint8_t _transferRequest = 0x3B;
-//   // do
-//   // {
-//   //   HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 14, 10);
-//   //   while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
-//   //     ;
-//   //     sensor->accX = ((raw_data[0] << 8) | raw_data[1]);
-//   //     sensor->accY = ((raw_data[2] << 8) | raw_data[3]);
-//   //     sensor->accZ = ((raw_data[4] << 8) | raw_data[5]);
-//   //     sensor->gyrX = ((raw_data[8] << 8) | raw_data[9]);
-//   //     sensor->gyrY = ((raw_data[10] << 8) | raw_data[11]);
-//   //     sensor->gyrZ = ((raw_data[12] << 8) | raw_data[13]);
-//   // } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
-
-//   do
-//   {
-//     HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 6, 100);
-//     while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
-//       ;
-//       sensor->accX = ((raw_data[0] << 8) | raw_data[1]);
-//       sensor->accY = ((raw_data[2] << 8) | raw_data[3]);
-//       sensor->accZ = ((raw_data[4] << 8) | raw_data[5]);
-//   } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
-
-//   _transferRequest = 0x43;
-//   do
-//   {
-//     HAL_I2C_Mem_Read(&hi2c1, (uint16_t)(0x68 << 1 + 0), _transferRequest, 1, (uint8_t *)raw_data, 6, 100);
-//     while (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY)
-//       ;
-//       sensor->gyrX = ((raw_data[0] << 8) | raw_data[1]);
-//       sensor->gyrY = ((raw_data[2] << 8) | raw_data[3]);
-//       sensor->gyrZ = ((raw_data[4] << 8) | raw_data[5]);
-//   } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
-// }
-
 
 typedef struct
 {
@@ -654,9 +567,10 @@ typedef struct
   float dt;       // period in seconds
   IMU imu1;
   IMU imu2;
-  IMU imu3;
-  Encoder ReactionEncoder;
-  Encoder RollingEncoder;
+  Encoder reactionEncoder;
+  Encoder rollingEncoder;
+  CurrentSensor reactionCurrentSensor;
+  CurrentSensor rollingCurrentSensor;
 } LinearQuadraticRegulator;
 
 
@@ -664,7 +578,6 @@ void updateIMU(LinearQuadraticRegulator *model)
 {
   updateIMU1(&(model->imu1));
   updateIMU2(&(model->imu2));
-  // updateIMU3(&(model->imu3)); // causes too large of a delay
   R1[0] = model->imu1.accX;
   R1[1] = model->imu1.accY;
   R1[2] = model->imu1.accZ;
@@ -1425,14 +1338,16 @@ void initialize(LinearQuadraticRegulator *model)
   // scale : 1 / 2048
   IMU imu1 = {-24, -60, 27, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   IMU imu2 = {75, -25, -18, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  IMU imu3 = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  Encoder ReactionEncoder = {0, 0, 0, 0, 1736};
-  Encoder RollingEncoder = {0, 0, 0, 0, 3020};
+  Encoder reactionEncoder = {1736, 0, 0, 0, 0};
+  Encoder rollingEncoder = {3020, 0, 0, 0, 0};
+  CurrentSensor reactionCurrentSensor = {32000.0, 0, 0, 0};
+  CurrentSensor rollingCurrentSensor = {32000.0, 0, 0, 0};
   model->imu1 = imu1;
   model->imu2 = imu2;
-  model->imu3 = imu3;
-  model->ReactionEncoder = ReactionEncoder;
-  model->RollingEncoder = RollingEncoder;
+  model->reactionEncoder = reactionEncoder;
+  model->rollingEncoder = rollingEncoder;
+  model->reactionCurrentSensor = reactionCurrentSensor;
+  model->rollingCurrentSensor = rollingCurrentSensor;
   return;
 }
 /*
@@ -1491,10 +1406,10 @@ void stepForward(LinearQuadraticRegulator *model)
   model->dataset.x3 = model->imu1.pitch;
   model->dataset.x4 = model->imu1.pitch_velocity;
   model->dataset.x5 = model->imu1.pitch_acceleration;
-  model->dataset.x6 = model->ReactionEncoder.velocity;
-  model->dataset.x7 = model->RollingEncoder.velocity;
-  model->dataset.x8 = reaction_wheel_current_velocity;
-  model->dataset.x9 = rolling_wheel_current_velocity;
+  model->dataset.x6 = model->reactionEncoder.velocity;
+  model->dataset.x7 = model->rollingEncoder.velocity;
+  model->dataset.x8 = model->reactionCurrentSensor.currentVelocity;
+  model->dataset.x9 = model->rollingCurrentSensor.currentVelocity;
   model->dataset.x10 = u_k[0];
   model->dataset.x11 = u_k[1];
 
@@ -1541,20 +1456,20 @@ void stepForward(LinearQuadraticRegulator *model)
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
   }
   // dataset = (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
-  updateEncoder(&(model->ReactionEncoder), TIM3->CNT);
-  updateEncoder(&(model->RollingEncoder), TIM4->CNT);
+  encodeWheel(&(model->reactionEncoder), TIM3->CNT);
+  encodeWheel(&(model->rollingEncoder), TIM4->CNT);
+  senseCurrent(&(model->reactionCurrentSensor), &(model->rollingCurrentSensor));
   updateIMU(model);
-  updateCurrentSensing();
   model->dataset.x12 = model->imu1.roll;
   model->dataset.x13 = model->imu1.roll_velocity;
   model->dataset.x14 = model->imu1.roll_acceleration;
   model->dataset.x15 = model->imu1.pitch;
   model->dataset.x16 = model->imu1.pitch_velocity;
   model->dataset.x17 = model->imu1.pitch_acceleration;
-  model->dataset.x18 = model->ReactionEncoder.velocity;
-  model->dataset.x19 = model->RollingEncoder.velocity;
-  model->dataset.x20 = reaction_wheel_current_velocity;
-  model->dataset.x21 = rolling_wheel_current_velocity;
+  model->dataset.x18 = model->reactionEncoder.velocity;
+  model->dataset.x19 = model->rollingEncoder.velocity;
+  model->dataset.x20 = model->reactionCurrentSensor.currentVelocity;
+  model->dataset.x21 = model->rollingCurrentSensor.currentVelocity;
   x_k1[0] = model->dataset.x12;
   x_k1[1] = model->dataset.x13;
   x_k1[2] = model->dataset.x14;
@@ -1667,7 +1582,7 @@ void stepForward(LinearQuadraticRegulator *model)
 
 void updateControlPolicy(LinearQuadraticRegulator *model)
 {
-  // npack the vector Wⱼ₊₁ into the kernel matrix
+  // unpack the vector Wⱼ₊₁ into the kernel matrix
   // Q(xₖ, uₖ) ≡ 0.5 * transpose([xₖ; uₖ]) * S * [xₖ; uₖ] = 0.5 * transpose([xₖ; uₖ]) * [Sₓₓ Sₓᵤ; Sᵤₓ Sᵤᵤ] * [xₖ; uₖ]
   model->k = 1;
   model->j = model->j + 1;
@@ -1758,7 +1673,6 @@ int main(void)
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
   uint8_t MSG[TRANSMIT_LENGTH] = {'\0'};
-  const int LOG_CYCLE = 100;
   int transmit = 0;
   int log_counter = 0;
   int log_status = 0;
@@ -1809,12 +1723,9 @@ int main(void)
 
   // initialize the Encoder and IMU
   HAL_Delay(10);
-  updateEncoder(&model.ReactionEncoder, TIM3->CNT);
-  updateEncoder(&model.RollingEncoder, TIM4->CNT);
-  updateIMU(&model);
-  HAL_Delay(10);
-  updateEncoder(&model.ReactionEncoder, TIM3->CNT);
-  updateEncoder(&model.RollingEncoder, TIM4->CNT);
+  encodeWheel(&model.reactionEncoder, TIM3->CNT);
+  encodeWheel(&model.rollingEncoder, TIM4->CNT);
+  senseCurrent(&(model.reactionCurrentSensor), &(model.rollingCurrentSensor));
   updateIMU(&model);
 
   HAL_Delay(3000);
@@ -1873,16 +1784,16 @@ int main(void)
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
-      updateEncoder(&model.ReactionEncoder, TIM3->CNT);
-      updateEncoder(&model.RollingEncoder, TIM4->CNT);
+      encodeWheel(&model.reactionEncoder, TIM3->CNT);
+      encodeWheel(&model.rollingEncoder, TIM4->CNT);
+      senseCurrent(&(model.reactionCurrentSensor), &(model.rollingCurrentSensor));
       updateIMU(&model);
-      updateCurrentSensing();
     }
     if (model.terminated == 1 && model.updated == 0)
     {
       updateControlPolicy(&model);
     }
-    if (model.k % 500 == 0)
+    if (model.k % updatePolicyPeriod == 0)
     {
       updateControlPolicy(&model);
     }
@@ -1905,8 +1816,8 @@ int main(void)
           // "yaw: %0.2f, roll: %0.2f, rollv: %0.2f, pitch: %0.2f, pitchv: %0.2f, | aX1: %0.2f, aY1: %0.2f, aZ1: %0.2f, | aX2: %0.2f, aY2: %0.2f, aZ2: %0.2f, | encB: %d, encT: %d, dt: %0.6f\r\n",
           // model.imu1.yaw, model.imu1.roll, model.imu1.roll_velocity, model.imu1.pitch, model.imu1.pitch_velocity, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, TIM3->CNT, TIM4->CNT, dt);
           sprintf(MSG, "Bottom: current: %d, curVel: %0.2f, enc: %d, angle: %0.2f, velocity: %0.2f, acceleration: %0.2f, | Top: current: %d, curvel: %0.2f, enc: %d, angle: %0.2f, velocity: %0.2f, acceleration: %0.2f, dt: %0.6f\r\n",
-            rolling_wheel_current0, rolling_wheel_current_velocity, TIM4->CNT, model.RollingEncoder.angle, model.RollingEncoder.velocity, model.RollingEncoder.acceleration,
-            reaction_wheel_current0, reaction_wheel_current_velocity, TIM3->CNT, model.ReactionEncoder.angle, model.ReactionEncoder.velocity, model.ReactionEncoder.acceleration, dt);
+            model.rollingCurrentSensor.current0, model.rollingCurrentSensor.currentVelocity, TIM4->CNT, model.rollingEncoder.angle, model.rollingEncoder.velocity, model.rollingEncoder.acceleration,
+            model.reactionCurrentSensor.current0, model.reactionCurrentSensor.currentVelocity, TIM3->CNT, model.reactionEncoder.angle, model.reactionEncoder.velocity, model.reactionEncoder.acceleration, dt);
           
           // sprintf(MSG,
           //   "ax2: %d, ay2: %d, az2: %d, | gx2: %d, gy2: %d, gz2: %d, dt: %0.6f\r\n",
