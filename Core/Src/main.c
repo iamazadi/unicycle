@@ -116,8 +116,6 @@ const int LOG_CYCLE = 100;
 const float roll_safety_angle = 0.32;
 const float pitch_safety_angle = 0.20;
 const float sensorAngle = -30.0 / 180.0 * M_PI;
-float reaction_wheel_pwm = 0.0;
-float rolling_wheel_pwm = 0.0;
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // sampling time
 float dt = 0.0;
@@ -547,6 +545,7 @@ typedef struct
   float x1110;
   float x1111;
 } Mat12f;
+
 // Represents a Linear Quadratic Regulator (LQR) model.
 typedef struct
 {
@@ -556,21 +555,22 @@ typedef struct
   Vec24f dataset; // (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
   int j;          // step number
   int k;          // time k
-  float reward;   // the cumulative reward
   int n;          // xₖ ∈ ℝⁿ
   int m;          // uₖ ∈ ℝᵐ
-  float lambda;   // exponential wighting factor
-  float delta;    // value used to intialize P(0)
+  double lambda;   // exponential wighting factor
+  double delta;    // value used to intialize P(0)
   int terminated; // has the environment been reset
-  int updated;    // whether the policy has been updated since episode termination and parameter convegence
+  int updated;    // whether the policy has been updated
   int active;     // is the model controller active
-  float dt;       // period in seconds
-  IMU imu1;
-  IMU imu2;
-  Encoder reactionEncoder;
-  Encoder rollingEncoder;
-  CurrentSensor reactionCurrentSensor;
-  CurrentSensor rollingCurrentSensor;
+  double dt;       // period in seconds
+  double reactionPWM;  // reaction wheel's motor PWM duty cycle
+  double rollingPWM;   // rolling wheel's motor PWM duty cycle
+  IMU imu1;            // the first inertial measurement unit
+  IMU imu2;            // the second inertial measurement unit
+  Encoder reactionEncoder;  // the reaction wheel encoder
+  Encoder rollingEncoder;   // the rolling wheel encoder
+  CurrentSensor reactionCurrentSensor;  // the reaction wheel's motor current sensor
+  CurrentSensor rollingCurrentSensor;   // the rolling wheel's motor current sensor
 } LinearQuadraticRegulator;
 
 
@@ -990,7 +990,6 @@ void initialize(LinearQuadraticRegulator *model)
 {
   model->j = 1;
   model->k = 1;
-  model->reward = 0.0;
   model->n = dim_n;
   model->m = dim_m;
   model->lambda = 0.97;
@@ -1348,11 +1347,12 @@ void initialize(LinearQuadraticRegulator *model)
   model->rollingEncoder = rollingEncoder;
   model->reactionCurrentSensor = reactionCurrentSensor;
   model->rollingCurrentSensor = rollingCurrentSensor;
+  model->reactionPWM = 0.0;
+  model->rollingPWM = 0.0;
   return;
 }
 /*
-Identify the Q function using RLS and update the control policy,
-with the given `environment` and `model`.
+Identify the Q function using RLS with the given pointer to the `model`.
 The algorithm is terminated when there are no further updates
 to the Q function or the control policy at each step.
 */
@@ -1415,15 +1415,15 @@ void stepForward(LinearQuadraticRegulator *model)
 
   if (model->active == 1)
   {
-    reaction_wheel_pwm += 16.0 * u_k[0];
-    rolling_wheel_pwm += 16.0 * u_k[1];
-    reaction_wheel_pwm = fmin(255.0, reaction_wheel_pwm);
-    reaction_wheel_pwm = fmax(-255.0, reaction_wheel_pwm);
-    rolling_wheel_pwm = fmin(255.0, rolling_wheel_pwm);
-    rolling_wheel_pwm = fmax(-255.0, rolling_wheel_pwm);
-    TIM2->CCR1 = 255 * (int)fabs(rolling_wheel_pwm);
-    TIM2->CCR2 = 255 * (int)fabs(reaction_wheel_pwm);
-    if (reaction_wheel_pwm < 0)
+    model->reactionPWM += (255.0 * 16.0) * u_k[0];
+    model->rollingPWM += (255.0 * 16.0) * u_k[1];
+    model->reactionPWM = fmin(255.0 * 255.0, model->reactionPWM);
+    model->reactionPWM = fmax(-255.0 * 255.0, model->reactionPWM);
+    model->rollingPWM = fmin(255.0 * 255.0, model->rollingPWM);
+    model->rollingPWM = fmax(-255.0 * 255.0, model->rollingPWM);
+    TIM2->CCR1 = (int)fabs(model->rollingPWM);
+    TIM2->CCR2 = (int)fabs(model->reactionPWM);
+    if (model->reactionPWM < 0)
     {
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
@@ -1433,7 +1433,7 @@ void stepForward(LinearQuadraticRegulator *model)
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
     }
-    if (rolling_wheel_pwm < 0)
+    if (model->rollingPWM < 0)
     {
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
@@ -1446,8 +1446,8 @@ void stepForward(LinearQuadraticRegulator *model)
   }
   else
   {
-    reaction_wheel_pwm = 0.0;
-    rolling_wheel_pwm = 0.0;
+    model->reactionPWM = 0.0;
+    model->rollingPWM = 0.0;
     TIM2->CCR1 = 0;
     TIM2->CCR2 = 0;
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
@@ -1607,7 +1607,7 @@ void updateControlPolicy(LinearQuadraticRegulator *model)
   // Perform the control update using (S24), which is uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
   // uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
   float determinant = S_uu[1][1] * S_uu[2][2] - S_uu[1][2] * S_uu[2][1];
-  // check the rank S_uu to see if it's equal to 2 (invertible matrix)
+  // check the rank of S_uu to see if it's equal to 2 (invertible matrix)
   if (fabs(determinant) > 0.0001) // greater than zero
   {
     S_uu_inverse[0][0] = S_uu[1][1] / determinant;
@@ -1748,8 +1748,8 @@ int main(void)
     else
     {
       model.active = 0;
-      reaction_wheel_pwm = 0.0;
-      rolling_wheel_pwm = 0.0;
+      model.reactionPWM = 0.0;
+      model.rollingPWM = 0.0;
       TIM2->CCR1 = 0;
       TIM2->CCR2 = 0;
     }
@@ -1776,8 +1776,8 @@ int main(void)
     }
     else
     {
-      reaction_wheel_pwm = 0.0;
-      rolling_wheel_pwm = 0.0;
+      model.reactionPWM = 0.0;
+      model.rollingPWM = 0.0;
       TIM2->CCR1 = 0;
       TIM2->CCR2 = 0;
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
