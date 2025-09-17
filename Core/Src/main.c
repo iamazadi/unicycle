@@ -45,8 +45,8 @@
 #define MASTER_REQ_ROLL_H 0x14
 #define MASTER_REQ_ROLL_L 0x15
 #define MASTER_REQ_ACC_X_H 0x08
-#define SLAVE_ADDRESS_ICM 0x68 // 0b1101001
-#define SLAVE_ADDRESS_ICM_READ 0xD1 // 0b11010011
+#define SLAVE_ADDRESS_ICM 0x68       // 0b1101001
+#define SLAVE_ADDRESS_ICM_READ 0xD1  // 0b11010011
 #define SLAVE_ADDRESS_ICM_WRITE 0xD0 // 0b11010010
 #define ACCEL_DATA_X1 0x1F
 #define ACCEL_DATA_X0 0x20
@@ -112,7 +112,7 @@ const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
 const int updatePolicyPeriod = 100;
-const int LOG_CYCLE = 100;
+const int LOG_CYCLE = 20;
 const float roll_safety_angle = 0.32;
 const float pitch_safety_angle = 0.20;
 const float sensorAngle = -30.0 / 180.0 * M_PI;
@@ -144,8 +144,8 @@ float S_uu_inverse[M][M];
 // the pivot point B̂ in the inertial frame Ô
 float pivot[3] = {-0.097, -0.1, -0.032};
 // the position of sensors mounted on the body in the body frame of reference
-float p1[3] = {-0.035, -0.19, -0.04};
-float p2[3] = {0.025, -0.144, -0.07};
+float p1[3] = {-0.1400, -0.0650, -0.0620};
+float p2[3] = {-0.0400, -0.0600, -0.0600};
 // the vectors of the standard basis for the input space ℝ³
 float e1[3] = {1.0, 0.0, 0.0};
 float e2[3] = {0.0, 1.0, 0.0};
@@ -206,11 +206,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 typedef struct
 {
-  int pulse_per_revolution;    // the number of pulses per revolution
-  int value;                   // the counter
-  double angle;                // the absolute angle
-  double velocity;             // the angular velocity
-  double acceleration;         // the angular acceleration
+  int pulse_per_revolution; // the number of pulses per revolution
+  int value;                // the counter
+  double radianAngle;       // the angle in radian
+  double angle;             // the absolute angle
+  double velocity;          // the angular velocity
+  double acceleration;      // the angular acceleration
 } Encoder;
 
 typedef struct
@@ -220,7 +221,6 @@ typedef struct
   int current1;
   double currentVelocity;
 } CurrentSensor;
-
 
 typedef struct
 {
@@ -262,7 +262,8 @@ typedef struct
 void encodeWheel(Encoder *encoder, int newValue)
 {
   encoder->value = newValue;
-  double angle = sin((float)(encoder->value % encoder->pulse_per_revolution) / (double) encoder->pulse_per_revolution * 2.0 * M_PI);
+  encoder->radianAngle = (double)(encoder->value % encoder->pulse_per_revolution) / (double)encoder->pulse_per_revolution * 2.0 * M_PI;
+  double angle = sin(encoder->radianAngle);
   double velocity = angle - encoder->angle;
   double acceleration = velocity - encoder->velocity;
   encoder->angle = angle;
@@ -279,10 +280,9 @@ void senseCurrent(CurrentSensor *reactionCurrentSensor, CurrentSensor *rollingCu
   rollingCurrentSensor->current1 = rollingCurrentSensor->current0;
   reactionCurrentSensor->current0 = (AD_RES_BUFFER[0] << 4);
   rollingCurrentSensor->current0 = (AD_RES_BUFFER[1] << 4);
-  reactionCurrentSensor->currentVelocity = (double) (reactionCurrentSensor->current0 - reactionCurrentSensor->current1) / reactionCurrentSensor->currentScale;
-  rollingCurrentSensor->currentVelocity = (double) (rollingCurrentSensor->current0 - rollingCurrentSensor->current1) / rollingCurrentSensor->currentScale;
+  reactionCurrentSensor->currentVelocity = (double)(reactionCurrentSensor->current0 - reactionCurrentSensor->current1) / reactionCurrentSensor->currentScale;
+  rollingCurrentSensor->currentVelocity = (double)(rollingCurrentSensor->current0 - rollingCurrentSensor->current1) / rollingCurrentSensor->currentScale;
 }
-
 
 void updateIMU1(IMU *sensor) // GY-25 I2C
 {
@@ -315,13 +315,12 @@ void updateIMU1(IMU *sensor) // GY-25 I2C
   return;
 }
 
-
 void updateIMU2(IMU *sensor) // GY-95 USART
 {
   if (uart_receive_ok == 1)
   {
     if (UART1_rxBuffer[0] == UART1_txBuffer[0] && UART1_rxBuffer[1] == UART1_txBuffer[1] && UART1_rxBuffer[2] == UART1_txBuffer[2] && UART1_rxBuffer[3] == UART1_txBuffer[3])
-      {
+    {
       sensor->rawAccX = (UART1_rxBuffer[5] << 8) | UART1_rxBuffer[4];
       sensor->rawAccY = (UART1_rxBuffer[7] << 8) | UART1_rxBuffer[6];
       sensor->rawAccZ = (UART1_rxBuffer[9] << 8) | UART1_rxBuffer[8];
@@ -549,30 +548,29 @@ typedef struct
 // Represents a Linear Quadratic Regulator (LQR) model.
 typedef struct
 {
-  Mat12f W_n;     // filter matrix
-  Mat12f P_n;     // inverse autocorrelation matrix
-  Mat210f K_j;    // feedback policy
-  Vec24f dataset; // (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
-  int j;          // step number
-  int k;          // time k
-  int n;          // xₖ ∈ ℝⁿ
-  int m;          // uₖ ∈ ℝᵐ
-  double lambda;   // exponential wighting factor
-  double delta;    // value used to intialize P(0)
-  int terminated; // has the environment been reset
-  int updated;    // whether the policy has been updated
-  int active;     // is the model controller active
-  double dt;       // period in seconds
-  double reactionPWM;  // reaction wheel's motor PWM duty cycle
-  double rollingPWM;   // rolling wheel's motor PWM duty cycle
-  IMU imu1;            // the first inertial measurement unit
-  IMU imu2;            // the second inertial measurement unit
-  Encoder reactionEncoder;  // the reaction wheel encoder
-  Encoder rollingEncoder;   // the rolling wheel encoder
-  CurrentSensor reactionCurrentSensor;  // the reaction wheel's motor current sensor
-  CurrentSensor rollingCurrentSensor;   // the rolling wheel's motor current sensor
+  Mat12f W_n;                          // filter matrix
+  Mat12f P_n;                          // inverse autocorrelation matrix
+  Mat210f K_j;                         // feedback policy
+  Vec24f dataset;                      // (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
+  int j;                               // step number
+  int k;                               // time k
+  int n;                               // xₖ ∈ ℝⁿ
+  int m;                               // uₖ ∈ ℝᵐ
+  double lambda;                       // exponential wighting factor
+  double delta;                        // value used to intialize P(0)
+  int terminated;                      // has the environment been reset
+  int updated;                         // whether the policy has been updated
+  int active;                          // is the model controller active
+  double dt;                           // period in seconds
+  double reactionPWM;                  // reaction wheel's motor PWM duty cycle
+  double rollingPWM;                   // rolling wheel's motor PWM duty cycle
+  IMU imu1;                            // the first inertial measurement unit
+  IMU imu2;                            // the second inertial measurement unit
+  Encoder reactionEncoder;             // the reaction wheel encoder
+  Encoder rollingEncoder;              // the rolling wheel encoder
+  CurrentSensor reactionCurrentSensor; // the reaction wheel's motor current sensor
+  CurrentSensor rollingCurrentSensor;  // the rolling wheel's motor current sensor
 } LinearQuadraticRegulator;
-
 
 void updateIMU(LinearQuadraticRegulator *model)
 {
@@ -591,22 +589,28 @@ void updateIMU(LinearQuadraticRegulator *model)
   _R2[0] = 0.0;
   _R2[1] = 0.0;
   _R2[2] = 0.0;
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 3; j++) {
+  for (int i = 0; i < 3; i++)
+  {
+    for (int j = 0; j < 3; j++)
+    {
       _R1[i] += B_A1_R[i][j] * R1[j];
       _R2[i] += B_A2_R[i][j] * R2[j];
     }
   }
 
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < 3; i++)
+  {
     Matrix[i][0] = _R1[i];
     Matrix[i][1] = _R2[i];
   }
 
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 4; j++) {
+  for (int i = 0; i < 3; i++)
+  {
+    for (int j = 0; j < 4; j++)
+    {
       Q[i][j] = 0.0;
-      for (int k = 0; k < 2; k++) {
+      for (int k = 0; k < 2; k++)
+      {
         Q[i][j] += Matrix[i][k] * X[k][j];
       }
     }
@@ -630,13 +634,16 @@ void updateIMU(LinearQuadraticRegulator *model)
   _G2[0] = 0.0;
   _G2[1] = 0.0;
   _G2[2] = 0.0;
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 3; j++) {
+  for (int i = 0; i < 3; i++)
+  {
+    for (int j = 0; j < 3; j++)
+    {
       _G1[i] += B_A1_R[i][j] * G1[j];
       _G2[i] += B_A2_R[i][j] * G2[j];
     }
   }
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < 3; i++)
+  {
     r[i] = (_G1[i] + _G2[i]) / 2.0;
   }
 
@@ -653,8 +660,10 @@ void updateIMU(LinearQuadraticRegulator *model)
   r_dot[0] = 0.0;
   r_dot[1] = 0.0;
   r_dot[2] = 0.0;
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 3; j++) {
+  for (int i = 0; i < 3; i++)
+  {
+    for (int j = 0; j < 3; j++)
+    {
       r_dot[i] += E[i][j] * r[j];
       r_dot[i] += E[i][j] * r[j];
       r_dot[i] += E[i][j] * r[j];
@@ -677,7 +686,6 @@ void updateIMU(LinearQuadraticRegulator *model)
   model->imu1.roll = _roll;
   model->imu1.pitch = _pitch;
 }
-
 
 void putBuffer(int m, int n, float buffer[][n], Mat12f matrix) // function prototype
 {
@@ -1337,8 +1345,8 @@ void initialize(LinearQuadraticRegulator *model)
   // scale : 1 / 2048
   IMU imu1 = {-24, -60, 27, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   IMU imu2 = {75, -25, -18, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  Encoder reactionEncoder = {1736, 0, 0, 0, 0};
-  Encoder rollingEncoder = {3020, 0, 0, 0, 0};
+  Encoder reactionEncoder = {1736, 0, 0, 0, 0, 0};
+  Encoder rollingEncoder = {3020, 0, 0, 0, 0, 0};
   CurrentSensor reactionCurrentSensor = {32000.0, 0, 0, 0};
   CurrentSensor rollingCurrentSensor = {32000.0, 0, 0, 0};
   model->imu1 = imu1;
@@ -1660,9 +1668,9 @@ void updateControlPolicy(LinearQuadraticRegulator *model)
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief  The application entry point.
+ * @retval int
+ */
 int main(void)
 {
 
@@ -1768,7 +1776,6 @@ int main(void)
       model.active = 1;
       model.updated = 0;
     }
-    // Rinse and repeat :)
 
     if (model.terminated == 0)
     {
@@ -1812,20 +1819,24 @@ int main(void)
 
       if (log_status == 0)
       {
+        sprintf(MSG,
+                "AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | P11: %0.2f, P22: %0.2f, P33: %0.2f, P44: %0.2f, P55: %0.2f, dt: %0.6f\r\n",
+                model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, model.P_n.x0000, model.P_n.x0101, model.P_n.x0202, model.P_n.x0303, model.P_n.x0404, dt);
+
         // sprintf(MSG,
-          // "yaw: %0.2f, roll: %0.2f, rollv: %0.2f, pitch: %0.2f, pitchv: %0.2f, | aX1: %0.2f, aY1: %0.2f, aZ1: %0.2f, | aX2: %0.2f, aY2: %0.2f, aZ2: %0.2f, | encB: %d, encT: %d, dt: %0.6f\r\n",
-          // model.imu1.yaw, model.imu1.roll, model.imu1.roll_velocity, model.imu1.pitch, model.imu1.pitch_velocity, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, TIM3->CNT, TIM4->CNT, dt);
-          sprintf(MSG, "Bottom: current: %d, curVel: %0.2f, enc: %d, angle: %0.2f, velocity: %0.2f, acceleration: %0.2f, | Top: current: %d, curvel: %0.2f, enc: %d, angle: %0.2f, velocity: %0.2f, acceleration: %0.2f, dt: %0.6f\r\n",
-            model.rollingCurrentSensor.current0, model.rollingCurrentSensor.currentVelocity, TIM4->CNT, model.rollingEncoder.angle, model.rollingEncoder.velocity, model.rollingEncoder.acceleration,
-            model.reactionCurrentSensor.current0, model.reactionCurrentSensor.currentVelocity, TIM3->CNT, model.reactionEncoder.angle, model.reactionEncoder.velocity, model.reactionEncoder.acceleration, dt);
-          
-          // sprintf(MSG,
-          //   "ax2: %d, ay2: %d, az2: %d, | gx2: %d, gy2: %d, gz2: %d, dt: %0.6f\r\n",
-          //   model.imu2.rawAccX, model.imu2.rawAccY, model.imu2.rawAccZ, model.imu2.rawGyrX, model.imu2.rawGyrY, model.imu2.rawGyrZ, dt);
-          // sprintf(MSG,
-          //   "ax2: %0.2f, ay2: %0.2f, az2: %0.2f, | gx2: %0.2f, gy2: %0.2f, gz2: %0.2f, dt: %0.6f\r\n",
-          //   model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, dt);
-          log_status = 0;
+        // "yaw: %0.2f, roll: %0.2f, rollv: %0.2f, pitch: %0.2f, pitchv: %0.2f, | aX1: %0.2f, aY1: %0.2f, aZ1: %0.2f, | aX2: %0.2f, aY2: %0.2f, aZ2: %0.2f, | encB: %d, encT: %d, dt: %0.6f\r\n",
+        // model.imu1.yaw, model.imu1.roll, model.imu1.roll_velocity, model.imu1.pitch, model.imu1.pitch_velocity, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, TIM3->CNT, TIM4->CNT, dt);
+        // sprintf(MSG, "Bottom: current: %d, curVel: %0.2f, enc: %d, angle: %0.2f, velocity: %0.2f, acceleration: %0.2f, | Top: current: %d, curvel: %0.2f, enc: %d, angle: %0.2f, velocity: %0.2f, acceleration: %0.2f, dt: %0.6f\r\n",
+        //   model.rollingCurrentSensor.current0, model.rollingCurrentSensor.currentVelocity, TIM4->CNT, model.rollingEncoder.angle, model.rollingEncoder.velocity, model.rollingEncoder.acceleration,
+        //   model.reactionCurrentSensor.current0, model.reactionCurrentSensor.currentVelocity, TIM3->CNT, model.reactionEncoder.angle, model.reactionEncoder.velocity, model.reactionEncoder.acceleration, dt);
+
+        // sprintf(MSG,
+        //   "ax2: %d, ay2: %d, az2: %d, | gx2: %d, gy2: %d, gz2: %d, dt: %0.6f\r\n",
+        //   model.imu2.rawAccX, model.imu2.rawAccY, model.imu2.rawAccZ, model.imu2.rawGyrX, model.imu2.rawGyrY, model.imu2.rawGyrZ, dt);
+        // sprintf(MSG,
+        //   "ax2: %0.2f, ay2: %0.2f, az2: %0.2f, | gx2: %0.2f, gy2: %0.2f, gz2: %0.2f, dt: %0.6f\r\n",
+        //   model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, dt);
+        log_status = 0;
       }
 
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 1000);
@@ -1835,27 +1846,28 @@ int main(void)
     diff = t2 - t1;
     dt = (float)diff / CPU_CLOCK;
     model.dt = dt;
+    // Rinse and repeat :)
   }
   /* USER CODE END 3 */
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
+ * @brief System Clock Configuration
+ * @retval None
+ */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-  */
+   */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+   * in the RCC_OscInitTypeDef structure.
+   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -1871,9 +1883,8 @@ void SystemClock_Config(void)
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+   */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
@@ -1886,10 +1897,10 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief ADC1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief ADC1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_ADC1_Init(void)
 {
 
@@ -1904,7 +1915,7 @@ static void MX_ADC1_Init(void)
   /* USER CODE END ADC1_Init 1 */
 
   /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
+   */
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
@@ -1924,7 +1935,7 @@ static void MX_ADC1_Init(void)
   }
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
+   */
   sConfig.Channel = ADC_CHANNEL_14;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
@@ -1934,7 +1945,7 @@ static void MX_ADC1_Init(void)
   }
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
-  */
+   */
   sConfig.Channel = ADC_CHANNEL_4;
   sConfig.Rank = 2;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
@@ -1944,14 +1955,13 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
-
 }
 
 /**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief I2C1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_I2C1_Init(void)
 {
 
@@ -1978,14 +1988,13 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
-
 }
 
 /**
-  * @brief TIM2 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief TIM2 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_TIM2_Init(void)
 {
 
@@ -2041,14 +2050,13 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 2 */
   HAL_TIM_MspPostInit(&htim2);
-
 }
 
 /**
-  * @brief TIM3 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief TIM3 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_TIM3_Init(void)
 {
 
@@ -2090,14 +2098,13 @@ static void MX_TIM3_Init(void)
   /* USER CODE BEGIN TIM3_Init 2 */
 
   /* USER CODE END TIM3_Init 2 */
-
 }
 
 /**
-  * @brief TIM4 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief TIM4 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_TIM4_Init(void)
 {
 
@@ -2139,14 +2146,13 @@ static void MX_TIM4_Init(void)
   /* USER CODE BEGIN TIM4_Init 2 */
 
   /* USER CODE END TIM4_Init 2 */
-
 }
 
 /**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART1_UART_Init(void)
 {
 
@@ -2172,14 +2178,13 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
-
 }
 
 /**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART2 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART2_UART_Init(void)
 {
 
@@ -2205,14 +2210,13 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
-
 }
 
 /**
-  * @brief USART6 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART6 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART6_UART_Init(void)
 {
 
@@ -2238,12 +2242,11 @@ static void MX_USART6_UART_Init(void)
   /* USER CODE BEGIN USART6_Init 2 */
 
   /* USER CODE END USART6_Init 2 */
-
 }
 
 /**
-  * Enable DMA controller clock
-  */
+ * Enable DMA controller clock
+ */
 static void MX_DMA_Init(void)
 {
 
@@ -2261,19 +2264,18 @@ static void MX_DMA_Init(void)
   /* DMA2_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
-
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-/* USER CODE BEGIN MX_GPIO_Init_1 */
-/* USER CODE END MX_GPIO_Init_1 */
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+  /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -2282,13 +2284,13 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_5|GPIO_PIN_8, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2 | GPIO_PIN_3 | GPIO_PIN_5 | GPIO_PIN_8, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13|GPIO_PIN_14, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13 | GPIO_PIN_14, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -2297,13 +2299,13 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PC0 PC1 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1;
+  GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PC2 PC5 PC8 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_5|GPIO_PIN_8;
+  GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_5 | GPIO_PIN_8;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -2324,14 +2326,14 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PB13 PB14 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14;
+  GPIO_InitStruct.Pin = GPIO_PIN_13 | GPIO_PIN_14;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-/* USER CODE BEGIN MX_GPIO_Init_2 */
-/* USER CODE END MX_GPIO_Init_2 */
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -2339,9 +2341,9 @@ static void MX_GPIO_Init(void)
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -2353,14 +2355,14 @@ void Error_Handler(void)
   /* USER CODE END Error_Handler_Debug */
 }
 
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
