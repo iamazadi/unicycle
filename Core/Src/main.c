@@ -107,94 +107,94 @@ uint8_t UART1_txBuffer_cfg[TRANSMIT_FRAME_LENGTH] = {0xA4, 0x06, 0x01, 0x06, 0xB
 int deviceReady = 0;
 int uart_receive_ok = 0;
 int adc_receive_ok = 0;
-const float CPU_CLOCK = 84000000.0;
+const double CPU_CLOCK = 84000000.0;
 const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
-const int updatePolicyPeriod = 100;
+const int updatePolicyPeriod = 1;
 const int LOG_CYCLE = 20;
-const float roll_safety_angle = 0.32;
-const float pitch_safety_angle = 0.20;
-const float sensorAngle = -30.0 / 180.0 * M_PI;
+const double roll_safety_angle = 0.32;
+const double pitch_safety_angle = 0.20;
+const double sensorAngle = -30.0 / 180.0 * M_PI;
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // sampling time
-float dt = 0.0;
+double dt = 0.0;
 uint8_t raw_data[14] = {0};
 uint16_t AD_RES = 0;
 uint32_t AD_RES_BUFFER[2];
 // define arrays for matrix-matrix and matrix-vector multiplication
-float x_k[N];
-float u_k[M];
-float x_k1[N];
-float u_k1[M];
-float z_k[N + M];
-float z_k1[N + M];
-float basisset0[N + M];
-float basisset1[N + M];
-float z_n[N + M];
-float W_n[N + M][N + M];
-float P_n[N + M][N + M];
-float K_j[M][N];
-float g_n[N + M];
-float alpha_n[N + M];
-float S_ux[M][N];
-float S_uu[M][M];
-float S_uu_inverse[M][M];
+double x_k[N];
+double u_k[M];
+double x_k1[N];
+double u_k1[M];
+double z_k[N + M];
+double z_k1[N + M];
+double basisset0[N + M];
+double basisset1[N + M];
+double z_n[N + M];
+double W_n[N + M][N + M];
+double P_n[N + M][N + M];
+double K_j[M][N];
+double g_n[N + M];
+double alpha_n[N + M];
+double S_ux[M][N];
+double S_uu[M][M];
+double S_uu_inverse[M][M];
 // tilt estimation
 // the pivot point B̂ in the inertial frame Ô
-float pivot[3] = {-0.097, -0.1, -0.032};
+double pivot[3] = {-0.097, -0.1, -0.032};
 // the position of sensors mounted on the body in the body frame of reference
-float p1[3] = {-0.1400, -0.0650, -0.0620};
-float p2[3] = {-0.0400, -0.0600, -0.0600};
+double p1[3] = {-0.1400, -0.0650, -0.0620};
+double p2[3] = {-0.0400, -0.0600, -0.0600};
 // the vectors of the standard basis for the input space ℝ³
-float e1[3] = {1.0, 0.0, 0.0};
-float e2[3] = {0.0, 1.0, 0.0};
-float e3[3] = {0.0, 0.0, 1.0};
+double e1[3] = {1.0, 0.0, 0.0};
+double e2[3] = {0.0, 1.0, 0.0};
+double e3[3] = {0.0, 0.0, 1.0};
 // The rotation of the inertial frame Ô to the body frame B̂
-float O_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
-float B_O_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
+double O_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
+double B_O_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
 // The rotation of the local frame of the sensor i to the robot frame B̂
-float A1_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // [ê[2] ê[1] ê[3]]
-float A2_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // [ê[1] ê[2] ê[3]]
-float B_A1_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // LinearAlgebra.inv(A1_B_R)
-float B_A2_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // LinearAlgebra.inv(A2_B_R)
+double A1_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // [ê[2] ê[1] ê[3]]
+double A2_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // [ê[1] ê[2] ê[3]]
+double B_A1_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // LinearAlgebra.inv(A1_B_R)
+double B_A2_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // LinearAlgebra.inv(A2_B_R)
 // The matrix of unknown parameters
-float Q[3][4] = {{0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}};
+double Q[3][4] = {{0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}};
 // The matrix of sensor locations (known parameters)
-float P[4][2] = {{1.0, 1.0}, {-0.043, 0.057}, {0.035, 0.04}, {-0.03, -0.028}}; // [[1.0; vec(p1 - pivot)] [1.0; vec(p2 - pivot)] [1.0; vec(p3 - pivot)] [1.0; vec(p4 - pivot)]]
+double P[4][2] = {{1.0, 1.0}, {-0.043, 0.057}, {0.035, 0.04}, {-0.03, -0.028}}; // [[1.0; vec(p1 - pivot)] [1.0; vec(p2 - pivot)] [1.0; vec(p3 - pivot)] [1.0; vec(p4 - pivot)]]
 // The optimal fusion matrix
-float X[2][4] = {{0.586913, -11.3087, 0.747681, 0.0}, {0.446183, 8.92749, -3.54337, 0.0}}; // transpose(P) * LinearAlgebra.inv(P * transpose(P))
+double X[2][4] = {{0.586913, -11.3087, 0.747681, 0.0}, {0.446183, 8.92749, -3.54337, 0.0}}; // transpose(P) * LinearAlgebra.inv(P * transpose(P))
 // accelerometer sensor measurements in the local frame of the sensors
-float R1[3] = {0.0, 0.0, 0.0};
-float R2[3] = {0.0, 0.0, 0.0};
+double R1[3] = {0.0, 0.0, 0.0};
+double R2[3] = {0.0, 0.0, 0.0};
 // accelerometer sensor measurements in the robot body frame
-float _R1[3] = {0.0, 0.0, 0.0};
-float _R2[3] = {0.0, 0.0, 0.0};
+double _R1[3] = {0.0, 0.0, 0.0};
+double _R2[3] = {0.0, 0.0, 0.0};
 // all sensor measurements combined
-float Matrix[3][2] = {{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
+double Matrix[3][2] = {{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
 // The gravity vector
-float g[3] = {0.0, 0.0, 0.0};
+double g[3] = {0.0, 0.0, 0.0};
 // y-Euler angle (pitch)
-float beta = 0.0;
-float fused_beta = 0.0;
+double beta = 0.0;
+double fused_beta = 0.0;
 // x-Euler angle (roll)
-float gamma1 = 0.0;
-float fused_gamma = 0.0;
+double gamma1 = 0.0;
+double fused_gamma = 0.0;
 // tuning parameters to minimize estimate variance
-float kappa1 = 0.03;
-float kappa2 = 0.03;
+double kappa1 = 0.03;
+double kappa2 = 0.03;
 // the average of the body angular rate from rate gyro
-float r[3] = {0.0, 0.0, 0.0};
+double r[3] = {0.0, 0.0, 0.0};
 // the average of the body angular rate in Euler angles
-float r_dot[3] = {0.0, 0.0, 0.0};
+double r_dot[3] = {0.0, 0.0, 0.0};
 // gyro sensor measurements in the local frame of the sensors
-float G1[3] = {0.0, 0.0, 0.0};
-float G2[3] = {0.0, 0.0, 0.0};
+double G1[3] = {0.0, 0.0, 0.0};
+double G2[3] = {0.0, 0.0, 0.0};
 // gyro sensor measurements in the robot body frame
-float _G1[3] = {0.0, 0.0, 0.0};
-float _G2[3] = {0.0, 0.0, 0.0};
+double _G1[3] = {0.0, 0.0, 0.0};
+double _G2[3] = {0.0, 0.0, 0.0};
 // a matrix transfom from body rates to Euler angular rates
-float E[3][3] = {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
+double E[3][3] = {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -349,200 +349,200 @@ void updateIMU2(IMU *sensor) // GY-95 USART
 
 typedef struct
 {
-  float x0;
-  float x1;
-  float x2;
-  float x3;
-  float x4;
-  float x5;
-  float x6;
-  float x7;
-  float x8;
-  float x9;
-  float x10;
-  float x11;
-  float x12;
-  float x13;
-  float x14;
-  float x15;
-  float x16;
-  float x17;
-  float x18;
-  float x19;
-  float x20;
-  float x21;
-  float x22;
-  float x23;
+  double x0;
+  double x1;
+  double x2;
+  double x3;
+  double x4;
+  double x5;
+  double x6;
+  double x7;
+  double x8;
+  double x9;
+  double x10;
+  double x11;
+  double x12;
+  double x13;
+  double x14;
+  double x15;
+  double x16;
+  double x17;
+  double x18;
+  double x19;
+  double x20;
+  double x21;
+  double x22;
+  double x23;
 } Vec24f;
 typedef struct
 {
-  float x00;
-  float x01;
-  float x02;
-  float x03;
-  float x04;
-  float x05;
-  float x06;
-  float x07;
-  float x08;
-  float x09;
-  float x10;
-  float x11;
-  float x12;
-  float x13;
-  float x14;
-  float x15;
-  float x16;
-  float x17;
-  float x18;
-  float x19;
+  double x00;
+  double x01;
+  double x02;
+  double x03;
+  double x04;
+  double x05;
+  double x06;
+  double x07;
+  double x08;
+  double x09;
+  double x10;
+  double x11;
+  double x12;
+  double x13;
+  double x14;
+  double x15;
+  double x16;
+  double x17;
+  double x18;
+  double x19;
 } Mat210f;
 typedef struct
 {
-  float x0000;
-  float x0001;
-  float x0002;
-  float x0003;
-  float x0004;
-  float x0005;
-  float x0006;
-  float x0007;
-  float x0008;
-  float x0009;
-  float x0010;
-  float x0011;
-  float x0100;
-  float x0101;
-  float x0102;
-  float x0103;
-  float x0104;
-  float x0105;
-  float x0106;
-  float x0107;
-  float x0108;
-  float x0109;
-  float x0110;
-  float x0111;
-  float x0200;
-  float x0201;
-  float x0202;
-  float x0203;
-  float x0204;
-  float x0205;
-  float x0206;
-  float x0207;
-  float x0208;
-  float x0209;
-  float x0210;
-  float x0211;
-  float x0300;
-  float x0301;
-  float x0302;
-  float x0303;
-  float x0304;
-  float x0305;
-  float x0306;
-  float x0307;
-  float x0308;
-  float x0309;
-  float x0310;
-  float x0311;
-  float x0400;
-  float x0401;
-  float x0402;
-  float x0403;
-  float x0404;
-  float x0405;
-  float x0406;
-  float x0407;
-  float x0408;
-  float x0409;
-  float x0410;
-  float x0411;
-  float x0500;
-  float x0501;
-  float x0502;
-  float x0503;
-  float x0504;
-  float x0505;
-  float x0506;
-  float x0507;
-  float x0508;
-  float x0509;
-  float x0510;
-  float x0511;
-  float x0600;
-  float x0601;
-  float x0602;
-  float x0603;
-  float x0604;
-  float x0605;
-  float x0606;
-  float x0607;
-  float x0608;
-  float x0609;
-  float x0610;
-  float x0611;
-  float x0700;
-  float x0701;
-  float x0702;
-  float x0703;
-  float x0704;
-  float x0705;
-  float x0706;
-  float x0707;
-  float x0708;
-  float x0709;
-  float x0710;
-  float x0711;
-  float x0800;
-  float x0801;
-  float x0802;
-  float x0803;
-  float x0804;
-  float x0805;
-  float x0806;
-  float x0807;
-  float x0808;
-  float x0809;
-  float x0810;
-  float x0811;
-  float x0900;
-  float x0901;
-  float x0902;
-  float x0903;
-  float x0904;
-  float x0905;
-  float x0906;
-  float x0907;
-  float x0908;
-  float x0909;
-  float x0910;
-  float x0911;
-  float x1000;
-  float x1001;
-  float x1002;
-  float x1003;
-  float x1004;
-  float x1005;
-  float x1006;
-  float x1007;
-  float x1008;
-  float x1009;
-  float x1010;
-  float x1011;
-  float x1100;
-  float x1101;
-  float x1102;
-  float x1103;
-  float x1104;
-  float x1105;
-  float x1106;
-  float x1107;
-  float x1108;
-  float x1109;
-  float x1110;
-  float x1111;
+  double x0000;
+  double x0001;
+  double x0002;
+  double x0003;
+  double x0004;
+  double x0005;
+  double x0006;
+  double x0007;
+  double x0008;
+  double x0009;
+  double x0010;
+  double x0011;
+  double x0100;
+  double x0101;
+  double x0102;
+  double x0103;
+  double x0104;
+  double x0105;
+  double x0106;
+  double x0107;
+  double x0108;
+  double x0109;
+  double x0110;
+  double x0111;
+  double x0200;
+  double x0201;
+  double x0202;
+  double x0203;
+  double x0204;
+  double x0205;
+  double x0206;
+  double x0207;
+  double x0208;
+  double x0209;
+  double x0210;
+  double x0211;
+  double x0300;
+  double x0301;
+  double x0302;
+  double x0303;
+  double x0304;
+  double x0305;
+  double x0306;
+  double x0307;
+  double x0308;
+  double x0309;
+  double x0310;
+  double x0311;
+  double x0400;
+  double x0401;
+  double x0402;
+  double x0403;
+  double x0404;
+  double x0405;
+  double x0406;
+  double x0407;
+  double x0408;
+  double x0409;
+  double x0410;
+  double x0411;
+  double x0500;
+  double x0501;
+  double x0502;
+  double x0503;
+  double x0504;
+  double x0505;
+  double x0506;
+  double x0507;
+  double x0508;
+  double x0509;
+  double x0510;
+  double x0511;
+  double x0600;
+  double x0601;
+  double x0602;
+  double x0603;
+  double x0604;
+  double x0605;
+  double x0606;
+  double x0607;
+  double x0608;
+  double x0609;
+  double x0610;
+  double x0611;
+  double x0700;
+  double x0701;
+  double x0702;
+  double x0703;
+  double x0704;
+  double x0705;
+  double x0706;
+  double x0707;
+  double x0708;
+  double x0709;
+  double x0710;
+  double x0711;
+  double x0800;
+  double x0801;
+  double x0802;
+  double x0803;
+  double x0804;
+  double x0805;
+  double x0806;
+  double x0807;
+  double x0808;
+  double x0809;
+  double x0810;
+  double x0811;
+  double x0900;
+  double x0901;
+  double x0902;
+  double x0903;
+  double x0904;
+  double x0905;
+  double x0906;
+  double x0907;
+  double x0908;
+  double x0909;
+  double x0910;
+  double x0911;
+  double x1000;
+  double x1001;
+  double x1002;
+  double x1003;
+  double x1004;
+  double x1005;
+  double x1006;
+  double x1007;
+  double x1008;
+  double x1009;
+  double x1010;
+  double x1011;
+  double x1100;
+  double x1101;
+  double x1102;
+  double x1103;
+  double x1104;
+  double x1105;
+  double x1106;
+  double x1107;
+  double x1108;
+  double x1109;
+  double x1110;
+  double x1111;
 } Mat12f;
 
 // Represents a Linear Quadratic Regulator (LQR) model.
@@ -675,10 +675,10 @@ void updateIMU(LinearQuadraticRegulator *model)
   fused_gamma = kappa2 * gamma1 + (1.0 - kappa2) * (fused_gamma + model->dt * (r_dot[2] / 180.0 * M_PI));
   model->imu1.yaw += model->dt * r_dot[0];
 
-  float _roll = fused_beta;
-  float _pitch = -fused_gamma;
-  float _roll_velocity = ((r_dot[1] / 180.0 * M_PI) + (_roll - model->imu1.roll) / model->dt) / 2.0;
-  float _pitch_velocity = ((-r_dot[2] / 180.0 * M_PI) + (_pitch - model->imu1.pitch) / model->dt) / 2.0;
+  double _roll = fused_beta;
+  double _pitch = -fused_gamma;
+  double _roll_velocity = ((r_dot[1] / 180.0 * M_PI) + (_roll - model->imu1.roll) / model->dt) / 2.0;
+  double _pitch_velocity = ((-r_dot[2] / 180.0 * M_PI) + (_pitch - model->imu1.pitch) / model->dt) / 2.0;
   model->imu1.roll_acceleration = _roll_velocity - model->imu1.roll_velocity;
   model->imu1.pitch_acceleration = _pitch_velocity - model->imu1.pitch_velocity;
   model->imu1.roll_velocity = _roll_velocity;
@@ -687,7 +687,7 @@ void updateIMU(LinearQuadraticRegulator *model)
   model->imu1.pitch = _pitch;
 }
 
-void putBuffer(int m, int n, float buffer[][n], Mat12f matrix) // function prototype
+void putBuffer(int m, int n, double buffer[][n], Mat12f matrix) // function prototype
 {
   buffer[0][0] = matrix.x0000;
   buffer[0][1] = matrix.x0001;
@@ -837,7 +837,7 @@ void putBuffer(int m, int n, float buffer[][n], Mat12f matrix) // function proto
   return;
 }
 
-void getBuffer(int m, int n, float buffer[][n], Mat12f *matrix) // function prototype
+void getBuffer(int m, int n, double buffer[][n], Mat12f *matrix) // function prototype
 {
   matrix->x0000 = buffer[0][0];
   matrix->x0001 = buffer[0][1];
@@ -1007,150 +1007,150 @@ void initialize(LinearQuadraticRegulator *model)
   model->active = 0;
   model->dt = 0.0;
 
-  model->W_n.x0000 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0001 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0002 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0003 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0004 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0005 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0006 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0007 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0008 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0009 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0010 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0011 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0100 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0101 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0102 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0103 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0104 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0105 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0106 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0107 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0108 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0109 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0110 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0111 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0200 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0201 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0202 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0203 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0204 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0205 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0206 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0207 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0208 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0209 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0210 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0211 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0300 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0301 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0302 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0303 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0304 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0305 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0306 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0307 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0308 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0309 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0310 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0311 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0400 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0401 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0402 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0403 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0404 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0405 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0406 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0407 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0408 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0409 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0410 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0411 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0500 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0501 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0502 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0503 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0504 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0505 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0506 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0507 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0508 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0509 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0510 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0511 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0600 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0601 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0602 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0603 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0604 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0605 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0606 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0607 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0608 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0609 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0610 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0611 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0700 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0701 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0702 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0703 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0704 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0705 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0706 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0707 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0708 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0709 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0710 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0711 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0800 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0801 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0802 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0803 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0804 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0805 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0806 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0807 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0808 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0809 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0810 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0811 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0900 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0901 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0902 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0903 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0904 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0905 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0906 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0907 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0908 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0909 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0910 = (float)(rand() % 100) / 100.0;
-  model->W_n.x0911 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1000 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1001 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1002 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1003 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1004 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1005 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1006 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1007 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1008 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1009 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1010 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1011 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1100 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1101 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1102 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1103 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1104 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1105 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1106 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1107 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1108 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1109 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1110 = (float)(rand() % 100) / 100.0;
-  model->W_n.x1111 = (float)(rand() % 100) / 100.0;
+  model->W_n.x0000 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0001 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0002 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0003 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0004 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0005 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0006 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0007 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0008 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0009 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0010 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0011 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0100 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0101 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0102 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0103 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0104 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0105 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0106 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0107 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0108 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0109 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0110 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0111 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0200 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0201 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0202 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0203 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0204 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0205 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0206 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0207 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0208 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0209 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0210 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0211 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0300 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0301 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0302 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0303 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0304 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0305 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0306 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0307 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0308 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0309 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0310 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0311 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0400 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0401 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0402 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0403 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0404 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0405 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0406 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0407 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0408 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0409 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0410 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0411 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0500 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0501 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0502 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0503 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0504 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0505 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0506 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0507 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0508 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0509 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0510 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0511 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0600 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0601 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0602 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0603 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0604 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0605 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0606 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0607 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0608 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0609 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0610 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0611 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0700 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0701 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0702 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0703 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0704 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0705 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0706 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0707 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0708 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0709 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0710 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0711 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0800 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0801 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0802 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0803 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0804 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0805 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0806 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0807 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0808 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0809 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0810 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0811 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0900 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0901 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0902 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0903 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0904 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0905 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0906 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0907 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0908 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0909 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0910 = (double)(rand() % 100) / 100.0;
+  model->W_n.x0911 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1000 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1001 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1002 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1003 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1004 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1005 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1006 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1007 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1008 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1009 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1010 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1011 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1100 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1101 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1102 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1103 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1104 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1105 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1106 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1107 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1108 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1109 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1110 = (double)(rand() % 100) / 100.0;
+  model->W_n.x1111 = (double)(rand() % 100) / 100.0;
 
   model->P_n.x0000 = 1.0 / model->delta;
   model->P_n.x0001 = 0.0;
@@ -1297,26 +1297,26 @@ void initialize(LinearQuadraticRegulator *model)
   model->P_n.x1110 = 0.0;
   model->P_n.x1111 = 1.0 / model->delta;
 
-  model->K_j.x00 = (float)(rand() % 100) / 100.0;
-  model->K_j.x01 = (float)(rand() % 100) / 100.0;
-  model->K_j.x02 = (float)(rand() % 100) / 100.0;
-  model->K_j.x03 = (float)(rand() % 100) / 100.0;
-  model->K_j.x04 = (float)(rand() % 100) / 100.0;
-  model->K_j.x05 = (float)(rand() % 100) / 100.0;
-  model->K_j.x06 = (float)(rand() % 100) / 100.0;
-  model->K_j.x07 = (float)(rand() % 100) / 100.0;
-  model->K_j.x08 = (float)(rand() % 100) / 100.0;
-  model->K_j.x09 = (float)(rand() % 100) / 100.0;
-  model->K_j.x10 = (float)(rand() % 100) / 100.0;
-  model->K_j.x11 = (float)(rand() % 100) / 100.0;
-  model->K_j.x12 = (float)(rand() % 100) / 100.0;
-  model->K_j.x13 = (float)(rand() % 100) / 100.0;
-  model->K_j.x14 = (float)(rand() % 100) / 100.0;
-  model->K_j.x15 = (float)(rand() % 100) / 100.0;
-  model->K_j.x16 = (float)(rand() % 100) / 100.0;
-  model->K_j.x17 = (float)(rand() % 100) / 100.0;
-  model->K_j.x18 = (float)(rand() % 100) / 100.0;
-  model->K_j.x19 = (float)(rand() % 100) / 100.0;
+  model->K_j.x00 = (double)(rand() % 100) / 100.0;
+  model->K_j.x01 = (double)(rand() % 100) / 100.0;
+  model->K_j.x02 = (double)(rand() % 100) / 100.0;
+  model->K_j.x03 = (double)(rand() % 100) / 100.0;
+  model->K_j.x04 = (double)(rand() % 100) / 100.0;
+  model->K_j.x05 = (double)(rand() % 100) / 100.0;
+  model->K_j.x06 = (double)(rand() % 100) / 100.0;
+  model->K_j.x07 = (double)(rand() % 100) / 100.0;
+  model->K_j.x08 = (double)(rand() % 100) / 100.0;
+  model->K_j.x09 = (double)(rand() % 100) / 100.0;
+  model->K_j.x10 = (double)(rand() % 100) / 100.0;
+  model->K_j.x11 = (double)(rand() % 100) / 100.0;
+  model->K_j.x12 = (double)(rand() % 100) / 100.0;
+  model->K_j.x13 = (double)(rand() % 100) / 100.0;
+  model->K_j.x14 = (double)(rand() % 100) / 100.0;
+  model->K_j.x15 = (double)(rand() % 100) / 100.0;
+  model->K_j.x16 = (double)(rand() % 100) / 100.0;
+  model->K_j.x17 = (double)(rand() % 100) / 100.0;
+  model->K_j.x18 = (double)(rand() % 100) / 100.0;
+  model->K_j.x19 = (double)(rand() % 100) / 100.0;
 
   model->dataset.x0 = 0.0;
   model->dataset.x1 = 0.0;
@@ -1423,8 +1423,8 @@ void stepForward(LinearQuadraticRegulator *model)
 
   if (model->active == 1)
   {
-    model->reactionPWM += (255.0 * 16.0) * u_k[0];
-    model->rollingPWM += (255.0 * 16.0) * u_k[1];
+    model->reactionPWM += (255.0 * 20.0) * u_k[0];
+    model->rollingPWM += (255.0 * 20.0) * u_k[1];
     model->reactionPWM = fmin(255.0 * 255.0, model->reactionPWM);
     model->reactionPWM = fmax(-255.0 * 255.0, model->reactionPWM);
     model->rollingPWM = fmin(255.0 * 255.0, model->rollingPWM);
@@ -1544,7 +1544,7 @@ void stepForward(LinearQuadraticRegulator *model)
       z_n[i] += P_n[i][j] * z_k[j];
     }
   }
-  float z_k_dot_z_n = 0.0;
+  double z_k_dot_z_n = 0.0;
   for (int i = 0; i < model->n + model->m; i++)
   {
     z_k_dot_z_n += z_k[i] * z_n[i];
@@ -1614,7 +1614,7 @@ void updateControlPolicy(LinearQuadraticRegulator *model)
 
   // Perform the control update using (S24), which is uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
   // uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
-  float determinant = S_uu[1][1] * S_uu[2][2] - S_uu[1][2] * S_uu[2][1];
+  double determinant = S_uu[1][1] * S_uu[2][2] - S_uu[1][2] * S_uu[2][1];
   // check the rank of S_uu to see if it's equal to 2 (invertible matrix)
   if (fabs(determinant) > 0.0001) // greater than zero
   {
@@ -1807,6 +1807,11 @@ int main(void)
 
     model.imu1.yaw += dt * r_dot[2];
 
+    t2 = DWT->CYCCNT;
+    diff = t2 - t1;
+    dt = (double)diff / CPU_CLOCK;
+    model.dt = dt;
+
     log_counter++;
     if (log_counter > LOG_CYCLE && HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == 0)
     {
@@ -1820,8 +1825,13 @@ int main(void)
       if (log_status == 0)
       {
         sprintf(MSG,
-                "AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | P11: %0.2f, P22: %0.2f, P33: %0.2f, P44: %0.2f, P55: %0.2f, dt: %0.6f\r\n",
-                model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, model.P_n.x0000, model.P_n.x0101, model.P_n.x0202, model.P_n.x0303, model.P_n.x0404, dt);
+                "AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | K11: %0.2f, K12: %0.2f, K13: %0.2f, K14: %0.2f, K15: %0.2f, K21: %0.2f, K22: %0.2f, K23: %0.2f, K24: %0.2f, K25: %0.2f, dt: %0.6f\r\n",
+                model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, model.K_j.x00, model.K_j.x01, model.K_j.x02, model.K_j.x03, model.K_j.x04, model.K_j.x10, model.K_j.x11, model.K_j.x12, model.K_j.x13, model.K_j.x14, dt);
+
+        // sprintf(MSG,
+        //   "roll: %0.2f, pitch: %0.2f, | P11: %0.2f, P22: %0.2f, P33: %0.2f, P44: %0.2f, P55: %0.2f, P66: %0.2f, P77: %0.2f, P88: %0.2f, P99: %0.2f, P1010: %0.2f, P1111: %0.2f, P1212: %0.2f, dt: %0.6f\r\n",
+        //   model.imu1.roll, model.imu1.pitch, model.P_n.x1100, model.P_n.x1101, model.P_n.x0002, model.P_n.x0003, model.P_n.x0004, model.P_n.x0005, model.P_n.x0006, model.P_n.x0007, model.P_n.x0008, model.P_n.x0009, model.P_n.x0010, model.P_n.x0011, dt);
+  
 
         // sprintf(MSG,
         // "yaw: %0.2f, roll: %0.2f, rollv: %0.2f, pitch: %0.2f, pitchv: %0.2f, | aX1: %0.2f, aY1: %0.2f, aZ1: %0.2f, | aX2: %0.2f, aY2: %0.2f, aZ2: %0.2f, | encB: %d, encT: %d, dt: %0.6f\r\n",
@@ -1841,11 +1851,6 @@ int main(void)
 
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 1000);
     }
-
-    t2 = DWT->CYCCNT;
-    diff = t2 - t1;
-    dt = (float)diff / CPU_CLOCK;
-    model.dt = dt;
     // Rinse and repeat :)
   }
   /* USER CODE END 3 */
