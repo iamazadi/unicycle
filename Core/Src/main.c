@@ -136,7 +136,7 @@ float alpha_n[N + M];
 float S_ux[M][N];
 float S_uu[M][M];
 float S_uu_inverse[M][M];
-float z_k_dot_z_n = 0.0;
+float z_k1_dot_z_n = 0.0;
 // tilt estimation
 // the pivot point B̂ in the inertial frame Ô
 float pivot[3] = {-0.097, -0.1, -0.032};
@@ -924,21 +924,21 @@ void stepForward(LinearQuadraticRegulator *model)
       z_n[i] += getIndex(model->P_n, i, j) * z_k[j];
     }
   }
-  z_k_dot_z_n = 0.0;
+  z_k1_dot_z_n = 0.0;
   float buffer = 0.0;
   for (int i = 0; i < (model->n + model->m); i++)
   {
-    buffer = z_k[i] * z_n[i];
+    buffer = z_k1[i] * z_n[i];
     if (isnanf(buffer) == 0)
     {
-      z_k_dot_z_n += buffer;
+      z_k1_dot_z_n += buffer;
     }
   }
-  if (fabs(model->lambda + z_k_dot_z_n) > 0)
+  if (fabs(model->lambda + z_k1_dot_z_n) > 0)
   {
     for (int i = 0; i < (model->n + model->m); i++)
     {
-      g_n[i] = (1.0 / (model->lambda + z_k_dot_z_n)) * z_n[i];
+      g_n[i] = (1.0 / (model->lambda + z_k1_dot_z_n)) * z_n[i];
     }
   }
   else
@@ -1195,10 +1195,6 @@ int main(void)
       encodeWheel(&model.rollingEncoder, TIM4->CNT);
       senseCurrent(&(model.reactionCurrentSensor), &(model.rollingCurrentSensor));
       updateIMU(&model);
-    }
-    if (model.terminated == 1 && model.updated == 0)
-    {
-      updateControlPolicy(&model);
     }
     if (model.k % updatePolicyPeriod == 0)
     {
