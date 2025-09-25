@@ -34,7 +34,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TRANSMIT_LENGTH 300
+#define TRANSMIT_LENGTH 360
 #define RECEIVE_FRAME_LENGTH 32
 #define TRANSMIT_FRAME_LENGTH 5
 #define N 10
@@ -113,6 +113,8 @@ const float roll_safety_angle = 0.30;
 const float pitch_safety_angle = 0.20;
 const float sensorAngle = -30.0 / 180.0 * M_PI;
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
+// maximum PWM step size for each control cycle
+float pulseStep = 64.0;
 // sampling time
 float dt = 0.0;
 uint8_t raw_data[14] = {0};
@@ -805,8 +807,8 @@ void stepForward(LinearQuadraticRegulator *model)
 
   if (model->active == 1)
   {
-    model->reactionPWM += (255.0 * 96.0) * u_k[0];
-    model->rollingPWM += (255.0 * 96.0) * u_k[1];
+    model->reactionPWM += (255.0 * pulseStep) * u_k[0];
+    model->rollingPWM += (255.0 * pulseStep) * u_k[1];
     model->reactionPWM = fmin(255.0 * 255.0, model->reactionPWM);
     model->reactionPWM = fmax(-255.0 * 255.0, model->reactionPWM);
     model->rollingPWM = fmin(255.0 * 255.0, model->rollingPWM);
