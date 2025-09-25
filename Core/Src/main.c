@@ -516,8 +516,6 @@ typedef struct
   int m;                               // uₖ ∈ ℝᵐ
   float lambda;                        // exponential wighting factor
   float delta;                         // value used to intialize P(0)
-  int terminated;                      // has the environment been reset
-  int updated;                         // whether the policy has been updated
   int active;                          // is the model controller active
   float dt;                            // period in seconds
   float reactionPWM;                   // reaction wheel's motor PWM duty cycle
@@ -660,8 +658,6 @@ void initialize(LinearQuadraticRegulator *model)
   model->m = dim_m;
   model->lambda = 0.99;
   model->delta = 0.01;
-  model->terminated = 0;
-  model->updated = 0;
   model->active = 0;
   model->dt = 0.0;
 
@@ -745,7 +741,7 @@ void initialize(LinearQuadraticRegulator *model)
 }
 /*
 Identify the Q function using RLS with the given pointer to the `model`.
-The algorithm is terminated when there are no further updates
+The algorithm is finished when there are no further updates
 to the Q function or the control policy at each step.
 */
 void stepForward(LinearQuadraticRegulator *model)
@@ -805,48 +801,35 @@ void stepForward(LinearQuadraticRegulator *model)
   model->dataset.x10 = u_k[0];
   model->dataset.x11 = u_k[1];
 
-  if (model->active == 1)
+  model->reactionPWM += (255.0 * pulseStep) * u_k[0];
+  model->rollingPWM += (255.0 * pulseStep) * u_k[1];
+  model->reactionPWM = fmin(255.0 * 255.0, model->reactionPWM);
+  model->reactionPWM = fmax(-255.0 * 255.0, model->reactionPWM);
+  model->rollingPWM = fmin(255.0 * 255.0, model->rollingPWM);
+  model->rollingPWM = fmax(-255.0 * 255.0, model->rollingPWM);
+  TIM2->CCR1 = (int)fabs(model->rollingPWM);
+  TIM2->CCR2 = (int)fabs(model->reactionPWM);
+  if (model->reactionPWM < 0)
   {
-    model->reactionPWM += (255.0 * pulseStep) * u_k[0];
-    model->rollingPWM += (255.0 * pulseStep) * u_k[1];
-    model->reactionPWM = fmin(255.0 * 255.0, model->reactionPWM);
-    model->reactionPWM = fmax(-255.0 * 255.0, model->reactionPWM);
-    model->rollingPWM = fmin(255.0 * 255.0, model->rollingPWM);
-    model->rollingPWM = fmax(-255.0 * 255.0, model->rollingPWM);
-    TIM2->CCR1 = (int)fabs(model->rollingPWM);
-    TIM2->CCR2 = (int)fabs(model->reactionPWM);
-    if (model->reactionPWM < 0)
-    {
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
-    }
-    else
-    {
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
-    }
-    if (model->rollingPWM < 0)
-    {
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
-    }
-    else
-    {
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
-    }
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
   }
   else
   {
-    model->reactionPWM = 0.0;
-    model->rollingPWM = 0.0;
-    TIM2->CCR1 = 0;
-    TIM2->CCR2 = 0;
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+  }
+  if (model->rollingPWM < 0)
+  {
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
+  }
+  else
+  {
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
   }
+
   // dataset = (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
   encodeWheel(&(model->reactionEncoder), TIM3->CNT);
   encodeWheel(&(model->rollingEncoder), TIM4->CNT);
@@ -1063,7 +1046,6 @@ void updateControlPolicy(LinearQuadraticRegulator *model)
     model->K_j.x18 = K_j[1][8];
     model->K_j.x19 = K_j[1][9];
   }
-  model->updated = 1;
   return;
 }
 
@@ -1153,7 +1135,11 @@ int main(void)
 
     if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == 0)
     {
-      model.active = 1;
+      if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == 0)
+      {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+        model.active = 1;
+      }
     }
     else
     {
@@ -1166,20 +1152,11 @@ int main(void)
 
     if (fabs(model.imu1.roll) > roll_safety_angle || fabs(model.imu1.pitch) > pitch_safety_angle || model.k > max_episode_length)
     {
-      model.terminated = 1;
       model.active = 0;
       HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
     }
 
-    if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == 0)
-    {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-      model.terminated = 0;
-      model.active = 1;
-      model.updated = 0;
-    }
-
-    if (model.terminated == 0)
+    if (model.active == 1)
     {
       stepForward(&model);
     }
