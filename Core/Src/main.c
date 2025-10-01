@@ -138,7 +138,7 @@ float alpha_n[N + M];
 float S_ux[M][N];
 float S_uu[M][M];
 float S_uu_inverse[M][M];
-float z_k1_dot_z_n = 0.0;
+float z_k_dot_z_n = 0.0;
 // tilt estimation
 // the pivot point B̂ in the inertial frame Ô
 float pivot[3] = {-0.097, -0.1, -0.032};
@@ -909,21 +909,21 @@ void stepForward(LinearQuadraticRegulator *model)
       z_n[i] += getIndex(model->P_n, i, j) * z_k[j];
     }
   }
-  z_k1_dot_z_n = 0.0;
+  z_k_dot_z_n = 0.0;
   float buffer = 0.0;
   for (int i = 0; i < (model->n + model->m); i++)
   {
-    buffer = z_k1[i] * z_n[i];
+    buffer = z_k[i] * z_n[i];
     if (isnanf(buffer) == 0)
     {
-      z_k1_dot_z_n += buffer;
+      z_k_dot_z_n += buffer;
     }
   }
-  if (fabs(model->lambda + z_k1_dot_z_n) > 0)
+  if (fabs(model->lambda + z_k_dot_z_n) > 0)
   {
     for (int i = 0; i < (model->n + model->m); i++)
     {
-      g_n[i] = (1.0 / (model->lambda + z_k1_dot_z_n)) * z_n[i];
+      g_n[i] = (1.0 / (model->lambda + z_k_dot_z_n)) * z_n[i];
     }
   }
   else
@@ -943,7 +943,7 @@ void stepForward(LinearQuadraticRegulator *model)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      alpha_n[i] += getIndex(model->W_n, i, j) * (basisset1[j] - basisset0[j]); // checked manually
+      alpha_n[i] += getIndex(model->W_n, i, j) * (basisset0[j] - basisset1[j]); // checked manually
     }
   }
   for (int i = 0; i < (model->n + model->m); i++)
@@ -957,6 +957,7 @@ void stepForward(LinearQuadraticRegulator *model)
       }
     }
   }
+  int scaleFlag = 0;
   for (int i = 0; i < (model->n + model->m); i++)
   {
     for (int j = 0; j < (model->n + model->m); j++)
@@ -964,7 +965,21 @@ void stepForward(LinearQuadraticRegulator *model)
       buffer = (1.0 / model->lambda) * (getIndex(model->P_n, i, j) - g_n[i] * z_n[j]);
       if (isnanf(buffer) == 0)
       {
+        if (fabs(buffer) > 100000.0)
+        {
+          scaleFlag = 1;
+        }
         setIndex(&(model->P_n), i, j, buffer); // checked manually
+      }
+    }
+  }
+  if (scaleFlag == 1)
+  {
+    for (int i = 0; i < (model->n + model->m); i++)
+    {
+      for (int j = 0; j < (model->n + model->m); j++)
+      {
+        setIndex(&(model->P_n), i, j, 0.9 * getIndex(model->P_n, i, j)); // checked manually
       }
     }
   }
@@ -1067,7 +1082,6 @@ int main(void)
   uint8_t MSG[TRANSMIT_LENGTH] = {'\0'};
   int transmit = 0;
   int log_counter = 0;
-  int log_status = 0;
   unsigned long t1 = 0;
   unsigned long t2 = 0;
   unsigned long diff = 0;
@@ -1182,11 +1196,6 @@ int main(void)
 
     model.imu1.yaw += dt * r_dot[2];
 
-    t2 = DWT->CYCCNT;
-    diff = t2 - t1;
-    dt = (float)diff / CPU_CLOCK;
-    model.dt = dt;
-
     log_counter++;
     if (log_counter > LOG_CYCLE && HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == 0)
     {
@@ -1197,45 +1206,45 @@ int main(void)
       transmit = 0;
       log_counter = 0;
 
-      if (log_status == 0)
-      {
-        sprintf(MSG,
-                "AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, dt: %0.6f\r\n",
-                model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, getIndex(model.P_n, 0, 0), getIndex(model.P_n, 1, 1), getIndex(model.P_n, 2, 2), getIndex(model.P_n, 3, 3), getIndex(model.P_n, 4, 4), dt);
+      sprintf(MSG,
+              "AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, dt: %0.6f\r\n",
+              model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, getIndex(model.P_n, 0, 0), getIndex(model.P_n, 1, 1), getIndex(model.P_n, 2, 2), getIndex(model.P_n, 3, 3), getIndex(model.P_n, 4, 4), getIndex(model.P_n, 5, 5), getIndex(model.P_n, 6, 6), getIndex(model.P_n, 7, 7), getIndex(model.P_n, 8, 8), getIndex(model.P_n, 9, 9), getIndex(model.P_n, 10, 10), getIndex(model.P_n, 11, 11), dt);
 
-        // sprintf(MSG,
-        //         "x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, dt: %0.6f\r\n",
-        //         model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, dt);
+      // sprintf(MSG,
+      //         "x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, dt: %0.6f\r\n",
+      //         model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, dt);
 
-        // sprintf(MSG,
-        //         "roll: %0.2f, pitch: %0.2f, | P11: %0.2f, P22: %0.2f, P33: %0.2f, P44: %0.2f, P55: %0.2f, P66: %0.2f, P77: %0.2f, P88: %0.2f, P99: %0.2f, P1010: %0.2f, P1111: %0.2f, P1212: %0.2f, dt: %0.6f\r\n",
-        //         model.imu1.roll, model.imu1.pitch, P_n[0][0], P_n[0][1], P_n[0][2], P_n[0][3], P_n[0][4], P_n[0][5], P_n[0][6], P_n[0][7], P_n[0][8], P_n[0][9], P_n[0][10], P_n[0][11], dt);
-        // sprintf(MSG,
-        //         "roll: %0.2f, pitch: %0.2f, | z_k_dot_z_n: %0.2f, P00: %0.2f, P_n11: %0.2f, P_n22: %0.2f, P_n33: %0.2f, P_n44: %0.2f, dt: %0.6f\r\n",
-        //         model.imu1.roll, model.imu1.pitch, z_k_dot_z_n, getIndex(model.W_n, 0, 0), getIndex(model.W_n, 1, 1), getIndex(model.W_n, 2, 2), getIndex(model.W_n, 3, 3), getIndex(model.W_n, 4, 4), dt);
+      // sprintf(MSG,
+      //         "roll: %0.2f, pitch: %0.2f, | P11: %0.2f, P22: %0.2f, P33: %0.2f, P44: %0.2f, P55: %0.2f, P66: %0.2f, P77: %0.2f, P88: %0.2f, P99: %0.2f, P1010: %0.2f, P1111: %0.2f, P1212: %0.2f, dt: %0.6f\r\n",
+      //         model.imu1.roll, model.imu1.pitch, P_n[0][0], P_n[0][1], P_n[0][2], P_n[0][3], P_n[0][4], P_n[0][5], P_n[0][6], P_n[0][7], P_n[0][8], P_n[0][9], P_n[0][10], P_n[0][11], dt);
+      // sprintf(MSG,
+      //         "roll: %0.2f, pitch: %0.2f, | z_k_dot_z_n: %0.2f, P00: %0.2f, P_n11: %0.2f, P_n22: %0.2f, P_n33: %0.2f, P_n44: %0.2f, dt: %0.6f\r\n",
+      //         model.imu1.roll, model.imu1.pitch, z_k_dot_z_n, getIndex(model.W_n, 0, 0), getIndex(model.W_n, 1, 1), getIndex(model.W_n, 2, 2), getIndex(model.W_n, 3, 3), getIndex(model.W_n, 4, 4), dt);
 
-        // sprintf(MSG,
-        //         "roll: %0.2f, pitch: %0.2f, | z_k_dot_z_n: %0.2f, z_n0: %0.2f, z_n1: %0.2f, z_n2: %0.2f, z_n3: %0.2f, z_n4: %0.2f, z_n5: %0.2f, z_n6: %0.2f, z_n7: %0.2f, z_n8: %0.2f, z_n9: %0.2f, z_n10: %0.2f, z_n11: %0.2f, dt: %0.6f\r\n",
-        //         model.imu1.roll, model.imu1.pitch, z_k_dot_z_n, z_n[0], z_n[1], z_n[2], z_n[3], z_n[4], z_n[5], z_n[6], z_n[7], z_n[8], z_n[9], z_n[10], z_n[11], dt);
+      // sprintf(MSG,
+      //         "roll: %0.2f, pitch: %0.2f, | z_k_dot_z_n: %0.2f, z_n0: %0.2f, z_n1: %0.2f, z_n2: %0.2f, z_n3: %0.2f, z_n4: %0.2f, z_n5: %0.2f, z_n6: %0.2f, z_n7: %0.2f, z_n8: %0.2f, z_n9: %0.2f, z_n10: %0.2f, z_n11: %0.2f, dt: %0.6f\r\n",
+      //         model.imu1.roll, model.imu1.pitch, z_k_dot_z_n, z_n[0], z_n[1], z_n[2], z_n[3], z_n[4], z_n[5], z_n[6], z_n[7], z_n[8], z_n[9], z_n[10], z_n[11], dt);
 
-        // sprintf(MSG,
-        // "yaw: %0.2f, roll: %0.2f, rollv: %0.2f, pitch: %0.2f, pitchv: %0.2f, | aX1: %0.2f, aY1: %0.2f, aZ1: %0.2f, | aX2: %0.2f, aY2: %0.2f, aZ2: %0.2f, | encB: %d, encT: %d, dt: %0.6f\r\n",
-        // model.imu1.yaw, model.imu1.roll, model.imu1.roll_velocity, model.imu1.pitch, model.imu1.pitch_velocity, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, TIM3->CNT, TIM4->CNT, dt);
-        // sprintf(MSG, "Bottom: current: %d, curVel: %0.2f, enc: %d, angle: %0.2f, velocity: %0.2f, acceleration: %0.2f, | Top: current: %d, curvel: %0.2f, enc: %d, angle: %0.2f, velocity: %0.2f, acceleration: %0.2f, dt: %0.6f\r\n",
-        //   model.rollingCurrentSensor.current0, model.rollingCurrentSensor.currentVelocity, TIM4->CNT, model.rollingEncoder.angle, model.rollingEncoder.velocity, model.rollingEncoder.acceleration,
-        //   model.reactionCurrentSensor.current0, model.reactionCurrentSensor.currentVelocity, TIM3->CNT, model.reactionEncoder.angle, model.reactionEncoder.velocity, model.reactionEncoder.acceleration, dt);
+      // sprintf(MSG,
+      // "yaw: %0.2f, roll: %0.2f, rollv: %0.2f, pitch: %0.2f, pitchv: %0.2f, | aX1: %0.2f, aY1: %0.2f, aZ1: %0.2f, | aX2: %0.2f, aY2: %0.2f, aZ2: %0.2f, | encB: %d, encT: %d, dt: %0.6f\r\n",
+      // model.imu1.yaw, model.imu1.roll, model.imu1.roll_velocity, model.imu1.pitch, model.imu1.pitch_velocity, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, TIM3->CNT, TIM4->CNT, dt);
+      // sprintf(MSG, "Bottom: current: %d, curVel: %0.2f, enc: %d, angle: %0.2f, velocity: %0.2f, acceleration: %0.2f, | Top: current: %d, curvel: %0.2f, enc: %d, angle: %0.2f, velocity: %0.2f, acceleration: %0.2f, dt: %0.6f\r\n",
+      //   model.rollingCurrentSensor.current0, model.rollingCurrentSensor.currentVelocity, TIM4->CNT, model.rollingEncoder.angle, model.rollingEncoder.velocity, model.rollingEncoder.acceleration,
+      //   model.reactionCurrentSensor.current0, model.reactionCurrentSensor.currentVelocity, TIM3->CNT, model.reactionEncoder.angle, model.reactionEncoder.velocity, model.reactionEncoder.acceleration, dt);
 
-        // sprintf(MSG,
-        //   "ax2: %d, ay2: %d, az2: %d, | gx2: %d, gy2: %d, gz2: %d, dt: %0.6f\r\n",
-        //   model.imu2.rawAccX, model.imu2.rawAccY, model.imu2.rawAccZ, model.imu2.rawGyrX, model.imu2.rawGyrY, model.imu2.rawGyrZ, dt);
-        // sprintf(MSG,
-        //   "ax2: %0.2f, ay2: %0.2f, az2: %0.2f, | gx2: %0.2f, gy2: %0.2f, gz2: %0.2f, dt: %0.6f\r\n",
-        //   model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, dt);
-        log_status = 0;
-      }
+      // sprintf(MSG,
+      //   "ax2: %d, ay2: %d, az2: %d, | gx2: %d, gy2: %d, gz2: %d, dt: %0.6f\r\n",
+      //   model.imu2.rawAccX, model.imu2.rawAccY, model.imu2.rawAccZ, model.imu2.rawGyrX, model.imu2.rawGyrY, model.imu2.rawGyrZ, dt);
+      // sprintf(MSG,
+      //   "ax2: %0.2f, ay2: %0.2f, az2: %0.2f, | gx2: %0.2f, gy2: %0.2f, gz2: %0.2f, dt: %0.6f\r\n",
+      //   model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, dt);
 
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 1000);
     }
+    t2 = DWT->CYCCNT;
+    diff = t2 - t1;
+    dt = (float)diff / CPU_CLOCK;
+    model.dt = dt;
     // Rinse and repeat :)
   }
   /* USER CODE END 3 */
