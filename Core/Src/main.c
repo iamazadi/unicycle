@@ -107,7 +107,7 @@ const float CPU_CLOCK = 84000000.0;
 const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
-const int updatePolicyFrequency = 10;
+const int updatePolicyPeriod = 10;
 const int LOG_CYCLE = 20;
 const float roll_safety_angle = 0.30;
 const float pitch_safety_angle = 0.20;
@@ -1189,7 +1189,7 @@ int main(void)
       senseCurrent(&(model.reactionCurrentSensor), &(model.rollingCurrentSensor));
       updateIMU(&model);
     }
-    if (model.k % updatePolicyFrequency == 0)
+    if (model.k % updatePolicyPeriod == 0)
     {
       updateControlPolicy(&model);
     }
