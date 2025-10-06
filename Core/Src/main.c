@@ -107,7 +107,7 @@ const float CPU_CLOCK = 84000000.0;
 const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
-const int updatePolicyPeriod = 10;
+const int updatePolicyPeriod = 20;
 const int LOG_CYCLE = 20;
 const float roll_safety_angle = 0.30;
 const float pitch_safety_angle = 0.20;
@@ -115,7 +115,8 @@ const float sensorAngle = -30.0 / 180.0 * M_PI;
 const float clipping = 1000.0;
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // maximum PWM step size for each control cycle
-float pulseStep = 64.0;
+float reactionPulseStep = 255.0 * 64.0;
+float rollingPulseStep = 255.0 * 64.0;
 // sampling time
 float dt = 0.0;
 uint8_t raw_data[14] = {0};
@@ -801,8 +802,8 @@ void stepForward(LinearQuadraticRegulator *model)
   model->dataset.x10 = u_k[0];
   model->dataset.x11 = u_k[1];
 
-  model->reactionPWM += (255.0 * pulseStep) * u_k[0];
-  model->rollingPWM += (255.0 * pulseStep) * u_k[1];
+  model->reactionPWM += reactionPulseStep * u_k[0];
+  model->rollingPWM += rollingPulseStep * u_k[1];
   model->reactionPWM = fmin(255.0 * 255.0, model->reactionPWM);
   model->reactionPWM = fmax(-255.0 * 255.0, model->reactionPWM);
   model->rollingPWM = fmin(255.0 * 255.0, model->rollingPWM);
@@ -943,7 +944,8 @@ void stepForward(LinearQuadraticRegulator *model)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      alpha_n[i] += getIndex(model->W_n, i, j) * (basisset0[j] - basisset1[j]); // checked manually
+      // alpha_n[i] += getIndex(model->W_n, i, j) * (basisset0[j] - basisset1[j]); // checked manually
+      alpha_n[i] += 0.0 - getIndex(model->W_n, i, j) * basisset1[j];
     }
   }
   for (int i = 0; i < (model->n + model->m); i++)
