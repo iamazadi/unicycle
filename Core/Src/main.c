@@ -113,6 +113,7 @@ const float roll_safety_angle = 0.30;
 const float pitch_safety_angle = 0.20;
 const float sensorAngle = -30.0 / 180.0 * M_PI;
 const float clipping = 1000.0;
+const float clippingFactor = 0.9;
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // maximum PWM step size for each control cycle
 float reactionPulseStep = 255.0 * 64.0;
@@ -907,14 +908,14 @@ void stepForward(LinearQuadraticRegulator *model)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      z_n[i] += getIndex(model->P_n, i, j) * z_k[j];
+      z_n[i] += getIndex(model->P_n, i, j) * z_k1[j];
     }
   }
   z_k_dot_z_n = 0.0;
   float buffer = 0.0;
   for (int i = 0; i < (model->n + model->m); i++)
   {
-    buffer = z_k[i] * z_n[i];
+    buffer = z_k1[i] * z_n[i];
     if (isnanf(buffer) == 0)
     {
       z_k_dot_z_n += buffer;
@@ -981,7 +982,7 @@ void stepForward(LinearQuadraticRegulator *model)
     {
       for (int j = 0; j < (model->n + model->m); j++)
       {
-        setIndex(&(model->P_n), i, j, 0.9 * getIndex(model->P_n, i, j)); // checked manually
+        setIndex(&(model->P_n), i, j, clippingFactor * getIndex(model->P_n, i, j)); // checked manually
       }
     }
   }
