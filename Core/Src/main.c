@@ -107,13 +107,13 @@ const float CPU_CLOCK = 84000000.0;
 const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
-const int updatePolicyPeriod = 30;
+const int updatePolicyPeriod = 100;
 const int LOG_CYCLE = 20;
 const float roll_safety_angle = 0.30;
 const float pitch_safety_angle = 0.20;
 const float sensorAngle = -30.0 / 180.0 * M_PI;
 const float clipping = 1000.0;
-const float clippingFactor = 0.9;
+const float clippingFactor = 0.99;
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // maximum PWM step size for each control cycle
 float reactionPulseStep = 255.0 * 64.0;
