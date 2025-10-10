@@ -107,7 +107,7 @@ const float CPU_CLOCK = 84000000.0;
 const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
-const int updatePolicyPeriod = 50;
+const int updatePolicyPeriod = 30;
 const int LOG_CYCLE = 20;
 const float roll_safety_angle = 0.30;
 const float pitch_safety_angle = 0.20;
@@ -118,6 +118,9 @@ uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // maximum PWM step size for each control cycle
 float reactionPulseStep = 255.0 * 64.0;
 float rollingPulseStep = 255.0 * 64.0;
+float updateChange = 0.0; // corrections to the filter coefficients
+float minimumChange = 60.0; // the minimum correction to filter coefficients
+float triggerUpdate = 0; // trigger a policy update
 // sampling time
 float dt = 0.0;
 uint8_t raw_data[14] = {0};
@@ -945,20 +948,29 @@ void stepForward(LinearQuadraticRegulator *model)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      // alpha_n[i] += getIndex(model->W_n, i, j) * (basisset0[j] - basisset1[j]); // checked manually
+      // alpha_n[i] += getIndex(model->W_n, i, j) * (basisset0[j] - basisset1[j]);
       alpha_n[i] += 0.0 - getIndex(model->W_n, i, j) * basisset1[j];
     }
   }
+  updateChange = 0.0;
+  float correction = 0.0;
   for (int i = 0; i < (model->n + model->m); i++)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      buffer = getIndex(model->W_n, i, j) + (alpha_n[i] * g_n[j]);
+      correction = alpha_n[i] * g_n[j];
+      // sum the absolute value of the corrections to the filter coefficients to see if there is any update
+      updateChange += fabs(getIndex(model->W_n, i, j) - correction);
+      buffer = getIndex(model->W_n, i, j) + correction;
       if (isnanf(buffer) == 0)
       {
-        setIndex(&(model->W_n), i, j, buffer); // checked manually
+        setIndex(&(model->W_n), i, j, buffer); 
       }
     }
+  }
+  // trigger a policy update if the RLS algorithm has converged
+  if (fabs(updateChange) < minimumChange) {
+    triggerUpdate = 1;
   }
   int scaleFlag = 0;
   for (int i = 0; i < (model->n + model->m); i++)
@@ -972,7 +984,7 @@ void stepForward(LinearQuadraticRegulator *model)
         {
           scaleFlag = 1;
         }
-        setIndex(&(model->P_n), i, j, buffer); // checked manually
+        setIndex(&(model->P_n), i, j, buffer);
       }
     }
   }
@@ -982,7 +994,7 @@ void stepForward(LinearQuadraticRegulator *model)
     {
       for (int j = 0; j < (model->n + model->m); j++)
       {
-        setIndex(&(model->P_n), i, j, clippingFactor * getIndex(model->P_n, i, j)); // checked manually
+        setIndex(&(model->P_n), i, j, clippingFactor * getIndex(model->P_n, i, j));
       }
     }
   }
@@ -1019,7 +1031,7 @@ void updateControlPolicy(LinearQuadraticRegulator *model)
   // uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
   float determinant = S_uu[1][1] * S_uu[2][2] - S_uu[1][2] * S_uu[2][1];
   // check the rank of S_uu to see if it's equal to 2 (invertible matrix)
-  if (fabs(determinant) > 0.0001) // greater than zero
+  if (fabs(determinant) > 0.001) // greater than zero
   {
     S_uu_inverse[0][0] = S_uu[1][1] / determinant;
     S_uu_inverse[0][1] = -S_uu[0][1] / determinant;
@@ -1192,9 +1204,10 @@ int main(void)
       senseCurrent(&(model.reactionCurrentSensor), &(model.rollingCurrentSensor));
       updateIMU(&model);
     }
-    if (model.k % updatePolicyPeriod == 0)
+    if (model.k % updatePolicyPeriod == 0 || triggerUpdate == 1)
     {
       updateControlPolicy(&model);
+      triggerUpdate = 0;
     }
 
     model.imu1.yaw += dt * r_dot[2];
@@ -1210,8 +1223,8 @@ int main(void)
       log_counter = 0;
 
       sprintf(MSG,
-              "AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | k: %f, j: %f, | x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, x10: %0.2f, x11: %0.2f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, dt: %0.6f\r\n",
-              model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float) model.k, (float) model.j, model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11, getIndex(model.P_n, 0, 0), getIndex(model.P_n, 1, 1), getIndex(model.P_n, 2, 2), getIndex(model.P_n, 3, 3), getIndex(model.P_n, 4, 4), getIndex(model.P_n, 5, 5), getIndex(model.P_n, 6, 6), getIndex(model.P_n, 7, 7), getIndex(model.P_n, 8, 8), getIndex(model.P_n, 9, 9), getIndex(model.P_n, 10, 10), getIndex(model.P_n, 11, 11), dt);
+              "AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | k: %f, j: %f, | x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, x10: %0.2f, x11: %0.2f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, change: %0.2f, dt: %0.6f\r\n",
+              model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float) model.k, (float) model.j, model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11, getIndex(model.P_n, 0, 0), getIndex(model.P_n, 1, 1), getIndex(model.P_n, 2, 2), getIndex(model.P_n, 3, 3), getIndex(model.P_n, 4, 4), getIndex(model.P_n, 5, 5), getIndex(model.P_n, 6, 6), getIndex(model.P_n, 7, 7), getIndex(model.P_n, 8, 8), getIndex(model.P_n, 9, 9), getIndex(model.P_n, 10, 10), getIndex(model.P_n, 11, 11), updateChange, dt);
 
       // sprintf(MSG,
       //         "x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, dt: %0.6f\r\n",
