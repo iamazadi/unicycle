@@ -107,7 +107,7 @@ const float CPU_CLOCK = 84000000.0;
 const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
-const int updatePolicyPeriod = 100;
+const int updatePolicyPeriod = 200;
 const int LOG_CYCLE = 20;
 const float roll_safety_angle = 0.30;
 const float pitch_safety_angle = 0.20;
@@ -683,6 +683,8 @@ void initialize(LinearQuadraticRegulator *model)
     }
   }
 
+  int seed = DWT->CYCCNT;
+  srand(seed);
   model->K_j.x00 = (float)(rand() % 100) / 100.0;
   model->K_j.x01 = (float)(rand() % 100) / 100.0;
   model->K_j.x02 = (float)(rand() % 100) / 100.0;
@@ -812,6 +814,19 @@ void stepForward(LinearQuadraticRegulator *model)
       u_k[i] += -K_j[i][j] * x_k[j];
     }
   }
+  // add probing noise to guarantee persistence of excitation
+  int seed = DWT->CYCCNT;
+  srand(seed);
+  u_k[0] += (float)(rand() % 1000) / 100000.0;
+  seed = DWT->CYCCNT;
+  srand(seed);
+  u_k[0] -= (float)(rand() % 1000) / 100000.0;
+  seed = DWT->CYCCNT;
+  srand(seed);
+  u_k[1] += (float)(rand() % 1000) / 100000.0;
+  seed = DWT->CYCCNT;
+  srand(seed);
+  u_k[1] -= (float)(rand() % 1000) / 100000.0;
 
   model->reactionPWM += reactionPulseStep * u_k[0];
   model->rollingPWM += rollingPulseStep * u_k[1];
