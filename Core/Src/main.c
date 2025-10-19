@@ -116,10 +116,10 @@ const float clipping = 1000.0;
 const float clippingFactor = 0.99;
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // maximum PWM step size for each control cycle
-float reactionPulseStep = 255.0 * 64.0;
+float reactionPulseStep = 255.0 * 96.0;
 float rollingPulseStep = 255.0 * 64.0;
 float updateChange = 0.0; // corrections to the filter coefficients
-float minimumChange = 60.0; // the minimum correction to filter coefficients
+float minimumChange = 64.0; // the minimum correction to filter coefficients
 float triggerUpdate = 0; // trigger a policy update
 // sampling time
 float dt = 0.0;
@@ -752,6 +752,26 @@ to the Q function or the control policy at each step.
 */
 void stepForward(LinearQuadraticRegulator *model)
 {
+  // measure
+  encodeWheel(&(model->reactionEncoder), TIM3->CNT);
+  encodeWheel(&(model->rollingEncoder), TIM4->CNT);
+  senseCurrent(&(model->reactionCurrentSensor), &(model->rollingCurrentSensor));
+  updateIMU(model);
+  // dataset = (xₖ, uₖ)
+  model->dataset.x0 = model->imu1.roll / M_PI;
+  model->dataset.x1 = model->imu1.roll_velocity / M_PI;
+  model->dataset.x2 = model->imu1.roll_acceleration / M_PI;
+  model->dataset.x3 = model->imu1.pitch / M_PI;
+  model->dataset.x4 = model->imu1.pitch_velocity / M_PI;
+  model->dataset.x5 = model->imu1.pitch_acceleration / M_PI;
+  model->dataset.x6 = model->reactionEncoder.velocity;
+  model->dataset.x7 = model->rollingEncoder.velocity;
+  model->dataset.x8 = model->reactionCurrentSensor.currentVelocity;
+  model->dataset.x9 = model->rollingCurrentSensor.currentVelocity;
+  model->dataset.x10 = u_k[0];
+  model->dataset.x11 = u_k[1];
+
+  // act!
   x_k[0] = model->dataset.x0;
   x_k[1] = model->dataset.x1;
   x_k[2] = model->dataset.x2;
@@ -792,19 +812,6 @@ void stepForward(LinearQuadraticRegulator *model)
       u_k[i] += -K_j[i][j] * x_k[j];
     }
   }
-  // act!
-  model->dataset.x0 = model->imu1.roll / M_PI;
-  model->dataset.x1 = model->imu1.roll_velocity / M_PI;
-  model->dataset.x2 = model->imu1.roll_acceleration / M_PI;
-  model->dataset.x3 = model->imu1.pitch / M_PI;
-  model->dataset.x4 = model->imu1.pitch_velocity / M_PI;
-  model->dataset.x5 = model->imu1.pitch_acceleration / M_PI;
-  model->dataset.x6 = model->reactionEncoder.velocity;
-  model->dataset.x7 = model->rollingEncoder.velocity;
-  model->dataset.x8 = model->reactionCurrentSensor.currentVelocity;
-  model->dataset.x9 = model->rollingCurrentSensor.currentVelocity;
-  model->dataset.x10 = u_k[0];
-  model->dataset.x11 = u_k[1];
 
   model->reactionPWM += reactionPulseStep * u_k[0];
   model->rollingPWM += rollingPulseStep * u_k[1];
@@ -835,42 +842,6 @@ void stepForward(LinearQuadraticRegulator *model)
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
   }
 
-  // dataset = (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
-  encodeWheel(&(model->reactionEncoder), TIM3->CNT);
-  encodeWheel(&(model->rollingEncoder), TIM4->CNT);
-  senseCurrent(&(model->reactionCurrentSensor), &(model->rollingCurrentSensor));
-  updateIMU(model);
-  model->dataset.x12 = model->imu1.roll / M_PI;
-  model->dataset.x13 = model->imu1.roll_velocity / M_PI;
-  model->dataset.x14 = model->imu1.roll_acceleration / M_PI;
-  model->dataset.x15 = model->imu1.pitch / M_PI;
-  model->dataset.x16 = model->imu1.pitch_velocity / M_PI;
-  model->dataset.x17 = model->imu1.pitch_acceleration / M_PI;
-  model->dataset.x18 = model->reactionEncoder.velocity;
-  model->dataset.x19 = model->rollingEncoder.velocity;
-  model->dataset.x20 = model->reactionCurrentSensor.currentVelocity;
-  model->dataset.x21 = model->rollingCurrentSensor.currentVelocity;
-  x_k1[0] = model->dataset.x12;
-  x_k1[1] = model->dataset.x13;
-  x_k1[2] = model->dataset.x14;
-  x_k1[3] = model->dataset.x15;
-  x_k1[4] = model->dataset.x16;
-  x_k1[5] = model->dataset.x17;
-  x_k1[6] = model->dataset.x18;
-  x_k1[7] = model->dataset.x19;
-  x_k1[8] = model->dataset.x20;
-  x_k1[9] = model->dataset.x21;
-  u_k1[0] = 0.0;
-  u_k1[1] = 0.0;
-  for (int i = 0; i < model->m; i++)
-  {
-    for (int j = 0; j < model->n; j++)
-    {
-      u_k1[i] += -K_j[i][j] * x_k1[j];
-    }
-  }
-  model->dataset.x22 = u_k1[0];
-  model->dataset.x23 = u_k1[1];
   // Compute the quadratic basis sets ϕ(zₖ), ϕ(zₖ₊₁).
   z_k[0] = model->dataset.x0;
   z_k[1] = model->dataset.x1;
@@ -884,23 +855,6 @@ void stepForward(LinearQuadraticRegulator *model)
   z_k[9] = model->dataset.x9;
   z_k[10] = model->dataset.x10;
   z_k[11] = model->dataset.x11;
-  z_k1[0] = model->dataset.x12;
-  z_k1[1] = model->dataset.x13;
-  z_k1[2] = model->dataset.x14;
-  z_k1[3] = model->dataset.x15;
-  z_k1[4] = model->dataset.x16;
-  z_k1[5] = model->dataset.x17;
-  z_k1[6] = model->dataset.x18;
-  z_k1[7] = model->dataset.x19;
-  z_k1[8] = model->dataset.x20;
-  z_k1[9] = model->dataset.x21;
-  z_k1[10] = model->dataset.x22;
-  z_k1[11] = model->dataset.x23;
-  for (int i = 0; i < (model->n + model->m); i++)
-  {
-    basisset0[i] = z_k[i];
-    basisset1[i] = z_k1[i];
-  }
   // Now perform a one-step update in the parameter vector W by applying RLS to equation (S27).
   // initialize z_n
   for (int i = 0; i < (model->n + model->m); i++)
@@ -911,14 +865,14 @@ void stepForward(LinearQuadraticRegulator *model)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      z_n[i] += getIndex(model->P_n, i, j) * z_k1[j];
+      z_n[i] += getIndex(model->P_n, i, j) * z_k[j];
     }
   }
   z_k_dot_z_n = 0.0;
   float buffer = 0.0;
   for (int i = 0; i < (model->n + model->m); i++)
   {
-    buffer = z_k1[i] * z_n[i];
+    buffer = z_k[i] * z_n[i];
     if (isnanf(buffer) == 0)
     {
       z_k_dot_z_n += buffer;
@@ -948,7 +902,6 @@ void stepForward(LinearQuadraticRegulator *model)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      // alpha_n[i] += getIndex(model->W_n, i, j) * (basisset0[j] - basisset1[j]);
       alpha_n[i] += 0.0 - getIndex(model->W_n, i, j) * basisset1[j];
     }
   }
@@ -969,7 +922,7 @@ void stepForward(LinearQuadraticRegulator *model)
     }
   }
   // trigger a policy update if the RLS algorithm has converged
-  if (fabs(updateChange) < minimumChange) {
+  if (fabs(updateChange) > minimumChange) {
     triggerUpdate = 1;
   }
   int scaleFlag = 0;
