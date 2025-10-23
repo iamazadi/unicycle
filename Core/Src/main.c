@@ -107,19 +107,19 @@ const float CPU_CLOCK = 84000000.0;
 const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
-const int updatePolicyPeriod = 200;
+const int updatePolicyPeriod = 1;
 const int LOG_CYCLE = 20;
-const float roll_safety_angle = 0.30;
+const float roll_safety_angle = 0.28;
 const float pitch_safety_angle = 0.20;
 const float sensorAngle = -30.0 / 180.0 * M_PI;
 const float clipping = 1000.0;
-const float clippingFactor = 0.99;
+const float clippingFactor = 0.95;
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // maximum PWM step size for each control cycle
-float reactionPulseStep = 255.0 * 96.0;
-float rollingPulseStep = 255.0 * 64.0;
+float reactionPulseStep = 255.0 * 32.0;
+float rollingPulseStep = 255.0 * 32.0;
 float updateChange = 0.0; // corrections to the filter coefficients
-float minimumChange = 64.0; // the minimum correction to filter coefficients
+float minimumChange = 60.0; // the minimum correction to filter coefficients
 float triggerUpdate = 0; // trigger a policy update
 // sampling time
 float dt = 0.0;
@@ -131,12 +131,12 @@ uint32_t AD_RES_BUFFER[2];
 // float P_n[N + M][N + M];
 float x_k[N];
 float u_k[M];
-float x_k1[N];
-float u_k1[M];
+// float x_k1[N];
+// float u_k1[M];
 float z_k[N + M];
 float z_k1[N + M];
-float basisset0[N + M];
-float basisset1[N + M];
+// float basisset0[N + M];
+// float basisset1[N + M];
 float z_n[N + M];
 float K_j[M][N];
 float g_n[N + M];
@@ -186,8 +186,8 @@ float fused_beta = 0.0;
 float gamma1 = 0.0;
 float fused_gamma = 0.0;
 // tuning parameters to minimize estimate variance
-float kappa1 = 0.03;
-float kappa2 = 0.03;
+float kappa1 = 0.05;
+float kappa2 = 0.05;
 // the average of the body angular rate from rate gyro
 float r[3] = {0.0, 0.0, 0.0};
 // the average of the body angular rate in Euler angles
@@ -662,7 +662,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->k = 1;
   model->n = dim_n;
   model->m = dim_m;
-  model->lambda = 0.99;
+  model->lambda = 0.8;
   model->delta = 0.01;
   model->active = 0;
   model->dt = 0.0;
@@ -735,8 +735,8 @@ void initialize(LinearQuadraticRegulator *model)
   IMU imu2 = {75, -25, -18, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   Encoder reactionEncoder = {1736, 0, 0, 0, 0, 0};
   Encoder rollingEncoder = {3020, 0, 0, 0, 0, 0};
-  CurrentSensor reactionCurrentSensor = {32000.0, 0, 0, 0};
-  CurrentSensor rollingCurrentSensor = {32000.0, 0, 0, 0};
+  CurrentSensor reactionCurrentSensor = {10000.0, 0, 0, 0};
+  CurrentSensor rollingCurrentSensor = {10000.0, 0, 0, 0};
   model->imu1 = imu1;
   model->imu2 = imu2;
   model->reactionEncoder = reactionEncoder;
@@ -754,18 +754,30 @@ to the Q function or the control policy at each step.
 */
 void stepForward(LinearQuadraticRegulator *model)
 {
+  z_k1[0] = model->dataset.x0;
+  z_k1[1] = model->dataset.x1;
+  z_k1[2] = model->dataset.x2;
+  z_k1[3] = model->dataset.x3;
+  z_k1[4] = model->dataset.x4;
+  z_k1[5] = model->dataset.x5;
+  z_k1[6] = model->dataset.x6;
+  z_k1[7] = model->dataset.x7;
+  z_k1[8] = model->dataset.x8;
+  z_k1[9] = model->dataset.x9;
+  z_k1[10] = model->dataset.x10;
+  z_k1[11] = model->dataset.x11;
   // measure
   encodeWheel(&(model->reactionEncoder), TIM3->CNT);
   encodeWheel(&(model->rollingEncoder), TIM4->CNT);
   senseCurrent(&(model->reactionCurrentSensor), &(model->rollingCurrentSensor));
   updateIMU(model);
   // dataset = (xₖ, uₖ)
-  model->dataset.x0 = model->imu1.roll / M_PI;
-  model->dataset.x1 = model->imu1.roll_velocity / M_PI;
-  model->dataset.x2 = model->imu1.roll_acceleration / M_PI;
-  model->dataset.x3 = model->imu1.pitch / M_PI;
-  model->dataset.x4 = model->imu1.pitch_velocity / M_PI;
-  model->dataset.x5 = model->imu1.pitch_acceleration / M_PI;
+  model->dataset.x0 = model->imu1.roll;
+  model->dataset.x1 = model->imu1.roll_velocity;
+  model->dataset.x2 = model->imu1.roll_acceleration;
+  model->dataset.x3 = model->imu1.pitch;
+  model->dataset.x4 = model->imu1.pitch_velocity;
+  model->dataset.x5 = model->imu1.pitch_acceleration;
   model->dataset.x6 = model->reactionEncoder.velocity;
   model->dataset.x7 = model->rollingEncoder.velocity;
   model->dataset.x8 = model->reactionCurrentSensor.currentVelocity;
@@ -838,13 +850,13 @@ void stepForward(LinearQuadraticRegulator *model)
   TIM2->CCR2 = (int)fabs(model->reactionPWM);
   if (model->reactionPWM < 0)
   {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
   }
   else
   {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
   }
   if (model->rollingPWM < 0)
   {
@@ -917,7 +929,7 @@ void stepForward(LinearQuadraticRegulator *model)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      alpha_n[i] += 0.0 - getIndex(model->W_n, i, j) * basisset1[j];
+      alpha_n[i] += -getIndex(model->W_n, i, j) * z_k[j] + model->lambda * getIndex(model->W_n, i, j) * z_k1[j];
     }
   }
   updateChange = 0.0;
@@ -938,7 +950,7 @@ void stepForward(LinearQuadraticRegulator *model)
   }
   // trigger a policy update if the RLS algorithm has converged
   if (fabs(updateChange) > minimumChange) {
-    triggerUpdate = 1;
+    // triggerUpdate = 1;
   }
   int scaleFlag = 0;
   for (int i = 0; i < (model->n + model->m); i++)
