@@ -770,8 +770,6 @@ void stepForward(LinearQuadraticRegulator *model)
   model->dataset.x7 = model->rollingEncoder.velocity;
   model->dataset.x8 = model->reactionCurrentSensor.currentVelocity;
   model->dataset.x9 = model->rollingCurrentSensor.currentVelocity;
-  model->dataset.x10 = u_k[0];
-  model->dataset.x11 = u_k[1];
 
   // act!
   x_k[0] = model->dataset.x0;
@@ -814,19 +812,21 @@ void stepForward(LinearQuadraticRegulator *model)
       u_k[i] += -K_j[i][j] * x_k[j];
     }
   }
+  model->dataset.x10 = u_k[0];
+  model->dataset.x11 = u_k[1];
   // add probing noise to guarantee persistence of excitation
-  int seed = DWT->CYCCNT;
-  srand(seed);
-  u_k[0] += (float)(rand() % 1000) / 10000000.0;
-  seed = DWT->CYCCNT;
-  srand(seed);
-  u_k[0] -= (float)(rand() % 1000) / 10000000.0;
-  seed = DWT->CYCCNT;
-  srand(seed);
-  u_k[1] += (float)(rand() % 1000) / 10000000.0;
-  seed = DWT->CYCCNT;
-  srand(seed);
-  u_k[1] -= (float)(rand() % 1000) / 10000000.0;
+  // int seed = DWT->CYCCNT;
+  // srand(seed);
+  // u_k[0] += (float)(rand() % 1000) / 10000000.0;
+  // seed = DWT->CYCCNT;
+  // srand(seed);
+  // u_k[0] -= (float)(rand() % 1000) / 10000000.0;
+  // seed = DWT->CYCCNT;
+  // srand(seed);
+  // u_k[1] += (float)(rand() % 1000) / 10000000.0;
+  // seed = DWT->CYCCNT;
+  // srand(seed);
+  // u_k[1] -= (float)(rand() % 1000) / 10000000.0;
 
   model->reactionPWM += reactionPulseStep * u_k[0];
   model->rollingPWM += rollingPulseStep * u_k[1];
@@ -838,13 +838,13 @@ void stepForward(LinearQuadraticRegulator *model)
   TIM2->CCR2 = (int)fabs(model->reactionPWM);
   if (model->reactionPWM < 0)
   {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
   }
   else
   {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
   }
   if (model->rollingPWM < 0)
   {
