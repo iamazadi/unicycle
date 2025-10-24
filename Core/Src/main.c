@@ -116,8 +116,8 @@ const float clipping = 1000.0;
 const float clippingFactor = 0.95;
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // maximum PWM step size for each control cycle
-float reactionPulseStep = 255.0 * 32.0;
-float rollingPulseStep = 255.0 * 32.0;
+float reactionPulseStep = 255.0 * 48.0;
+float rollingPulseStep = 255.0 * 48.0;
 float updateChange = 0.0; // corrections to the filter coefficients
 float minimumChange = 60.0; // the minimum correction to filter coefficients
 float triggerUpdate = 0; // trigger a policy update
@@ -134,7 +134,7 @@ float u_k[M];
 // float x_k1[N];
 // float u_k1[M];
 float z_k[N + M];
-float z_k1[N + M];
+// float z_k1[N + M];
 // float basisset0[N + M];
 // float basisset1[N + M];
 float z_n[N + M];
@@ -186,8 +186,8 @@ float fused_beta = 0.0;
 float gamma1 = 0.0;
 float fused_gamma = 0.0;
 // tuning parameters to minimize estimate variance
-float kappa1 = 0.05;
-float kappa2 = 0.05;
+float kappa1 = 0.03;
+float kappa2 = 0.03;
 // the average of the body angular rate from rate gyro
 float r[3] = {0.0, 0.0, 0.0};
 // the average of the body angular rate in Euler angles
@@ -662,7 +662,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->k = 1;
   model->n = dim_n;
   model->m = dim_m;
-  model->lambda = 0.8;
+  model->lambda = 0.9;
   model->delta = 0.01;
   model->active = 0;
   model->dt = 0.0;
@@ -735,8 +735,8 @@ void initialize(LinearQuadraticRegulator *model)
   IMU imu2 = {75, -25, -18, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   Encoder reactionEncoder = {1736, 0, 0, 0, 0, 0};
   Encoder rollingEncoder = {3020, 0, 0, 0, 0, 0};
-  CurrentSensor reactionCurrentSensor = {10000.0, 0, 0, 0};
-  CurrentSensor rollingCurrentSensor = {10000.0, 0, 0, 0};
+  CurrentSensor reactionCurrentSensor = {30000.0, 0, 0, 0};
+  CurrentSensor rollingCurrentSensor = {30000.0, 0, 0, 0};
   model->imu1 = imu1;
   model->imu2 = imu2;
   model->reactionEncoder = reactionEncoder;
@@ -754,18 +754,6 @@ to the Q function or the control policy at each step.
 */
 void stepForward(LinearQuadraticRegulator *model)
 {
-  z_k1[0] = model->dataset.x0;
-  z_k1[1] = model->dataset.x1;
-  z_k1[2] = model->dataset.x2;
-  z_k1[3] = model->dataset.x3;
-  z_k1[4] = model->dataset.x4;
-  z_k1[5] = model->dataset.x5;
-  z_k1[6] = model->dataset.x6;
-  z_k1[7] = model->dataset.x7;
-  z_k1[8] = model->dataset.x8;
-  z_k1[9] = model->dataset.x9;
-  z_k1[10] = model->dataset.x10;
-  z_k1[11] = model->dataset.x11;
   // measure
   encodeWheel(&(model->reactionEncoder), TIM3->CNT);
   encodeWheel(&(model->rollingEncoder), TIM4->CNT);
@@ -829,16 +817,16 @@ void stepForward(LinearQuadraticRegulator *model)
   // add probing noise to guarantee persistence of excitation
   int seed = DWT->CYCCNT;
   srand(seed);
-  u_k[0] += (float)(rand() % 1000) / 100000.0;
+  u_k[0] += (float)(rand() % 1000) / 10000000.0;
   seed = DWT->CYCCNT;
   srand(seed);
-  u_k[0] -= (float)(rand() % 1000) / 100000.0;
+  u_k[0] -= (float)(rand() % 1000) / 10000000.0;
   seed = DWT->CYCCNT;
   srand(seed);
-  u_k[1] += (float)(rand() % 1000) / 100000.0;
+  u_k[1] += (float)(rand() % 1000) / 10000000.0;
   seed = DWT->CYCCNT;
   srand(seed);
-  u_k[1] -= (float)(rand() % 1000) / 100000.0;
+  u_k[1] -= (float)(rand() % 1000) / 10000000.0;
 
   model->reactionPWM += reactionPulseStep * u_k[0];
   model->rollingPWM += rollingPulseStep * u_k[1];
@@ -929,7 +917,7 @@ void stepForward(LinearQuadraticRegulator *model)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      alpha_n[i] += -getIndex(model->W_n, i, j) * z_k[j] + model->lambda * getIndex(model->W_n, i, j) * z_k1[j];
+      alpha_n[i] += 0.0 - getIndex(model->W_n, i, j) * z_k[j];
     }
   }
   updateChange = 0.0;
