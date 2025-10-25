@@ -118,9 +118,9 @@ uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // maximum PWM step size for each control cycle
 float reactionPulseStep = 255.0 * 48.0;
 float rollingPulseStep = 255.0 * 48.0;
-float updateChange = 0.0; // corrections to the filter coefficients
+float updateChange = 0.0;   // corrections to the filter coefficients
 float minimumChange = 60.0; // the minimum correction to filter coefficients
-float triggerUpdate = 0; // trigger a policy update
+float triggerUpdate = 0;    // trigger a policy update
 // sampling time
 float dt = 0.0;
 uint8_t raw_data[14] = {0};
@@ -662,10 +662,13 @@ void initialize(LinearQuadraticRegulator *model)
   model->k = 1;
   model->n = dim_n;
   model->m = dim_m;
-  model->lambda = 0.9;
+  model->lambda = 0.99;
   model->delta = 0.01;
   model->active = 0;
   model->dt = 0.0;
+
+  int seed = DWT->CYCCNT;
+  srand(seed);
 
   for (int i = 0; i < (model->n + model->n); i++)
   {
@@ -683,7 +686,7 @@ void initialize(LinearQuadraticRegulator *model)
     }
   }
 
-  int seed = DWT->CYCCNT;
+  seed = DWT->CYCCNT;
   srand(seed);
   model->K_j.x00 = (float)(rand() % 100) / 100.0;
   model->K_j.x01 = (float)(rand() % 100) / 100.0;
@@ -735,8 +738,8 @@ void initialize(LinearQuadraticRegulator *model)
   IMU imu2 = {75, -25, -18, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   Encoder reactionEncoder = {1736, 0, 0, 0, 0, 0};
   Encoder rollingEncoder = {3020, 0, 0, 0, 0, 0};
-  CurrentSensor reactionCurrentSensor = {30000.0, 0, 0, 0};
-  CurrentSensor rollingCurrentSensor = {30000.0, 0, 0, 0};
+  CurrentSensor reactionCurrentSensor = {32000.0, 0, 0, 0};
+  CurrentSensor rollingCurrentSensor = {32000.0, 0, 0, 0};
   model->imu1 = imu1;
   model->imu2 = imu2;
   model->reactionEncoder = reactionEncoder;
@@ -754,109 +757,6 @@ to the Q function or the control policy at each step.
 */
 void stepForward(LinearQuadraticRegulator *model)
 {
-  // measure
-  encodeWheel(&(model->reactionEncoder), TIM3->CNT);
-  encodeWheel(&(model->rollingEncoder), TIM4->CNT);
-  senseCurrent(&(model->reactionCurrentSensor), &(model->rollingCurrentSensor));
-  updateIMU(model);
-  // dataset = (xₖ, uₖ)
-  model->dataset.x0 = model->imu1.roll;
-  model->dataset.x1 = model->imu1.roll_velocity;
-  model->dataset.x2 = model->imu1.roll_acceleration;
-  model->dataset.x3 = model->imu1.pitch;
-  model->dataset.x4 = model->imu1.pitch_velocity;
-  model->dataset.x5 = model->imu1.pitch_acceleration;
-  model->dataset.x6 = model->reactionEncoder.velocity;
-  model->dataset.x7 = model->rollingEncoder.velocity;
-  model->dataset.x8 = model->reactionCurrentSensor.currentVelocity;
-  model->dataset.x9 = model->rollingCurrentSensor.currentVelocity;
-
-  // act!
-  x_k[0] = model->dataset.x0;
-  x_k[1] = model->dataset.x1;
-  x_k[2] = model->dataset.x2;
-  x_k[3] = model->dataset.x3;
-  x_k[4] = model->dataset.x4;
-  x_k[5] = model->dataset.x5;
-  x_k[6] = model->dataset.x6;
-  x_k[7] = model->dataset.x7;
-  x_k[8] = model->dataset.x8;
-  x_k[9] = model->dataset.x9;
-  K_j[0][0] = model->K_j.x00;
-  K_j[0][1] = model->K_j.x01;
-  K_j[0][2] = model->K_j.x02;
-  K_j[0][3] = model->K_j.x03;
-  K_j[0][4] = model->K_j.x04;
-  K_j[0][5] = model->K_j.x05;
-  K_j[0][6] = model->K_j.x06;
-  K_j[0][7] = model->K_j.x07;
-  K_j[0][8] = model->K_j.x08;
-  K_j[0][9] = model->K_j.x09;
-  K_j[1][0] = model->K_j.x10;
-  K_j[1][1] = model->K_j.x11;
-  K_j[1][2] = model->K_j.x12;
-  K_j[1][3] = model->K_j.x13;
-  K_j[1][4] = model->K_j.x14;
-  K_j[1][5] = model->K_j.x15;
-  K_j[1][6] = model->K_j.x16;
-  K_j[1][7] = model->K_j.x17;
-  K_j[1][8] = model->K_j.x18;
-  K_j[1][9] = model->K_j.x19;
-  u_k[0] = 0.0;
-  u_k[1] = 0.0;
-  // feeback policy
-  for (int i = 0; i < model->m; i++)
-  {
-    for (int j = 0; j < model->n; j++)
-    {
-      u_k[i] += -K_j[i][j] * x_k[j];
-    }
-  }
-  model->dataset.x10 = u_k[0];
-  model->dataset.x11 = u_k[1];
-  // add probing noise to guarantee persistence of excitation
-  // int seed = DWT->CYCCNT;
-  // srand(seed);
-  // u_k[0] += (float)(rand() % 1000) / 10000000.0;
-  // seed = DWT->CYCCNT;
-  // srand(seed);
-  // u_k[0] -= (float)(rand() % 1000) / 10000000.0;
-  // seed = DWT->CYCCNT;
-  // srand(seed);
-  // u_k[1] += (float)(rand() % 1000) / 10000000.0;
-  // seed = DWT->CYCCNT;
-  // srand(seed);
-  // u_k[1] -= (float)(rand() % 1000) / 10000000.0;
-
-  model->reactionPWM += reactionPulseStep * u_k[0];
-  model->rollingPWM += rollingPulseStep * u_k[1];
-  model->reactionPWM = fmin(255.0 * 255.0, model->reactionPWM);
-  model->reactionPWM = fmax(-255.0 * 255.0, model->reactionPWM);
-  model->rollingPWM = fmin(255.0 * 255.0, model->rollingPWM);
-  model->rollingPWM = fmax(-255.0 * 255.0, model->rollingPWM);
-  TIM2->CCR1 = (int)fabs(model->rollingPWM);
-  TIM2->CCR2 = (int)fabs(model->reactionPWM);
-  if (model->reactionPWM < 0)
-  {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
-  }
-  else
-  {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
-  }
-  if (model->rollingPWM < 0)
-  {
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
-  }
-  else
-  {
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
-  }
-
   // Compute the quadratic basis sets ϕ(zₖ), ϕ(zₖ₊₁).
   z_k[0] = model->dataset.x0;
   z_k[1] = model->dataset.x1;
@@ -932,12 +832,13 @@ void stepForward(LinearQuadraticRegulator *model)
       buffer = getIndex(model->W_n, i, j) + correction;
       if (isnanf(buffer) == 0)
       {
-        setIndex(&(model->W_n), i, j, buffer); 
+        setIndex(&(model->W_n), i, j, buffer);
       }
     }
   }
   // trigger a policy update if the RLS algorithm has converged
-  if (fabs(updateChange) > minimumChange) {
+  if (fabs(updateChange) > minimumChange)
+  {
     // triggerUpdate = 1;
   }
   int scaleFlag = 0;
@@ -1155,7 +1056,154 @@ int main(void)
 
     if (model.active == 1)
     {
-      stepForward(&model);
+      // measure
+      updateIMU(&model);
+      // dataset = (xₖ, uₖ)
+      model.dataset.x0 = model.imu1.roll;
+      model.dataset.x1 = model.imu1.roll_velocity;
+      model.dataset.x2 = model.imu1.roll_acceleration;
+      model.dataset.x3 = model.imu1.pitch;
+      model.dataset.x4 = model.imu1.pitch_velocity;
+      model.dataset.x5 = model.imu1.pitch_acceleration;
+      // act!
+      x_k[0] = model.dataset.x0;
+      x_k[1] = model.dataset.x1;
+      x_k[2] = model.dataset.x2;
+      x_k[3] = model.dataset.x3;
+      x_k[4] = model.dataset.x4;
+      x_k[5] = model.dataset.x5;
+      x_k[6] = model.dataset.x6;
+      x_k[7] = model.dataset.x7;
+      x_k[8] = model.dataset.x8;
+      x_k[9] = model.dataset.x9;
+      K_j[0][0] = model.K_j.x00;
+      K_j[0][1] = model.K_j.x01;
+      K_j[0][2] = model.K_j.x02;
+      K_j[0][3] = model.K_j.x03;
+      K_j[0][4] = model.K_j.x04;
+      K_j[0][5] = model.K_j.x05;
+      K_j[0][6] = model.K_j.x06;
+      K_j[0][7] = model.K_j.x07;
+      K_j[0][8] = model.K_j.x08;
+      K_j[0][9] = model.K_j.x09;
+      K_j[1][0] = model.K_j.x10;
+      K_j[1][1] = model.K_j.x11;
+      K_j[1][2] = model.K_j.x12;
+      K_j[1][3] = model.K_j.x13;
+      K_j[1][4] = model.K_j.x14;
+      K_j[1][5] = model.K_j.x15;
+      K_j[1][6] = model.K_j.x16;
+      K_j[1][7] = model.K_j.x17;
+      K_j[1][8] = model.K_j.x18;
+      K_j[1][9] = model.K_j.x19;
+      for (int i = 0; i < 5; i++)
+      {
+        encodeWheel(&(model.reactionEncoder), TIM3->CNT);
+        encodeWheel(&(model.rollingEncoder), TIM4->CNT);
+        senseCurrent(&(model.reactionCurrentSensor), &(model.rollingCurrentSensor));
+        model.dataset.x6 = fabs(model.reactionEncoder.velocity);
+        model.dataset.x7 = fabs(model.rollingEncoder.velocity);
+        model.dataset.x8 = fabs(model.reactionCurrentSensor.currentVelocity);
+        model.dataset.x9 = fabs(model.rollingCurrentSensor.currentVelocity);
+        u_k[0] = 0.0;
+        u_k[1] = 0.0;
+        // feeback policy
+        for (int i = 0; i < model.m; i++)
+        {
+          for (int j = 0; j < model.n; j++)
+          {
+            u_k[i] += -K_j[i][j] * x_k[j];
+          }
+        }
+        // add probing noise to guarantee persistence of excitation
+        int seed = DWT->CYCCNT;
+        srand(seed);
+        u_k[0] += (float)(rand() % 1000) / 100000.0;
+        seed = DWT->CYCCNT;
+        srand(seed);
+        u_k[0] -= (float)(rand() % 1000) / 100000.0;
+        seed = DWT->CYCCNT;
+        srand(seed);
+        u_k[1] += (float)(rand() % 1000) / 100000.0;
+        seed = DWT->CYCCNT;
+        srand(seed);
+        u_k[1] -= (float)(rand() % 1000) / 100000.0;
+        model.dataset.x10 = u_k[0];
+        model.dataset.x11 = u_k[1];
+        stepForward(&model);
+      }
+      updateControlPolicy(&model);
+      K_j[0][0] = model.K_j.x00;
+      K_j[0][1] = model.K_j.x01;
+      K_j[0][2] = model.K_j.x02;
+      K_j[0][3] = model.K_j.x03;
+      K_j[0][4] = model.K_j.x04;
+      K_j[0][5] = model.K_j.x05;
+      K_j[0][6] = model.K_j.x06;
+      K_j[0][7] = model.K_j.x07;
+      K_j[0][8] = model.K_j.x08;
+      K_j[0][9] = model.K_j.x09;
+      K_j[1][0] = model.K_j.x10;
+      K_j[1][1] = model.K_j.x11;
+      K_j[1][2] = model.K_j.x12;
+      K_j[1][3] = model.K_j.x13;
+      K_j[1][4] = model.K_j.x14;
+      K_j[1][5] = model.K_j.x15;
+      K_j[1][6] = model.K_j.x16;
+      K_j[1][7] = model.K_j.x17;
+      K_j[1][8] = model.K_j.x18;
+      K_j[1][9] = model.K_j.x19;
+      u_k[0] = 0.0;
+      u_k[1] = 0.0;
+      // feeback policy
+      for (int i = 0; i < model.m; i++)
+      {
+        for (int j = 0; j < model.n; j++)
+        {
+          u_k[i] += -K_j[i][j] * x_k[j];
+        }
+      }
+      // add probing noise to guarantee persistence of excitation
+      int seed = DWT->CYCCNT;
+      srand(seed);
+      u_k[0] += (float)(rand() % 1000) / 100000.0;
+      seed = DWT->CYCCNT;
+      srand(seed);
+      u_k[0] -= (float)(rand() % 1000) / 100000.0;
+      seed = DWT->CYCCNT;
+      srand(seed);
+      u_k[1] += (float)(rand() % 1000) / 100000.0;
+      seed = DWT->CYCCNT;
+      srand(seed);
+      u_k[1] -= (float)(rand() % 1000) / 100000.0;
+      model.reactionPWM += reactionPulseStep * u_k[0];
+      model.rollingPWM += rollingPulseStep * u_k[1];
+      model.reactionPWM = fmin(255.0 * 255.0, model.reactionPWM);
+      model.reactionPWM = fmax(-255.0 * 255.0, model.reactionPWM);
+      model.rollingPWM = fmin(255.0 * 255.0, model.rollingPWM);
+      model.rollingPWM = fmax(-255.0 * 255.0, model.rollingPWM);
+      TIM2->CCR1 = (int)fabs(model.rollingPWM);
+      TIM2->CCR2 = (int)fabs(model.reactionPWM);
+      if (model.reactionPWM < 0)
+      {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+      }
+      else
+      {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+      }
+      if (model.rollingPWM < 0)
+      {
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
+      }
+      else
+      {
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
+      }
     }
     else
     {
@@ -1172,11 +1220,11 @@ int main(void)
       senseCurrent(&(model.reactionCurrentSensor), &(model.rollingCurrentSensor));
       updateIMU(&model);
     }
-    if (model.k % updatePolicyPeriod == 0 || triggerUpdate == 1)
-    {
-      updateControlPolicy(&model);
-      triggerUpdate = 0;
-    }
+    // if (model.k % updatePolicyPeriod == 0 || triggerUpdate == 1)
+    // {
+    //   updateControlPolicy(&model);
+    //   triggerUpdate = 0;
+    // }
 
     model.imu1.yaw += dt * r_dot[2];
 
@@ -1192,7 +1240,7 @@ int main(void)
 
       sprintf(MSG,
               "AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | k: %f, j: %f, | x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, x10: %0.2f, x11: %0.2f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, change: %0.2f, dt: %0.6f\r\n",
-              model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float) model.k, (float) model.j, model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11, getIndex(model.P_n, 0, 0), getIndex(model.P_n, 1, 1), getIndex(model.P_n, 2, 2), getIndex(model.P_n, 3, 3), getIndex(model.P_n, 4, 4), getIndex(model.P_n, 5, 5), getIndex(model.P_n, 6, 6), getIndex(model.P_n, 7, 7), getIndex(model.P_n, 8, 8), getIndex(model.P_n, 9, 9), getIndex(model.P_n, 10, 10), getIndex(model.P_n, 11, 11), updateChange, dt);
+              model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.k, (float)model.j, model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11, getIndex(model.P_n, 0, 0), getIndex(model.P_n, 1, 1), getIndex(model.P_n, 2, 2), getIndex(model.P_n, 3, 3), getIndex(model.P_n, 4, 4), getIndex(model.P_n, 5, 5), getIndex(model.P_n, 6, 6), getIndex(model.P_n, 7, 7), getIndex(model.P_n, 8, 8), getIndex(model.P_n, 9, 9), getIndex(model.P_n, 10, 10), getIndex(model.P_n, 11, 11), updateChange, dt);
 
       // sprintf(MSG,
       //         "x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, dt: %0.6f\r\n",
