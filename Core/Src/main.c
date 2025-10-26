@@ -119,8 +119,8 @@ const float noiseDenominator = 1000.0;
 int seed = 1; // the random number generator seed
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // maximum PWM step size for each control cycle
-float reactionPulseStep = 255.0 * 64.0;
-float rollingPulseStep = 255.0 * 32.0;
+float reactionPulseStep = 255.0 * 128.0;
+float rollingPulseStep = 255.0 * 64.0;
 float updateChange = 0.0;   // corrections to the filter coefficients
 float minimumChange = 60.0; // the minimum correction to filter coefficients
 float triggerUpdate = 0;    // trigger a policy update
