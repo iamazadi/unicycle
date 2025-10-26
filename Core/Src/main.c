@@ -119,8 +119,8 @@ const float noiseDenominator = 100000.0;
 int seed = 1; // the random number generator seed
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // maximum PWM step size for each control cycle
-float reactionPulseStep = 255.0 * 128.0;
-float rollingPulseStep = 255.0 * 48.0;
+float reactionPulseStep = 255.0 * 255.0;
+float rollingPulseStep = 255.0 * 96.0;
 float updateChange = 0.0;   // corrections to the filter coefficients
 float minimumChange = 60.0; // the minimum correction to filter coefficients
 float triggerUpdate = 0;    // trigger a policy update
@@ -665,7 +665,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->k = 1;
   model->n = dim_n;
   model->m = dim_m;
-  model->lambda = 0.99;
+  model->lambda = 0.8;
   model->delta = 0.01;
   model->active = 0;
   model->dt = 0.0;
@@ -1079,18 +1079,18 @@ int main(void)
         }
       }
       // add probing noise to guarantee persistence of excitation
-      seed = DWT->CYCCNT;
-      srand(seed);
-      u_k[0] += (float)(rand() % noiseNumerator) / noiseDenominator;
-      seed = DWT->CYCCNT;
-      srand(seed);
-      u_k[0] -= (float)(rand() % noiseNumerator) / noiseDenominator;
-      seed = DWT->CYCCNT;
-      srand(seed);
-      u_k[1] += (float)(rand() % noiseNumerator) / noiseDenominator;
-      seed = DWT->CYCCNT;
-      srand(seed);
-      u_k[1] -= (float)(rand() % noiseNumerator) / noiseDenominator;
+      // seed = DWT->CYCCNT;
+      // srand(seed);
+      // u_k[0] += (float)(rand() % noiseNumerator) / noiseDenominator;
+      // seed = DWT->CYCCNT;
+      // srand(seed);
+      // u_k[0] -= (float)(rand() % noiseNumerator) / noiseDenominator;
+      // seed = DWT->CYCCNT;
+      // srand(seed);
+      // u_k[1] += (float)(rand() % noiseNumerator) / noiseDenominator;
+      // seed = DWT->CYCCNT;
+      // srand(seed);
+      // u_k[1] -= (float)(rand() % noiseNumerator) / noiseDenominator;
       model.dataset.x10 = u_k[0];
       model.dataset.x11 = u_k[1];
       // act!
