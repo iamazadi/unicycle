@@ -109,18 +109,18 @@ const int dim_m = M;
 const int max_episode_length = 50000;
 const int updatePolicyPeriod = 1;
 const int LOG_CYCLE = 20;
-const float roll_safety_angle = 0.28;
+const float roll_safety_angle = 0.25;
 const float pitch_safety_angle = 0.20;
 const float sensorAngle = -30.0 / 180.0 * M_PI;
 const float clipping = 100.0;
-const float clippingFactor = 0.99;
-const int noiseNumerator = 1000;
-const float noiseDenominator = 100000.0;
+const float clippingFactor = 0.9;
+const int noiseNumerator = 100;
+const float noiseDenominator = 1000.0;
 int seed = 1; // the random number generator seed
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // maximum PWM step size for each control cycle
-float reactionPulseStep = 255.0 * 255.0;
-float rollingPulseStep = 255.0 * 96.0;
+float reactionPulseStep = 255.0 * 64.0;
+float rollingPulseStep = 255.0 * 32.0;
 float updateChange = 0.0;   // corrections to the filter coefficients
 float minimumChange = 60.0; // the minimum correction to filter coefficients
 float triggerUpdate = 0;    // trigger a policy update
@@ -665,7 +665,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->k = 1;
   model->n = dim_n;
   model->m = dim_m;
-  model->lambda = 0.8;
+  model->lambda = 0.95;
   model->delta = 0.01;
   model->active = 0;
   model->dt = 0.0;
@@ -1079,18 +1079,18 @@ int main(void)
         }
       }
       // add probing noise to guarantee persistence of excitation
-      // seed = DWT->CYCCNT;
-      // srand(seed);
-      // u_k[0] += (float)(rand() % noiseNumerator) / noiseDenominator;
-      // seed = DWT->CYCCNT;
-      // srand(seed);
-      // u_k[0] -= (float)(rand() % noiseNumerator) / noiseDenominator;
-      // seed = DWT->CYCCNT;
-      // srand(seed);
-      // u_k[1] += (float)(rand() % noiseNumerator) / noiseDenominator;
-      // seed = DWT->CYCCNT;
-      // srand(seed);
-      // u_k[1] -= (float)(rand() % noiseNumerator) / noiseDenominator;
+      seed = DWT->CYCCNT;
+      srand(seed);
+      u_k[0] += (float)(rand() % noiseNumerator) / noiseDenominator;
+      seed = DWT->CYCCNT;
+      srand(seed);
+      u_k[0] -= (float)(rand() % noiseNumerator) / noiseDenominator;
+      seed = DWT->CYCCNT;
+      srand(seed);
+      u_k[1] += (float)(rand() % noiseNumerator) / noiseDenominator;
+      seed = DWT->CYCCNT;
+      srand(seed);
+      u_k[1] -= (float)(rand() % noiseNumerator) / noiseDenominator;
       model.dataset.x10 = u_k[0];
       model.dataset.x11 = u_k[1];
       // act!
@@ -1124,15 +1124,15 @@ int main(void)
       K_j[1][7] = model.K_j.x17;
       K_j[1][8] = model.K_j.x18;
       K_j[1][9] = model.K_j.x19;
-      for (int i = 0; i < 10; i++)
+      for (int i = 0; i < 5; i++)
       {
         encodeWheel(&(model.reactionEncoder), TIM3->CNT);
         encodeWheel(&(model.rollingEncoder), TIM4->CNT);
         senseCurrent(&(model.reactionCurrentSensor), &(model.rollingCurrentSensor));
-        model.dataset.x6 = fabs(model.reactionEncoder.velocity);
-        model.dataset.x7 = fabs(model.rollingEncoder.velocity);
-        model.dataset.x8 = fabs(model.reactionCurrentSensor.currentVelocity);
-        model.dataset.x9 = fabs(model.rollingCurrentSensor.currentVelocity);
+        model.dataset.x6 = model.reactionEncoder.velocity;
+        model.dataset.x7 = model.rollingEncoder.velocity;
+        model.dataset.x8 = model.reactionCurrentSensor.currentVelocity;
+        model.dataset.x9 = model.rollingCurrentSensor.currentVelocity;
         stepForward(&model);
       }
       updateControlPolicy(&model);
@@ -1166,6 +1166,18 @@ int main(void)
           u_k[i] += -K_j[i][j] * x_k[j];
         }
       }
+      seed = DWT->CYCCNT;
+      srand(seed);
+      u_k[0] += (float)(rand() % noiseNumerator) / noiseDenominator;
+      seed = DWT->CYCCNT;
+      srand(seed);
+      u_k[0] -= (float)(rand() % noiseNumerator) / noiseDenominator;
+      seed = DWT->CYCCNT;
+      srand(seed);
+      u_k[1] += (float)(rand() % noiseNumerator) / noiseDenominator;
+      seed = DWT->CYCCNT;
+      srand(seed);
+      u_k[1] -= (float)(rand() % noiseNumerator) / noiseDenominator;
       model.reactionPWM += reactionPulseStep * u_k[0];
       model.rollingPWM += rollingPulseStep * u_k[1];
       model.reactionPWM = fmin(255.0 * 255.0, model.reactionPWM);
