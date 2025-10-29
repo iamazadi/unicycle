@@ -119,8 +119,8 @@ const float noiseDenominator = 1000.0;
 int seed = 1; // the random number generator seed
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // maximum PWM step size for each control cycle
-float reactionPulseStep = 255.0 * 128.0;
-float rollingPulseStep = 255.0 * 64.0;
+float reactionPulseStep = 255.0 * 96.0;
+float rollingPulseStep = 255.0 * 48.0;
 float updateChange = 0.0;   // corrections to the filter coefficients
 float minimumChange = 60.0; // the minimum correction to filter coefficients
 float triggerUpdate = 0;    // trigger a policy update
@@ -189,8 +189,8 @@ float fused_beta = 0.0;
 float gamma1 = 0.0;
 float fused_gamma = 0.0;
 // tuning parameters to minimize estimate variance
-float kappa1 = 0.03;
-float kappa2 = 0.03;
+float kappa1 = 0.08;
+float kappa2 = 0.08;
 // the average of the body angular rate from rate gyro
 float r[3] = {0.0, 0.0, 0.0};
 // the average of the body angular rate in Euler angles
@@ -1059,153 +1059,107 @@ int main(void)
 
     if (model.active == 1)
     {
-      // measure
-      updateIMU(&model);
-      // dataset = (xₖ, uₖ)
-      model.dataset.x0 = model.imu1.roll;
-      model.dataset.x1 = model.imu1.roll_velocity;
-      model.dataset.x2 = model.imu1.roll_acceleration;
-      model.dataset.x3 = model.imu1.pitch;
-      model.dataset.x4 = model.imu1.pitch_velocity;
-      model.dataset.x5 = model.imu1.pitch_acceleration;
-      u_k[0] = 0.0;
-      u_k[1] = 0.0;
-      // feeback policy
-      for (int i = 0; i < model.m; i++)
-      {
-        for (int j = 0; j < model.n; j++)
-        {
-          u_k[i] += -K_j[i][j] * x_k[j];
-        }
-      }
-      // add probing noise to guarantee persistence of excitation
-      seed = DWT->CYCCNT;
-      srand(seed);
-      u_k[0] += (float)(rand() % noiseNumerator) / noiseDenominator;
-      seed = DWT->CYCCNT;
-      srand(seed);
-      u_k[0] -= (float)(rand() % noiseNumerator) / noiseDenominator;
-      seed = DWT->CYCCNT;
-      srand(seed);
-      u_k[1] += (float)(rand() % noiseNumerator) / noiseDenominator;
-      seed = DWT->CYCCNT;
-      srand(seed);
-      u_k[1] -= (float)(rand() % noiseNumerator) / noiseDenominator;
-      model.dataset.x10 = u_k[0];
-      model.dataset.x11 = u_k[1];
-      // act!
-      x_k[0] = model.dataset.x0;
-      x_k[1] = model.dataset.x1;
-      x_k[2] = model.dataset.x2;
-      x_k[3] = model.dataset.x3;
-      x_k[4] = model.dataset.x4;
-      x_k[5] = model.dataset.x5;
-      x_k[6] = model.dataset.x6;
-      x_k[7] = model.dataset.x7;
-      x_k[8] = model.dataset.x8;
-      x_k[9] = model.dataset.x9;
-      K_j[0][0] = model.K_j.x00;
-      K_j[0][1] = model.K_j.x01;
-      K_j[0][2] = model.K_j.x02;
-      K_j[0][3] = model.K_j.x03;
-      K_j[0][4] = model.K_j.x04;
-      K_j[0][5] = model.K_j.x05;
-      K_j[0][6] = model.K_j.x06;
-      K_j[0][7] = model.K_j.x07;
-      K_j[0][8] = model.K_j.x08;
-      K_j[0][9] = model.K_j.x09;
-      K_j[1][0] = model.K_j.x10;
-      K_j[1][1] = model.K_j.x11;
-      K_j[1][2] = model.K_j.x12;
-      K_j[1][3] = model.K_j.x13;
-      K_j[1][4] = model.K_j.x14;
-      K_j[1][5] = model.K_j.x15;
-      K_j[1][6] = model.K_j.x16;
-      K_j[1][7] = model.K_j.x17;
-      K_j[1][8] = model.K_j.x18;
-      K_j[1][9] = model.K_j.x19;
       for (int i = 0; i < 5; i++)
       {
+        // measure
+        updateIMU(&model);
+        model.dataset.x0 = model.imu1.roll;
+        model.dataset.x1 = model.imu1.roll_velocity;
+        model.dataset.x2 = model.imu1.roll_acceleration;
+        model.dataset.x3 = model.imu1.pitch;
+        model.dataset.x4 = model.imu1.pitch_velocity;
+        model.dataset.x5 = model.imu1.pitch_acceleration;
+        x_k[0] = model.dataset.x0;
+        x_k[1] = model.dataset.x1;
+        x_k[2] = model.dataset.x2;
+        x_k[3] = model.dataset.x3;
+        x_k[4] = model.dataset.x4;
+        x_k[5] = model.dataset.x5;
         encodeWheel(&(model.reactionEncoder), TIM3->CNT);
         encodeWheel(&(model.rollingEncoder), TIM4->CNT);
         senseCurrent(&(model.reactionCurrentSensor), &(model.rollingCurrentSensor));
+        // dataset = (xₖ, uₖ)
         model.dataset.x6 = model.reactionEncoder.velocity;
         model.dataset.x7 = model.rollingEncoder.velocity;
         model.dataset.x8 = model.reactionCurrentSensor.currentVelocity;
         model.dataset.x9 = model.rollingCurrentSensor.currentVelocity;
+        x_k[6] = model.dataset.x6;
+        x_k[7] = model.dataset.x7;
+        x_k[8] = model.dataset.x8;
+        x_k[9] = model.dataset.x9;
+        K_j[0][0] = model.K_j.x00;
+        K_j[0][1] = model.K_j.x01;
+        K_j[0][2] = model.K_j.x02;
+        K_j[0][3] = model.K_j.x03;
+        K_j[0][4] = model.K_j.x04;
+        K_j[0][5] = model.K_j.x05;
+        K_j[0][6] = model.K_j.x06;
+        K_j[0][7] = model.K_j.x07;
+        K_j[0][8] = model.K_j.x08;
+        K_j[0][9] = model.K_j.x09;
+        K_j[1][0] = model.K_j.x10;
+        K_j[1][1] = model.K_j.x11;
+        K_j[1][2] = model.K_j.x12;
+        K_j[1][3] = model.K_j.x13;
+        K_j[1][4] = model.K_j.x14;
+        K_j[1][5] = model.K_j.x15;
+        K_j[1][6] = model.K_j.x16;
+        K_j[1][7] = model.K_j.x17;
+        K_j[1][8] = model.K_j.x18;
+        K_j[1][9] = model.K_j.x19;
+        u_k[0] = 0.0;
+        u_k[1] = 0.0;
+        // feeback policy
+        for (int i = 0; i < model.m; i++)
+        {
+          for (int j = 0; j < model.n; j++)
+          {
+            u_k[i] += -K_j[i][j] * x_k[j];
+          }
+        }
+        seed = DWT->CYCCNT;
+        srand(seed);
+        u_k[0] += (float)(rand() % noiseNumerator) / noiseDenominator;
+        seed = DWT->CYCCNT;
+        srand(seed);
+        u_k[0] -= (float)(rand() % noiseNumerator) / noiseDenominator;
+        seed = DWT->CYCCNT;
+        srand(seed);
+        u_k[1] += (float)(rand() % noiseNumerator) / noiseDenominator;
+        seed = DWT->CYCCNT;
+        srand(seed);
+        u_k[1] -= (float)(rand() % noiseNumerator) / noiseDenominator;
+        model.reactionPWM += reactionPulseStep * u_k[0];
+        model.rollingPWM += rollingPulseStep * u_k[1];
+        model.reactionPWM = fmin(255.0 * 255.0, model.reactionPWM);
+        model.reactionPWM = fmax(-255.0 * 255.0, model.reactionPWM);
+        model.rollingPWM = fmin(255.0 * 255.0, model.rollingPWM);
+        model.rollingPWM = fmax(-255.0 * 255.0, model.rollingPWM);
+        TIM2->CCR1 = (int)fabs(model.rollingPWM);
+        TIM2->CCR2 = (int)fabs(model.reactionPWM);
+        if (model.reactionPWM < 0)
+        {
+          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+        }
+        else
+        {
+          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
+          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+        }
+        if (model.rollingPWM < 0)
+        {
+          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
+          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
+        }
+        else
+        {
+          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
+          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
+        }
         stepForward(&model);
       }
       updateControlPolicy(&model);
-      K_j[0][0] = model.K_j.x00;
-      K_j[0][1] = model.K_j.x01;
-      K_j[0][2] = model.K_j.x02;
-      K_j[0][3] = model.K_j.x03;
-      K_j[0][4] = model.K_j.x04;
-      K_j[0][5] = model.K_j.x05;
-      K_j[0][6] = model.K_j.x06;
-      K_j[0][7] = model.K_j.x07;
-      K_j[0][8] = model.K_j.x08;
-      K_j[0][9] = model.K_j.x09;
-      K_j[1][0] = model.K_j.x10;
-      K_j[1][1] = model.K_j.x11;
-      K_j[1][2] = model.K_j.x12;
-      K_j[1][3] = model.K_j.x13;
-      K_j[1][4] = model.K_j.x14;
-      K_j[1][5] = model.K_j.x15;
-      K_j[1][6] = model.K_j.x16;
-      K_j[1][7] = model.K_j.x17;
-      K_j[1][8] = model.K_j.x18;
-      K_j[1][9] = model.K_j.x19;
-      u_k[0] = 0.0;
-      u_k[1] = 0.0;
-      // feeback policy
-      for (int i = 0; i < model.m; i++)
-      {
-        for (int j = 0; j < model.n; j++)
-        {
-          u_k[i] += -K_j[i][j] * x_k[j];
-        }
-      }
-      seed = DWT->CYCCNT;
-      srand(seed);
-      u_k[0] += (float)(rand() % noiseNumerator) / noiseDenominator;
-      seed = DWT->CYCCNT;
-      srand(seed);
-      u_k[0] -= (float)(rand() % noiseNumerator) / noiseDenominator;
-      seed = DWT->CYCCNT;
-      srand(seed);
-      u_k[1] += (float)(rand() % noiseNumerator) / noiseDenominator;
-      seed = DWT->CYCCNT;
-      srand(seed);
-      u_k[1] -= (float)(rand() % noiseNumerator) / noiseDenominator;
-      model.reactionPWM += reactionPulseStep * u_k[0];
-      model.rollingPWM += rollingPulseStep * u_k[1];
-      model.reactionPWM = fmin(255.0 * 255.0, model.reactionPWM);
-      model.reactionPWM = fmax(-255.0 * 255.0, model.reactionPWM);
-      model.rollingPWM = fmin(255.0 * 255.0, model.rollingPWM);
-      model.rollingPWM = fmax(-255.0 * 255.0, model.rollingPWM);
-      TIM2->CCR1 = (int)fabs(model.rollingPWM);
-      TIM2->CCR2 = (int)fabs(model.reactionPWM);
-      if (model.reactionPWM < 0)
-      {
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
-      }
-      else
-      {
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
-      }
-      if (model.rollingPWM < 0)
-      {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
-      }
-      else
-      {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
-      }
     }
     else
     {
