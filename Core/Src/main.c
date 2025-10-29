@@ -109,7 +109,7 @@ const int dim_m = M;
 const int max_episode_length = 50000;
 const int updatePolicyPeriod = 1;
 const int LOG_CYCLE = 4;
-const float roll_safety_angle = 0.25;
+const float roll_safety_angle = 0.29;
 const float pitch_safety_angle = 0.20;
 const float sensorAngle = -30.0 / 180.0 * M_PI;
 const float clipping = 100.0;
@@ -189,8 +189,8 @@ float fused_beta = 0.0;
 float gamma1 = 0.0;
 float fused_gamma = 0.0;
 // tuning parameters to minimize estimate variance
-float kappa1 = 0.11;
-float kappa2 = 0.11;
+float kappa1 = 0.8;
+float kappa2 = 0.8;
 // the average of the body angular rate from rate gyro
 float r[3] = {0.0, 0.0, 0.0};
 // the average of the body angular rate in Euler angles
@@ -741,8 +741,8 @@ void initialize(LinearQuadraticRegulator *model)
   IMU imu2 = {75, -25, -18, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   Encoder reactionEncoder = {1736, 0, 0, 0, 0, 0};
   Encoder rollingEncoder = {3020, 0, 0, 0, 0, 0};
-  CurrentSensor reactionCurrentSensor = {25000.0, 0, 0, 0};
-  CurrentSensor rollingCurrentSensor = {25000.0, 0, 0, 0};
+  CurrentSensor reactionCurrentSensor = {30000.0, 0, 0, 0};
+  CurrentSensor rollingCurrentSensor = {30000.0, 0, 0, 0};
   model->imu1 = imu1;
   model->imu2 = imu2;
   model->reactionEncoder = reactionEncoder;
