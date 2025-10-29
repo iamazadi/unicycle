@@ -108,7 +108,7 @@ const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
 const int updatePolicyPeriod = 1;
-const int LOG_CYCLE = 20;
+const int LOG_CYCLE = 4;
 const float roll_safety_angle = 0.25;
 const float pitch_safety_angle = 0.20;
 const float sensorAngle = -30.0 / 180.0 * M_PI;
@@ -189,8 +189,8 @@ float fused_beta = 0.0;
 float gamma1 = 0.0;
 float fused_gamma = 0.0;
 // tuning parameters to minimize estimate variance
-float kappa1 = 0.08;
-float kappa2 = 0.08;
+float kappa1 = 0.09;
+float kappa2 = 0.09;
 // the average of the body angular rate from rate gyro
 float r[3] = {0.0, 0.0, 0.0};
 // the average of the body angular rate in Euler angles
