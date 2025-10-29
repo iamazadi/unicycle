@@ -189,8 +189,8 @@ float fused_beta = 0.0;
 float gamma1 = 0.0;
 float fused_gamma = 0.0;
 // tuning parameters to minimize estimate variance
-float kappa1 = 0.09;
-float kappa2 = 0.09;
+float kappa1 = 0.11;
+float kappa2 = 0.11;
 // the average of the body angular rate from rate gyro
 float r[3] = {0.0, 0.0, 0.0};
 // the average of the body angular rate in Euler angles
@@ -741,8 +741,8 @@ void initialize(LinearQuadraticRegulator *model)
   IMU imu2 = {75, -25, -18, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   Encoder reactionEncoder = {1736, 0, 0, 0, 0, 0};
   Encoder rollingEncoder = {3020, 0, 0, 0, 0, 0};
-  CurrentSensor reactionCurrentSensor = {32000.0, 0, 0, 0};
-  CurrentSensor rollingCurrentSensor = {32000.0, 0, 0, 0};
+  CurrentSensor reactionCurrentSensor = {25000.0, 0, 0, 0};
+  CurrentSensor rollingCurrentSensor = {25000.0, 0, 0, 0};
   model->imu1 = imu1;
   model->imu2 = imu2;
   model->reactionEncoder = reactionEncoder;
