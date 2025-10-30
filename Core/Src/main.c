@@ -34,7 +34,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TRANSMIT_LENGTH 500
+#define TRANSMIT_LENGTH 600
 #define RECEIVE_FRAME_LENGTH 32
 #define TRANSMIT_FRAME_LENGTH 5
 #define N 10
@@ -108,7 +108,7 @@ const int dim_n = N;
 const int dim_m = M;
 const int max_episode_length = 50000;
 const int updatePolicyPeriod = 1;
-const int LOG_CYCLE = 4;
+const int LOG_CYCLE = 12;
 const float roll_safety_angle = 0.28;
 const float pitch_safety_angle = 0.20;
 const float sensorAngle = -30.0 / 180.0 * M_PI;
@@ -191,8 +191,8 @@ float fused_beta = 0.0;
 float gamma1 = 0.0;
 float fused_gamma = 0.0;
 // tuning parameters to minimize estimate variance
-float kappa1 = 0.2;
-float kappa2 = 0.2;
+float kappa1 = 0.1;
+float kappa2 = 0.1;
 // the average of the body angular rate from rate gyro
 float r[3] = {0.0, 0.0, 0.0};
 // the average of the body angular rate in Euler angles
@@ -743,8 +743,8 @@ void initialize(LinearQuadraticRegulator *model)
   IMU imu2 = {75, -25, -18, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   Encoder reactionEncoder = {1736, 0, 0, 0, 0, 0};
   Encoder rollingEncoder = {3020, 0, 0, 0, 0, 0};
-  CurrentSensor reactionCurrentSensor = {32000.0, 0, 0, 0};
-  CurrentSensor rollingCurrentSensor = {32000.0, 0, 0, 0};
+  CurrentSensor reactionCurrentSensor = {31500.0, 0, 0, 0};
+  CurrentSensor rollingCurrentSensor = {31500.0, 0, 0, 0};
   model->imu1 = imu1;
   model->imu2 = imu2;
   model->reactionEncoder = reactionEncoder;
@@ -1125,18 +1125,18 @@ int main(void)
             u_k[i] += -K_j[i][j] * x_k[j];
           }
         }
-        seed = DWT->CYCCNT;
-        srand(seed);
-        u_k[0] += (float)(rand() % noiseNumerator) / noiseDenominator;
-        seed = DWT->CYCCNT;
-        srand(seed);
-        u_k[0] -= (float)(rand() % noiseNumerator) / noiseDenominator;
-        seed = DWT->CYCCNT;
-        srand(seed);
-        u_k[1] += (float)(rand() % noiseNumerator) / noiseDenominator;
-        seed = DWT->CYCCNT;
-        srand(seed);
-        u_k[1] -= (float)(rand() % noiseNumerator) / noiseDenominator;
+        // seed = DWT->CYCCNT;
+        // srand(seed);
+        // u_k[0] += (float)(rand() % noiseNumerator) / noiseDenominator;
+        // seed = DWT->CYCCNT;
+        // srand(seed);
+        // u_k[0] -= (float)(rand() % noiseNumerator) / noiseDenominator;
+        // seed = DWT->CYCCNT;
+        // srand(seed);
+        // u_k[1] += (float)(rand() % noiseNumerator) / noiseDenominator;
+        // seed = DWT->CYCCNT;
+        // srand(seed);
+        // u_k[1] -= (float)(rand() % noiseNumerator) / noiseDenominator;
         model.reactionPWM += reactionPulseStep * u_k[0];
         model.rollingPWM += rollingPulseStep * u_k[1];
         model.reactionPWM = fmin(255.0 * 255.0, model.reactionPWM);
@@ -1202,9 +1202,11 @@ int main(void)
       transmit = 0;
       log_counter = 0;
 
+
+
       sprintf(MSG,
-              "AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | k: %f, j: %f, | x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, x10: %0.2f, x11: %0.2f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, change: %0.2f, dt: %0.6f\r\n",
-              model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.k, (float)model.j, model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11, getIndex(model.P_n, 0, 0), getIndex(model.P_n, 1, 1), getIndex(model.P_n, 2, 2), getIndex(model.P_n, 3, 3), getIndex(model.P_n, 4, 4), getIndex(model.P_n, 5, 5), getIndex(model.P_n, 6, 6), getIndex(model.P_n, 7, 7), getIndex(model.P_n, 8, 8), getIndex(model.P_n, 9, 9), getIndex(model.P_n, 10, 10), getIndex(model.P_n, 11, 11), updateChange, dt);
+              "AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | GX1: %0.2f, GY1: %0.2f, GZ1: %0.2f, | GX2: %0.2f, GY2: %0.2f, GZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %f, | x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, x10: %0.2f, x11: %0.2f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, dt: %0.6f\r\n",
+              model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.gyrX, model.imu1.gyrY, model.imu1.gyrZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11, getIndex(model.P_n, 0, 0), getIndex(model.P_n, 1, 1), getIndex(model.P_n, 2, 2), getIndex(model.P_n, 3, 3), getIndex(model.P_n, 4, 4), getIndex(model.P_n, 5, 5), getIndex(model.P_n, 6, 6), getIndex(model.P_n, 7, 7), getIndex(model.P_n, 8, 8), getIndex(model.P_n, 9, 9), getIndex(model.P_n, 10, 10), getIndex(model.P_n, 11, 11), dt);
 
       // sprintf(MSG,
       //         "x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, dt: %0.6f\r\n",
