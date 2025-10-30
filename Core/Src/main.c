@@ -116,12 +116,12 @@ const float clipping = 100.0;
 const float clippingFactor = 0.9;
 const int noiseNumerator = 100;
 const float noiseDenominator = 1000.0;
-const int maxOutOfBounds = 5; // the maximum number of consecutive cycles where states are out of the safety bounds
+const int maxOutOfBounds = 10; // the maximum number of consecutive cycles where states are out of the safety bounds
 int seed = 1; // the random number generator seed
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 // maximum PWM step size for each control cycle
-float reactionPulseStep = 255.0 * 128.0;
-float rollingPulseStep = 255.0 * 55.0;
+float reactionPulseStep = 255.0 * 96.0;
+float rollingPulseStep = 255.0 * 32.0;
 float updateChange = 0.0;   // corrections to the filter coefficients
 float minimumChange = 60.0; // the minimum correction to filter coefficients
 float triggerUpdate = 0;    // trigger a policy update
@@ -191,8 +191,8 @@ float fused_beta = 0.0;
 float gamma1 = 0.0;
 float fused_gamma = 0.0;
 // tuning parameters to minimize estimate variance
-float kappa1 = 0.1;
-float kappa2 = 0.1;
+float kappa1 = 0.2;
+float kappa2 = 0.2;
 // the average of the body angular rate from rate gyro
 float r[3] = {0.0, 0.0, 0.0};
 // the average of the body angular rate in Euler angles
@@ -743,8 +743,8 @@ void initialize(LinearQuadraticRegulator *model)
   IMU imu2 = {75, -25, -18, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   Encoder reactionEncoder = {1736, 0, 0, 0, 0, 0};
   Encoder rollingEncoder = {3020, 0, 0, 0, 0, 0};
-  CurrentSensor reactionCurrentSensor = {31000.0, 0, 0, 0};
-  CurrentSensor rollingCurrentSensor = {31000.0, 0, 0, 0};
+  CurrentSensor reactionCurrentSensor = {32000.0, 0, 0, 0};
+  CurrentSensor rollingCurrentSensor = {32000.0, 0, 0, 0};
   model->imu1 = imu1;
   model->imu2 = imu2;
   model->reactionEncoder = reactionEncoder;
