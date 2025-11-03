@@ -103,108 +103,10 @@ uint8_t UART1_txBuffer[TRANSMIT_FRAME_LENGTH] = {0xA4, 0x03, 0x08, 0x1B, 0xCA};
 uint8_t UART1_txBuffer_cfg[TRANSMIT_FRAME_LENGTH] = {0xA4, 0x06, 0x01, 0x06, 0xB1};
 // response: a4030812f93dfbcf002a000100010001ddb416bafffa48
 int uart_receive_ok = 0;
-const float CPU_CLOCK = 84000000.0;
-const int dim_n = N;
-const int dim_m = M;
-const int max_episode_length = 50000;
-const int updatePolicyPeriod = 1;
-const int LOG_CYCLE = 12;
-const float roll_safety_angle = 0.28;
-const float pitch_safety_angle = 0.20;
-const float sensorAngle = -30.0 / 180.0 * M_PI;
-const float clipping = 100.0;
-const float clippingFactor = 0.9;
-const int noiseNumerator = 100;
-const float noiseDenominator = 1000.0;
-const int maxOutOfBounds = 10; // the maximum number of consecutive cycles where states are out of the safety bounds
-int seed = 1; // the random number generator seed
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
-// maximum PWM step size for each control cycle
-float reactionPulseStep = 255.0 * 96.0;
-float rollingPulseStep = 255.0 * 32.0;
-float updateChange = 0.0;   // corrections to the filter coefficients
-float minimumChange = 60.0; // the minimum correction to filter coefficients
-float triggerUpdate = 0;    // trigger a policy update
-int outOfBoundsCounter = 0;
-// sampling time
-float dt = 0.0;
 uint8_t raw_data[14] = {0};
 uint16_t AD_RES = 0;
 uint32_t AD_RES_BUFFER[2];
-// define arrays for matrix-matrix and matrix-vector multiplication
-// float W_n[N + M][N + M];
-// float P_n[N + M][N + M];
-float x_k[N];
-float u_k[M];
-// float x_k1[N];
-// float u_k1[M];
-float z_k[N + M];
-// float z_k1[N + M];
-// float basisset0[N + M];
-// float basisset1[N + M];
-float z_n[N + M];
-float K_j[M][N];
-float g_n[N + M];
-float alpha_n[N + M];
-float S_ux[M][N];
-float S_uu[M][M];
-float S_uu_inverse[M][M];
-float z_k_dot_z_n = 0.0;
-// tilt estimation
-// the pivot point B̂ in the inertial frame Ô
-float pivot[3] = {-0.097, -0.1, -0.032};
-// the position of sensors mounted on the body in the body frame of reference
-float p1[3] = {-0.1400, -0.0650, -0.0620};
-float p2[3] = {-0.0400, -0.0600, -0.0600};
-// the vectors of the standard basis for the input space ℝ³
-float e1[3] = {1.0, 0.0, 0.0};
-float e2[3] = {0.0, 1.0, 0.0};
-float e3[3] = {0.0, 0.0, 1.0};
-// The rotation of the inertial frame Ô to the body frame B̂
-float O_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
-float B_O_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
-// The rotation of the local frame of the sensor i to the robot frame B̂
-float A1_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // [ê[2] ê[1] ê[3]]
-float A2_B_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // [ê[1] ê[2] ê[3]]
-float B_A1_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // LinearAlgebra.inv(A1_B_R)
-float B_A2_R[3][3] = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}; // LinearAlgebra.inv(A2_B_R)
-// The matrix of unknown parameters
-float Q[3][4] = {{0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}};
-// The matrix of sensor locations (known parameters)
-float P[4][2] = {{1.0, 1.0}, {-0.043, 0.057}, {0.035, 0.04}, {-0.03, -0.028}}; // [[1.0; vec(p1 - pivot)] [1.0; vec(p2 - pivot)] [1.0; vec(p3 - pivot)] [1.0; vec(p4 - pivot)]]
-// The optimal fusion matrix
-float X[2][4] = {{0.586913, -11.3087, 0.747681, 0.0}, {0.446183, 8.92749, -3.54337, 0.0}}; // transpose(P) * LinearAlgebra.inv(P * transpose(P))
-// accelerometer sensor measurements in the local frame of the sensors
-float R1[3] = {0.0, 0.0, 0.0};
-float R2[3] = {0.0, 0.0, 0.0};
-// accelerometer sensor measurements in the robot body frame
-float _R1[3] = {0.0, 0.0, 0.0};
-float _R2[3] = {0.0, 0.0, 0.0};
-// all sensor measurements combined
-float Matrix[3][2] = {{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
-// The gravity vector
-float g[3] = {0.0, 0.0, 0.0};
-// y-Euler angle (pitch)
-float beta = 0.0;
-float fused_beta = 0.0;
-// x-Euler angle (roll)
-float gamma1 = 0.0;
-float fused_gamma = 0.0;
-// tuning parameters to minimize estimate variance
-float kappa1 = 0.1;
-float kappa2 = 0.1;
-// the average of the body angular rate from rate gyro
-float r[3] = {0.0, 0.0, 0.0};
-// the average of the body angular rate in Euler angles
-float r_dot[3] = {0.0, 0.0, 0.0};
-// gyro sensor measurements in the local frame of the sensors
-float G1[3] = {0.0, 0.0, 0.0};
-float G2[3] = {0.0, 0.0, 0.0};
-// gyro sensor measurements in the robot body frame
-float _G1[3] = {0.0, 0.0, 0.0};
-float _G2[3] = {0.0, 0.0, 0.0};
-// a matrix transfom from body rates to Euler angular rates
-float E[3][3] = {{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -216,21 +118,21 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 typedef struct
 {
-  float row0[N + M];
-  float row1[N + M];
-  float row2[N + M];
-  float row3[N + M];
-  float row4[N + M];
-  float row5[N + M];
-  float row6[N + M];
-  float row7[N + M];
-  float row8[N + M];
-  float row9[N + M];
-  float row10[N + M];
-  float row11[N + M];
+  float row0[12];
+  float row1[12];
+  float row2[12];
+  float row3[12];
+  float row4[12];
+  float row5[12];
+  float row6[12];
+  float row7[12];
+  float row8[12];
+  float row9[12];
+  float row10[12];
+  float row11[12];
 } Mat12;
 
-float getIndex(Mat12 matrix, int i, int j)
+float getIndexMat12(Mat12 matrix, int i, int j)
 {
   switch (i)
   {
@@ -273,9 +175,10 @@ float getIndex(Mat12 matrix, int i, int j)
   default:
     break;
   }
+  return 0.0;
 }
 
-void setIndex(Mat12 *matrix, int i, int j, float value)
+void setIndexMat12(Mat12 *matrix, int i, int j, float value)
 {
   switch (i)
   {
@@ -315,9 +218,11 @@ void setIndex(Mat12 *matrix, int i, int j, float value)
   case 11:
     matrix->row11[j] = value;
     break;
+
   default:
     break;
   }
+  return;
 }
 
 typedef struct
@@ -340,18 +245,319 @@ typedef struct
 
 typedef struct
 {
-  int16_t accX_offset;
-  int16_t accY_offset;
-  int16_t accZ_offset;
-  float accX_scale;
-  float accY_scale;
-  float accZ_scale;
-  int16_t gyrX_offset;
-  int16_t gyrY_offset;
-  int16_t gyrZ_offset;
-  float gyrX_scale;
-  float gyrY_scale;
-  float gyrZ_scale;
+  float x0;
+  float x1;
+} Vec2;
+
+float getIndexVec2(Vec2 vector, int i)
+{
+  switch (i)
+  {
+  case 0:
+    return vector.x0;
+    break;
+  case 1:
+    return vector.x1;
+    break;
+
+  default:
+    break;
+  }
+  return 0.0;
+}
+
+void setIndexVec2(Vec2 *vector, int i, float value)
+{
+  switch (i)
+  {
+  case 0:
+    vector->x0 = value;
+    break;
+  case 1:
+    vector->x1 = value;
+    break;
+
+  default:
+    break;
+  }
+}
+
+typedef struct
+{
+  float x0;
+  float x1;
+  float x2;
+} Vec3;
+
+float getIndexVec3(Vec3 vector, int i)
+{
+  switch (i)
+  {
+  case 0:
+    return vector.x0;
+    break;
+  case 1:
+    return vector.x1;
+    break;
+  case 2:
+    return vector.x2;
+    break;
+
+  default:
+    break;
+  }
+  return 0.0;
+}
+
+void setIndexVec3(Vec3 *vector, int i, float value)
+{
+  switch (i)
+  {
+  case 0:
+    vector->x0 = value;
+    break;
+  case 1:
+    vector->x1 = value;
+    break;
+  case 2:
+    vector->x2 = value;
+    break;
+
+  default:
+    break;
+  }
+}
+
+typedef struct
+{
+  float row0[2];
+  float row1[2];
+} Mat2;
+
+float getIndexMat2(Mat2 matrix, int i, int j)
+{
+  switch (i)
+  {
+  case 0:
+    return matrix.row0[j];
+    break;
+  case 1:
+    return matrix.row1[j];
+    break;
+
+  default:
+    break;
+  }
+  return 0.0;
+}
+
+void setIndexMat2(Mat2 *matrix, int i, int j, float value)
+{
+  switch (i)
+  {
+  case 0:
+    matrix->row0[j] = value;
+    break;
+  case 1:
+    matrix->row1[j] = value;
+    break;
+
+  default:
+    break;
+  }
+}
+
+typedef struct
+{
+  float row0[3];
+  float row1[3];
+  float row2[3];
+} Mat3;
+
+float getIndexMat3(Mat3 matrix, int i, int j)
+{
+  switch (i)
+  {
+  case 0:
+    return matrix.row0[j];
+    break;
+  case 1:
+    return matrix.row1[j];
+    break;
+  case 2:
+    return matrix.row2[j];
+    break;
+
+  default:
+    break;
+  }
+  return 0.0;
+}
+
+void setIndexMat3(Mat3 *matrix, int i, int j, float value)
+{
+  switch (i)
+  {
+  case 0:
+    matrix->row0[j] = value;
+    break;
+  case 1:
+    matrix->row1[j] = value;
+    break;
+  case 2:
+    matrix->row2[j] = value;
+    break;
+
+  default:
+    break;
+  }
+}
+
+typedef struct
+{
+  float row0[4];
+  float row1[4];
+  float row2[4];
+} Mat34;
+
+float getIndexMat34(Mat34 matrix, int i, int j)
+{
+  switch (i)
+  {
+  case 0:
+    return matrix.row0[j];
+    break;
+  case 1:
+    return matrix.row1[j];
+    break;
+  case 2:
+    return matrix.row2[j];
+    break;
+
+  default:
+    break;
+  }
+  return 0.0;
+}
+
+void setIndexMat34(Mat34 *matrix, int i, int j, float value)
+{
+  switch (i)
+  {
+  case 0:
+    matrix->row0[j] = value;
+    break;
+  case 1:
+    matrix->row1[j] = value;
+    break;
+  case 2:
+    matrix->row2[j] = value;
+    break;
+
+  default:
+    break;
+  }
+}
+
+typedef struct
+{
+  float row0[4];
+  float row1[4];
+} Mat24;
+
+float getIndexMat24(Mat24 matrix, int i, int j)
+{
+  switch (i)
+  {
+  case 0:
+    return matrix.row0[j];
+    break;
+  case 1:
+    return matrix.row1[j];
+    break;
+
+  default:
+    break;
+  }
+  return 0.0;
+}
+
+void setIndexMat24(Mat24 *matrix, int i, int j, float value)
+{
+  switch (i)
+  {
+  case 0:
+    matrix->row0[j] = value;
+    break;
+  case 1:
+    matrix->row1[j] = value;
+    break;
+
+  default:
+    break;
+  }
+}
+
+typedef struct
+{
+  float row0[2];
+  float row1[2];
+  float row2[2];
+} Mat32;
+
+float getIndexMat32(Mat32 matrix, int i, int j)
+{
+  switch (i)
+  {
+  case 0:
+    return matrix.row0[j];
+    break;
+  case 1:
+    return matrix.row1[j];
+    break;
+  case 2:
+    return matrix.row2[j];
+    break;
+
+  default:
+    break;
+  }
+  return 0.0;
+}
+
+void setIndexMat32(Mat32 *matrix, int i, int j, float value)
+{
+  switch (i)
+  {
+  case 0:
+    matrix->row0[j] = value;
+    break;
+  case 1:
+    matrix->row1[j] = value;
+    break;
+  case 2:
+    matrix->row2[j] = value;
+    break;
+
+  default:
+    break;
+  }
+}
+
+typedef struct
+{
+  int16_t accXOffset;
+  int16_t accYOffset;
+  int16_t accZOffset;
+  float accXScale;
+  float accYScale;
+  float accZScale;
+  int16_t gyrXOffset;
+  int16_t gyrYOffset;
+  int16_t gyrZOffset;
+  float gyrXScale;
+  float gyrYScale;
+  float gyrZScale;
   int16_t rawAccX;
   int16_t rawAccY;
   int16_t rawAccZ;
@@ -373,6 +579,11 @@ typedef struct
   float roll_acceleration;
   float pitch_acceleration;
   float yaw_acceleration;
+  Mat3 B_A_R; // The rotation of the local frame of the sensor i to the robot frame B̂
+  Vec3 R;     // accelerometer sensor measurements in the local frame of the sensors
+  Vec3 _R;    // accelerometer sensor measurements in the robot body frame
+  Vec3 G;     // gyro sensor measurements in the local frame of the sensors
+  Vec3 _G;    // gyro sensor measurements in the robot body frame
 } IMU;
 
 void encodeWheel(Encoder *encoder, int newValue)
@@ -420,12 +631,12 @@ void updateIMU1(IMU *sensor) // GY-25 I2C
     sensor->rawGyrX = (raw_data[6] << 8) | raw_data[7];
     sensor->rawGyrY = (raw_data[8] << 8) | raw_data[9];
     sensor->rawGyrZ = (raw_data[10] << 8) | raw_data[11];
-    sensor->accX = sensor->accX_scale * (sensor->rawAccX - sensor->accX_offset);
-    sensor->accY = sensor->accY_scale * (sensor->rawAccY - sensor->accY_offset);
-    sensor->accZ = sensor->accZ_scale * (sensor->rawAccZ - sensor->accZ_offset);
-    sensor->gyrX = sensor->gyrX_scale * (sensor->rawGyrX - sensor->gyrX_offset);
-    sensor->gyrY = sensor->gyrY_scale * (sensor->rawGyrY - sensor->gyrY_offset);
-    sensor->gyrZ = sensor->gyrZ_scale * (sensor->rawGyrZ - sensor->gyrZ_offset);
+    sensor->accX = sensor->accXScale * (sensor->rawAccX - sensor->accXOffset);
+    sensor->accY = sensor->accYScale * (sensor->rawAccY - sensor->accYOffset);
+    sensor->accZ = sensor->accZScale * (sensor->rawAccZ - sensor->accZOffset);
+    sensor->gyrX = sensor->gyrXScale * (sensor->rawGyrX - sensor->gyrXOffset);
+    sensor->gyrY = sensor->gyrYScale * (sensor->rawGyrY - sensor->gyrYOffset);
+    sensor->gyrZ = sensor->gyrZScale * (sensor->rawGyrZ - sensor->gyrZOffset);
   } while (HAL_I2C_GetError(&hi2c1) == HAL_I2C_ERROR_AF);
 
   return;
@@ -443,20 +654,12 @@ void updateIMU2(IMU *sensor) // GY-95 USART
       sensor->rawGyrX = (UART1_rxBuffer[11] << 8) | UART1_rxBuffer[10];
       sensor->rawGyrY = (UART1_rxBuffer[13] << 8) | UART1_rxBuffer[12];
       sensor->rawGyrZ = (UART1_rxBuffer[15] << 8) | UART1_rxBuffer[14];
-      sensor->accX = sensor->accX_scale * (sensor->rawAccX - sensor->accX_offset);
-      sensor->accY = sensor->accY_scale * (sensor->rawAccY - sensor->accY_offset);
-      sensor->accZ = sensor->accZ_scale * (sensor->rawAccZ - sensor->accZ_offset);
-      sensor->gyrX = sensor->gyrX_scale * (sensor->rawGyrX - sensor->gyrX_offset);
-      sensor->gyrY = sensor->gyrY_scale * (sensor->rawGyrY - sensor->gyrY_offset);
-      sensor->gyrZ = sensor->gyrZ_scale * (sensor->rawGyrZ - sensor->gyrZ_offset);
-      float dummyx = cos(sensorAngle) * sensor->accX - sin(sensorAngle) * sensor->accY;
-      float dummyy = sin(sensorAngle) * sensor->accX + cos(sensorAngle) * sensor->accY;
-      sensor->accX = -dummyy;
-      sensor->accY = dummyx;
-      dummyx = cos(sensorAngle) * sensor->gyrX - sin(sensorAngle) * sensor->gyrY;
-      dummyy = sin(sensorAngle) * sensor->gyrX + cos(sensorAngle) * sensor->gyrY;
-      sensor->gyrX = -dummyy;
-      sensor->gyrY = dummyx;
+      sensor->accX = sensor->accXScale * (sensor->rawAccX - sensor->accXOffset);
+      sensor->accY = sensor->accYScale * (sensor->rawAccY - sensor->accYOffset);
+      sensor->accZ = sensor->accZScale * (sensor->rawAccZ - sensor->accZOffset);
+      sensor->gyrX = sensor->gyrXScale * (sensor->rawGyrX - sensor->gyrXOffset);
+      sensor->gyrY = sensor->gyrYScale * (sensor->rawGyrY - sensor->gyrYOffset);
+      sensor->gyrZ = sensor->gyrZScale * (sensor->rawGyrZ - sensor->gyrZOffset);
       uart_receive_ok = 0;
     }
   }
@@ -477,50 +680,162 @@ typedef struct
   float x9;
   float x10;
   float x11;
-  float x12;
-  float x13;
-  float x14;
-  float x15;
-  float x16;
-  float x17;
-  float x18;
-  float x19;
-  float x20;
-  float x21;
-  float x22;
-  float x23;
-} Vec24f;
+} Vec12;
+
+float getIndexVec12(Vec12 vector, int i)
+{
+  switch (i)
+  {
+  case 0:
+    return vector.x0;
+    break;
+
+  case 1:
+    return vector.x1;
+    break;
+
+  case 2:
+    return vector.x2;
+    break;
+
+  case 3:
+    return vector.x3;
+    break;
+
+  case 4:
+    return vector.x4;
+    break;
+
+  case 5:
+    return vector.x5;
+    break;
+
+  case 6:
+    return vector.x6;
+    break;
+
+  case 7:
+    return vector.x7;
+    break;
+
+  case 8:
+    return vector.x8;
+    break;
+
+  case 9:
+    return vector.x9;
+    break;
+
+  case 10:
+    return vector.x10;
+    break;
+
+  case 11:
+    return vector.x11;
+    break;
+
+  default:
+    break;
+  }
+  return 0.0;
+}
+
+void setIndexVec12(Vec12 *vector, int i, float value)
+{
+  switch (i)
+  {
+  case 0:
+    vector->x0 = value;
+    break;
+  case 1:
+    vector->x1 = value;
+    break;
+  case 2:
+    vector->x2 = value;
+    break;
+  case 3:
+    vector->x3 = value;
+    break;
+  case 4:
+    vector->x4 = value;
+    break;
+  case 5:
+    vector->x5 = value;
+    break;
+  case 6:
+    vector->x6 = value;
+    break;
+  case 7:
+    vector->x7 = value;
+    break;
+  case 8:
+    vector->x8 = value;
+    break;
+  case 9:
+    vector->x9 = value;
+    break;
+  case 10:
+    vector->x10 = value;
+    break;
+  case 11:
+    vector->x11 = value;
+    break;
+
+  default:
+    break;
+  }
+}
+
 typedef struct
 {
-  float x00;
-  float x01;
-  float x02;
-  float x03;
-  float x04;
-  float x05;
-  float x06;
-  float x07;
-  float x08;
-  float x09;
-  float x10;
-  float x11;
-  float x12;
-  float x13;
-  float x14;
-  float x15;
-  float x16;
-  float x17;
-  float x18;
-  float x19;
-} Mat210f;
+  float row0[10];
+  float row1[10];
+} Mat210;
+
+float getIndexMat210(Mat210 matrix, int i, int j)
+{
+  switch (i)
+  {
+  case 0:
+    return matrix.row0[j];
+    break;
+  case 1:
+    return matrix.row1[j];
+    break;
+
+  default:
+    break;
+  }
+  return 0.0;
+}
+
+void setIndexMat210(Mat210 *matrix, int i, int j, float value)
+{
+  switch (i)
+  {
+  case 0:
+    matrix->row0[j] = value;
+    break;
+  case 1:
+    matrix->row1[j] = value;
+    break;
+
+  default:
+    break;
+  }
+}
 
 // Represents a Linear Quadratic Regulator (LQR) model.
 typedef struct
 {
   Mat12 W_n;                           // filter matrix
   Mat12 P_n;                           // inverse autocorrelation matrix
-  Mat210f K_j;                         // feedback policy
-  Vec24f dataset;                      // (xₖ, uₖ, xₖ₊₁, uₖ₊₁)
+  Mat210 K_j;                          // feedback policy
+  Vec12 dataset;                       // (xₖ, uₖ)
+  Vec12 z_n;                           // z_n in RLS
+  Vec12 g_n;                           // g_n in RLS
+  Vec12 alpha_n;                       // alpha_n in RLS
+  float x_n_dot_z_n;                   // the inner product of the x_n (dataset) and z_n
   int j;                               // step number
   int k;                               // time k
   int n;                               // xₖ ∈ ℝⁿ
@@ -528,9 +843,38 @@ typedef struct
   float lambda;                        // exponential wighting factor
   float delta;                         // value used to intialize P(0)
   int active;                          // is the model controller active
+  float cpuClock;                      // the CPU clock
   float dt;                            // period in seconds
-  float reactionPWM;                   // reaction wheel's motor PWM duty cycle
-  float rollingPWM;                    // rolling wheel's motor PWM duty cycle
+  float reactionDutyCycle;             // reaction wheel's motor PWM duty cycle
+  float rollingDutyCycle;              // rolling wheel's motor PWM duty cycle
+  float reactionDutyCycleChange;       // the maximum incremental change in the reaction motor's duty cycle
+  float rollingDutyCycleChnage;        // the maximum incremental change in the rolling motor's duty cycle
+  float clippingValue;                 // the clipping value for any of the P matrix elements at which the clipping is applied
+  float clippingFactor;                // the coefficient by which the P matrix elements are rescaled through scalar multiplication
+  float rollSafetyAngle;               // the roll angle in radian beyond which the controller must become deactive for safety
+  float pitchSafetyAngle;              // the pitch angle in radian beyond which the controller must become deactive for safety
+  float kappa1;                        // tuning parameters to minimize estimate variance (the ratio between the accelerometer and the gyroscope in sensor fusion)
+  float kappa2;                        // tuning parameters to minimize estimate variance (the ratio between the accelerometer and the gyroscope in sensor fusion)
+  int maxEpisodeLength;                // the maximum number of interactions with the nevironment before the model becomes deactive for safety
+  int logPeriod;                       // the period between printing two log messages in terms of control cycles
+  int logCounter;                      // the number of control cycles elpased since the last log message printing
+  int maxOutOfBounds;                  // the maximum number of consecutive cycles where states are out of the safety bounds
+  int outOfBoundsCounter;              // the number of consecutive times when either of safety angles have been detected out of bounds
+  float beta;                          // y-Euler angle (pitch)
+  float gamma;                         // x-Euler angle (roll)
+  float fusedBeta;                     // y-Euler angle (pitch) as the result of fusing the accelerometer sensor measurements with the gyroscope sensor measurements
+  float fusedGamma;                    // x-Euler angle (roll) as the result of fusing the accelerometer sensor measurements with the gyroscope sensor measurements
+  Mat34 Q;                             // The matrix of unknown parameters
+  Vec3 r;                              // the average of the body angular rate from rate gyro
+  Vec3 rDot;                           // the average of the body angular rate in Euler angles
+  Mat3 E;                              // a matrix transfom from body rates to Euler angular rates
+  Mat24 X;                             // The optimal fusion matrix
+  Mat32 Matrix;                        // all sensor measurements combined
+  Vec3 g;                              // The gravity vector
+  Mat2 Suu;                            // The input-input kernel
+  Mat2 SuuInverse;                     // the inverse of the input-input kernel
+  Mat210 Sux;                          // the input-state kernel
+  Vec2 u_k;                            // the input vector
   IMU imu1;                            // the first inertial measurement unit
   IMU imu2;                            // the second inertial measurement unit
   Encoder reactionEncoder;             // the reaction wheel encoder
@@ -543,115 +887,198 @@ void updateIMU(LinearQuadraticRegulator *model)
 {
   updateIMU1(&(model->imu1));
   updateIMU2(&(model->imu2));
-  R1[0] = model->imu1.accX;
-  R1[1] = model->imu1.accY;
-  R1[2] = model->imu1.accZ;
-  R2[0] = model->imu2.accX;
-  R2[1] = model->imu2.accY;
-  R2[2] = model->imu2.accZ;
+  setIndexVec3(&(model->imu1.R), 0, model->imu1.accX);
+  setIndexVec3(&(model->imu1.R), 1, model->imu1.accY);
+  setIndexVec3(&(model->imu1.R), 2, model->imu1.accZ);
+  setIndexVec3(&(model->imu2.R), 0, model->imu2.accX);
+  setIndexVec3(&(model->imu2.R), 1, model->imu2.accY);
+  setIndexVec3(&(model->imu2.R), 2, model->imu2.accZ);
 
-  _R1[0] = 0.0;
-  _R1[1] = 0.0;
-  _R1[2] = 0.0;
-  _R2[0] = 0.0;
-  _R2[1] = 0.0;
-  _R2[2] = 0.0;
+  for (int i = 0; i < 3; i++)
+  {
+    setIndexVec3(&(model->imu1._R), i, 0.0);
+    setIndexVec3(&(model->imu2._R), i, 0.0);
+  }
+
   for (int i = 0; i < 3; i++)
   {
     for (int j = 0; j < 3; j++)
     {
-      _R1[i] += B_A1_R[i][j] * R1[j];
-      _R2[i] += B_A2_R[i][j] * R2[j];
+      setIndexVec3(&(model->imu1._R), i, getIndexVec3(model->imu1._R, i) + getIndexMat3(model->imu1.B_A_R, i, j) * getIndexVec3(model->imu1.R, j));
+      setIndexVec3(&(model->imu2._R), i, getIndexVec3(model->imu2._R, i) + getIndexMat3(model->imu2.B_A_R, i, j) * getIndexVec3(model->imu2.R, j));
     }
   }
 
   for (int i = 0; i < 3; i++)
   {
-    Matrix[i][0] = _R1[i];
-    Matrix[i][1] = _R2[i];
+    setIndexMat32(&(model->Matrix), i, 0, getIndexVec3(model->imu1._R, i));
+    setIndexMat32(&(model->Matrix), i, 1, getIndexVec3(model->imu2._R, i));
   }
 
   for (int i = 0; i < 3; i++)
   {
     for (int j = 0; j < 4; j++)
     {
-      Q[i][j] = 0.0;
+      setIndexMat34(&(model->Q), i, j, 0.0);
       for (int k = 0; k < 2; k++)
       {
-        Q[i][j] += Matrix[i][k] * X[k][j];
+        setIndexMat34(&(model->Q), i, j, getIndexMat34(model->Q, i, j) + getIndexMat32(model->Matrix, i, k) * getIndexMat24(model->X, k, j));
       }
     }
   }
-  g[0] = Q[0][0];
-  g[1] = Q[1][0];
-  g[2] = Q[2][0];
-  beta = atan2(-g[0], sqrt(pow(g[1], 2) + pow(g[2], 2)));
-  gamma1 = atan2(g[1], g[2]);
+  setIndexVec3(&(model->g), 0, getIndexMat34(model->Q, 0, 0));
+  setIndexVec3(&(model->g), 1, getIndexMat34(model->Q, 1, 0));
+  setIndexVec3(&(model->g), 2, getIndexMat34(model->Q, 2, 0));
+  model->beta = atan2(-getIndexVec3(model->g, 0), sqrt(pow(getIndexVec3(model->g, 1), 2) + pow(getIndexVec3(model->g, 2), 2)));
+  model->gamma = atan2(getIndexVec3(model->g, 1), getIndexVec3(model->g, 2));
 
-  G1[0] = model->imu1.gyrX;
-  G1[1] = model->imu1.gyrY;
-  G1[2] = model->imu1.gyrZ;
-  G2[0] = model->imu2.gyrX;
-  G2[1] = model->imu2.gyrY;
-  G2[2] = model->imu2.gyrZ;
+  setIndexVec3(&(model->imu1.G), 0, model->imu1.gyrX);
+  setIndexVec3(&(model->imu1.G), 1, model->imu1.gyrY);
+  setIndexVec3(&(model->imu1.G), 2, model->imu1.gyrZ);
+  setIndexVec3(&(model->imu2.G), 0, model->imu2.gyrX);
+  setIndexVec3(&(model->imu2.G), 1, model->imu2.gyrY);
+  setIndexVec3(&(model->imu2.G), 2, model->imu2.gyrZ);
 
-  _G1[0] = 0.0;
-  _G1[1] = 0.0;
-  _G1[2] = 0.0;
-  _G2[0] = 0.0;
-  _G2[1] = 0.0;
-  _G2[2] = 0.0;
+  for (int i = 0; i < 3; i++)
+  {
+    setIndexVec3(&(model->imu1._G), i, 0.0);
+    setIndexVec3(&(model->imu2._G), i, 0.0);
+  }
+
   for (int i = 0; i < 3; i++)
   {
     for (int j = 0; j < 3; j++)
     {
-      _G1[i] += B_A1_R[i][j] * G1[j];
-      _G2[i] += B_A2_R[i][j] * G2[j];
+      setIndexVec3(&(model->imu1._G), i, getIndexVec3(model->imu1._G, i) + getIndexMat3(model->imu1.B_A_R, i, j) * getIndexVec3(model->imu1.G, j));
+      setIndexVec3(&(model->imu2._G), i, getIndexVec3(model->imu2._G, i) + getIndexMat3(model->imu2.B_A_R, i, j) * getIndexVec3(model->imu2.G, j));
     }
   }
   for (int i = 0; i < 3; i++)
   {
-    r[i] = (_G1[i] + _G2[i]) / 2.0;
+    setIndexVec3(&(model->r), i, (getIndexVec3(model->imu1._G, i) + getIndexVec3(model->imu2._G, i)) / 2.0);
   }
 
-  E[0][0] = 0.0;
-  E[0][1] = sin(gamma1) / cos(beta);
-  E[0][2] = cos(gamma1) / cos(beta);
-  E[1][0] = 0.0;
-  E[1][1] = cos(gamma1);
-  E[1][2] = -sin(gamma1);
-  E[2][0] = 1.0;
-  E[2][1] = sin(gamma1) * tan(beta);
-  E[2][2] = cos(gamma1) * tan(beta);
+  setIndexMat3(&(model->E), 0, 0, 0.0);
+  setIndexMat3(&(model->E), 0, 1, sin(model->gamma) / cos(model->beta));
+  setIndexMat3(&(model->E), 0, 2, cos(model->gamma) / cos(model->beta));
+  setIndexMat3(&(model->E), 1, 0, 0.0);
+  setIndexMat3(&(model->E), 1, 1, cos(model->gamma));
+  setIndexMat3(&(model->E), 1, 2, -sin(model->gamma));
+  setIndexMat3(&(model->E), 2, 0, 1.0);
+  setIndexMat3(&(model->E), 2, 1, sin(model->gamma) * tan(model->beta));
+  setIndexMat3(&(model->E), 2, 2, cos(model->gamma) * tan(model->beta));
 
-  r_dot[0] = 0.0;
-  r_dot[1] = 0.0;
-  r_dot[2] = 0.0;
+  for (int i = 0; i < 3; i++)
+  {
+    setIndexVec3(&(model->rDot), i, 0.0);
+  }
+
   for (int i = 0; i < 3; i++)
   {
     for (int j = 0; j < 3; j++)
     {
-      r_dot[i] += E[i][j] * r[j];
-      r_dot[i] += E[i][j] * r[j];
-      r_dot[i] += E[i][j] * r[j];
-      r_dot[i] += E[i][j] * r[j];
+      setIndexVec3(&(model->rDot), i, getIndexVec3(model->rDot, i) + getIndexMat3(model->E, i, j) * getIndexVec3(model->r, j));
     }
   }
 
-  fused_beta = kappa1 * beta + (1.0 - kappa1) * (fused_beta + model->dt * (r_dot[1] / 180.0 * M_PI));
-  fused_gamma = kappa2 * gamma1 + (1.0 - kappa2) * (fused_gamma + model->dt * (r_dot[2] / 180.0 * M_PI));
-  model->imu1.yaw += model->dt * r_dot[0];
+  model->fusedBeta = model->kappa1 * model->beta + (1.0 - model->kappa1) * (model->fusedBeta + model->dt * (getIndexVec3(model->rDot, 1) / 180.0 * M_PI));
+  model->fusedGamma = model->kappa2 * model->gamma + (1.0 - model->kappa2) * (model->fusedGamma + model->dt * (getIndexVec3(model->rDot, 2) / 180.0 * M_PI));
+  model->imu1.yaw += model->dt * getIndexVec3(model->rDot, 0);
 
-  float _roll = fused_beta;
-  float _pitch = -fused_gamma;
-  float _roll_velocity = ((r_dot[1] / 180.0 * M_PI) + (_roll - model->imu1.roll) / model->dt) / 2.0;
-  float _pitch_velocity = ((-r_dot[2] / 180.0 * M_PI) + (_pitch - model->imu1.pitch) / model->dt) / 2.0;
+  float _roll = model->fusedBeta;
+  float _pitch = -model->fusedGamma;
+  float _roll_velocity = ((getIndexVec3(model->rDot, 1) / 180.0 * M_PI) + (_roll - model->imu1.roll) / model->dt) / 2.0;
+  float _pitch_velocity = ((-getIndexVec3(model->rDot, 2) / 180.0 * M_PI) + (_pitch - model->imu1.pitch) / model->dt) / 2.0;
   model->imu1.roll_acceleration = _roll_velocity - model->imu1.roll_velocity;
   model->imu1.pitch_acceleration = _pitch_velocity - model->imu1.pitch_velocity;
   model->imu1.roll_velocity = _roll_velocity;
   model->imu1.pitch_velocity = _pitch_velocity;
   model->imu1.roll = _roll;
   model->imu1.pitch = _pitch;
+}
+
+void updateSensors(LinearQuadraticRegulator *model)
+{
+  updateIMU(model);
+  encodeWheel(&(model->reactionEncoder), TIM3->CNT);
+  encodeWheel(&(model->rollingEncoder), TIM4->CNT);
+  senseCurrent(&(model->reactionCurrentSensor), &(model->rollingCurrentSensor));
+  // dataset = (xₖ, uₖ)
+  setIndexVec12(&(model->dataset), 0, model->imu1.roll);
+  setIndexVec12(&(model->dataset), 1, model->imu1.roll_velocity);
+  setIndexVec12(&(model->dataset), 2, model->imu1.roll_acceleration);
+  setIndexVec12(&(model->dataset), 3, model->imu1.pitch);
+  setIndexVec12(&(model->dataset), 4, model->imu1.pitch_velocity);
+  setIndexVec12(&(model->dataset), 5, model->imu1.pitch_acceleration);
+  setIndexVec12(&(model->dataset), 6, model->reactionEncoder.velocity);
+  setIndexVec12(&(model->dataset), 7, model->rollingEncoder.velocity);
+  setIndexVec12(&(model->dataset), 8, model->reactionCurrentSensor.currentVelocity);
+  setIndexVec12(&(model->dataset), 9, model->rollingCurrentSensor.currentVelocity);
+  return;
+}
+
+void computeFeedbackPolicy(LinearQuadraticRegulator *model)
+{
+  setIndexVec2(&(model->u_k), 0, 0.0);
+  setIndexVec2(&(model->u_k), 1, 0.0);
+  // feeback policy
+  for (int i = 0; i < model->m; i++)
+  {
+    for (int j = 0; j < model->n; j++)
+    {
+      setIndexVec2(&(model->u_k), i, getIndexVec2(model->u_k, i) + -getIndexMat210(model->K_j, i, j) * getIndexVec12(model->dataset, j));
+    }
+  }
+  // dataset = (xₖ, uₖ)
+  setIndexVec12(&(model->dataset), 10, getIndexVec2(model->u_k, 0));
+  setIndexVec12(&(model->dataset), 11, getIndexVec2(model->u_k, 1));
+  return;
+}
+
+void applyFeedbackPolicy(LinearQuadraticRegulator *model)
+{
+  float input0 = model->dataset.x10;
+  float input1 = model->dataset.x11;
+  model->reactionDutyCycle += model->reactionDutyCycleChange * input0;
+  model->rollingDutyCycle += model->rollingDutyCycleChnage * input1;
+  model->reactionDutyCycle = fmin(255.0 * 255.0, model->reactionDutyCycle);
+  model->reactionDutyCycle = fmax(-255.0 * 255.0, model->reactionDutyCycle);
+  model->rollingDutyCycle = fmin(255.0 * 255.0, model->rollingDutyCycle);
+  model->rollingDutyCycle = fmax(-255.0 * 255.0, model->rollingDutyCycle);
+  TIM2->CCR1 = (int)fabs(model->rollingDutyCycle);
+  TIM2->CCR2 = (int)fabs(model->reactionDutyCycle);
+  if (model->reactionDutyCycle < 0)
+  {
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
+  }
+  else
+  {
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+  }
+  if (model->rollingDutyCycle < 0)
+  {
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
+  }
+  else
+  {
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
+  }
+}
+
+void resetActuators(LinearQuadraticRegulator *model)
+{
+  model->reactionDutyCycle = 0.0;
+  model->rollingDutyCycle = 0.0;
+  TIM2->CCR1 = 0;
+  TIM2->CCR2 = 0;
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
 }
 
 // instantiate a model and initialize it
@@ -665,82 +1092,227 @@ void initialize(LinearQuadraticRegulator *model)
 {
   model->j = 1;
   model->k = 1;
-  model->n = dim_n;
-  model->m = dim_m;
+  model->n = N;
+  model->m = M;
   model->lambda = 0.95;
   model->delta = 0.01;
   model->active = 0;
+  model->cpuClock = 84000000.0;
   model->dt = 0.0;
+  model->reactionDutyCycleChange = 255.0 * 64.0;
+  model->rollingDutyCycleChnage = 255.0 * 32.0;
+  model->clippingValue = 100.0;
+  model->clippingFactor = 0.9;
+  model->rollSafetyAngle = 0.21;
+  model->pitchSafetyAngle = 0.21;
+  model->maxEpisodeLength = 50000;
+  model->logPeriod = 10;
+  model->logCounter = 0;
+  model->maxOutOfBounds = 10;
+  model->outOfBoundsCounter = 0;
+  model->kappa1 = 0.03;
+  model->kappa2 = 0.03;
 
-  seed = DWT->CYCCNT;
+  Mat12 P_n;
+  Mat12 W_n;
+  Mat210 K_j;
+  Vec12 dataset;
+  Mat3 B_A1_R;
+  Mat3 B_A2_R;
+  Mat34 Q;
+  Mat24 X;
+  Vec3 R1;
+  Vec3 R2;
+  Vec3 _R1;
+  Vec3 _R2;
+  Mat32 Matrix;
+  Vec3 g;
+  Vec3 r;
+  Vec3 rDot;
+  Vec3 G1;
+  Vec3 G2;
+  Vec3 _G1;
+  Vec3 _G2;
+  Mat3 E;
+  Vec2 u_k;
+  Vec12 z_n;
+  Vec12 g_n;
+  Vec12 alpha_n;
+  Mat2 Suu;
+  Mat2 SuuInverse;
+  Mat210 Sux;
+
+  for (int i = 0; i < 2; i++)
+  {
+    for (int j = 0; j < 2; j++)
+    {
+      setIndexMat2(&Suu, i, j, 0.0);
+      setIndexMat2(&SuuInverse, i, j, 0.0);
+    }
+    for (int j = 0; j < 10; j++)
+    {
+      setIndexMat210(&Sux, i, j, 0.0);
+    }
+  }
+
+  int seed = DWT->CYCCNT;
   srand(seed);
 
   for (int i = 0; i < (model->n + model->n); i++)
   {
     for (int j = 0; j < (model->n + model->n); j++)
     {
-      setIndex(&(model->W_n), i, j, (float)(rand() % 100) / 100.0);
+      seed = DWT->CYCCNT;
+      srand(seed);
+      setIndexMat12(&W_n, i, j, (float)(rand() % 100) / 100.0);
       if (i == j)
       {
-        setIndex(&(model->P_n), i, j, 1.0);
+        setIndexMat12(&P_n, i, j, 1.0);
       }
       else
       {
-        setIndex(&(model->P_n), i, j, 0.0);
+        setIndexMat12(&P_n, i, j, 0.0);
       }
+      setIndexMat210(&K_j, i, j, (float)(rand() % 100) / 100.0);
+    }
+    setIndexVec12(&dataset, i, 0.0);
+  }
+
+  for (int i = 0; i < 12; i++)
+  {
+    setIndexVec12(&z_n, i, 0.0);
+    setIndexVec12(&g_n, i, 0.0);
+    setIndexVec12(&alpha_n, i, 0.0);
+  }
+
+  setIndexVec2(&u_k, 0, 0.0);
+  setIndexVec2(&u_k, 1, 0.0);
+
+  for (int i = 0; i < 3; i++)
+  {
+    setIndexVec3(&R1, i, 0.0);
+    setIndexVec3(&R2, i, 0.0);
+    setIndexVec3(&_R1, i, 0.0);
+    setIndexVec3(&_R2, i, 0.0);
+    setIndexVec3(&g, i, 0.0);
+    setIndexVec3(&r, i, 0.0);
+    setIndexVec3(&rDot, i, 0.0);
+    setIndexVec3(&G1, i, 0.0);
+    setIndexVec3(&G2, i, 0.0);
+    setIndexVec3(&_G1, i, 0.0);
+    setIndexVec3(&_G2, i, 0.0);
+    for (int j = 0; j < 3; j++)
+    {
+      if (i == j)
+      {
+        setIndexMat3(&B_A1_R, i, j, 1.0);
+      }
+      else
+      {
+        setIndexMat3(&B_A1_R, i, j, 0.0);
+      }
+      setIndexMat3(&E, i, j, 0.0);
     }
   }
 
-  seed = DWT->CYCCNT;
-  srand(seed);
-  model->K_j.x00 = (float)(rand() % 100) / 100.0;
-  model->K_j.x01 = (float)(rand() % 100) / 100.0;
-  model->K_j.x02 = (float)(rand() % 100) / 100.0;
-  model->K_j.x03 = (float)(rand() % 100) / 100.0;
-  model->K_j.x04 = (float)(rand() % 100) / 100.0;
-  model->K_j.x05 = (float)(rand() % 100) / 100.0;
-  model->K_j.x06 = (float)(rand() % 100) / 100.0;
-  model->K_j.x07 = (float)(rand() % 100) / 100.0;
-  model->K_j.x08 = (float)(rand() % 100) / 100.0;
-  model->K_j.x09 = (float)(rand() % 100) / 100.0;
-  model->K_j.x10 = (float)(rand() % 100) / 100.0;
-  model->K_j.x11 = (float)(rand() % 100) / 100.0;
-  model->K_j.x12 = (float)(rand() % 100) / 100.0;
-  model->K_j.x13 = (float)(rand() % 100) / 100.0;
-  model->K_j.x14 = (float)(rand() % 100) / 100.0;
-  model->K_j.x15 = (float)(rand() % 100) / 100.0;
-  model->K_j.x16 = (float)(rand() % 100) / 100.0;
-  model->K_j.x17 = (float)(rand() % 100) / 100.0;
-  model->K_j.x18 = (float)(rand() % 100) / 100.0;
-  model->K_j.x19 = (float)(rand() % 100) / 100.0;
+  float sensorAngle = -30.0 / 180.0 * M_PI;
 
-  model->dataset.x0 = 0.0;
-  model->dataset.x1 = 0.0;
-  model->dataset.x2 = 0.0;
-  model->dataset.x3 = 0.0;
-  model->dataset.x4 = 0.0;
-  model->dataset.x5 = 0.0;
-  model->dataset.x6 = 0.0;
-  model->dataset.x7 = 0.0;
-  model->dataset.x8 = 0.0;
-  model->dataset.x9 = 0.0;
-  model->dataset.x10 = 0.0;
-  model->dataset.x11 = 0.0;
-  model->dataset.x12 = 0.0;
-  model->dataset.x13 = 0.0;
-  model->dataset.x14 = 0.0;
-  model->dataset.x15 = 0.0;
-  model->dataset.x16 = 0.0;
-  model->dataset.x17 = 0.0;
-  model->dataset.x18 = 0.0;
-  model->dataset.x19 = 0.0;
-  model->dataset.x20 = 0.0;
-  model->dataset.x21 = 0.0;
-  model->dataset.x22 = 0.0;
-  model->dataset.x23 = 0.0;
-  // scale : 1 / 2048
-  IMU imu1 = {-24, -60, 27, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  IMU imu2 = {75, -25, -18, 0.000488281, 0.000488281, 0.000488281, 0, 0, 0, 0.017444444, 0.017444444, 0.017444444, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  setIndexMat3(&B_A2_R, 0, 0, -sin(sensorAngle));
+  setIndexMat3(&B_A2_R, 1, 0, cos(sensorAngle));
+  setIndexMat3(&B_A2_R, 2, 0, 0.0);
+
+  setIndexMat3(&B_A2_R, 0, 1, -cos(sensorAngle));
+  setIndexMat3(&B_A2_R, 1, 1, -sin(sensorAngle));
+  setIndexMat3(&B_A2_R, 2, 1, 0.0);
+
+  setIndexMat3(&B_A2_R, 0, 2, 0.0);
+  setIndexMat3(&B_A2_R, 1, 2, 0.0);
+  setIndexMat3(&B_A2_R, 2, 2, 1.0);
+
+  for (int i = 0; i < 3; i++)
+  {
+    for (int j = 0; j < 2; j++)
+    {
+      setIndexMat32(&Matrix, i, j, 0.0);
+    }
+  }
+
+  for (int i = 0; i < 3; i++)
+  {
+    for (int j = 0; j < 4; j++)
+    {
+      setIndexMat34(&Q, i, j, 0.0);
+    }
+  }
+
+  setIndexMat24(&X, 0, 0, 0.586913);
+  setIndexMat24(&X, 0, 1, -11.3087);
+  setIndexMat24(&X, 0, 2, 0.747681);
+  setIndexMat24(&X, 0, 3, 0.0);
+  setIndexMat24(&X, 1, 0, 0.446183);
+  setIndexMat24(&X, 1, 1, 8.92749);
+  setIndexMat24(&X, 1, 2, -3.54337);
+  setIndexMat24(&X, 1, 3, 0.0);
+
+  model->P_n = P_n;
+  model->W_n = W_n;
+  model->K_j = K_j;
+  model->dataset = dataset;
+  model->Suu = Suu;
+  model->Suu = SuuInverse;
+  model->Sux = Sux;
+  model->Q = Q;
+  model->E = E;
+  model->X = X;
+  model->Matrix = Matrix;
+  model->r = r;
+  model->rDot = rDot;
+  model->g = g;
+  model->u_k = u_k;
+  model->z_n = z_n;
+  model->g_n = g_n;
+  model->alpha_n = alpha_n;
+  model->beta = 0.0;
+  model->fusedBeta = 0.0;
+  model->gamma = 0.0;
+  model->fusedGamma = 0.0;
+
+  IMU imu1;
+  IMU imu2;
+  imu1.accXOffset = -24;
+  imu1.accYOffset = -60;
+  imu1.accZOffset = 27;
+  imu1.accXScale = 0.000488281; // scale : 1 / 2048
+  imu1.accYScale = 0.000488281;
+  imu1.accZScale = 0.000488281;
+  imu1.gyrXOffset = 0;
+  imu1.gyrYOffset = 0;
+  imu1.gyrZOffset = 0;
+  imu1.gyrXScale = 0.017444444;
+  imu1.gyrYScale = 0.017444444;
+  imu1.gyrZScale = 0.017444444;
+  imu1.B_A_R = B_A1_R;
+  imu1.R = R1;
+  imu1._R = _R1;
+  imu1.G = G1;
+  imu1._G = _G1;
+  imu2.accXOffset = 75;
+  imu2.accYOffset = -25;
+  imu2.accZOffset = -18;
+  imu2.accXScale = 0.000488281;
+  imu2.accYScale = 0.000488281;
+  imu2.accZScale = 0.000488281;
+  imu2.gyrXOffset = 0;
+  imu2.gyrYOffset = 0;
+  imu2.gyrZOffset = 0;
+  imu2.gyrXScale = 0.017444444;
+  imu2.gyrYScale = 0.017444444;
+  imu2.gyrZScale = 0.017444444;
+  imu2.B_A_R = B_A2_R;
+  imu2.R = R2;
+  imu2._R = _R2;
+  imu2.G = G2;
+  imu2._G = _G2;
   Encoder reactionEncoder = {1736, 0, 0, 0, 0, 0};
   Encoder rollingEncoder = {3020, 0, 0, 0, 0, 0};
   CurrentSensor reactionCurrentSensor = {31500.0, 0, 0, 0};
@@ -751,8 +1323,8 @@ void initialize(LinearQuadraticRegulator *model)
   model->rollingEncoder = rollingEncoder;
   model->reactionCurrentSensor = reactionCurrentSensor;
   model->rollingCurrentSensor = rollingCurrentSensor;
-  model->reactionPWM = 0.0;
-  model->rollingPWM = 0.0;
+  model->reactionDutyCycle = 0.0;
+  model->rollingDutyCycle = 0.0;
   return;
 }
 /*
@@ -762,103 +1334,76 @@ to the Q function or the control policy at each step.
 */
 void stepForward(LinearQuadraticRegulator *model)
 {
-  // Compute the quadratic basis sets ϕ(zₖ), ϕ(zₖ₊₁).
-  z_k[0] = model->dataset.x0;
-  z_k[1] = model->dataset.x1;
-  z_k[2] = model->dataset.x2;
-  z_k[3] = model->dataset.x3;
-  z_k[4] = model->dataset.x4;
-  z_k[5] = model->dataset.x5;
-  z_k[6] = model->dataset.x6;
-  z_k[7] = model->dataset.x7;
-  z_k[8] = model->dataset.x8;
-  z_k[9] = model->dataset.x9;
-  z_k[10] = model->dataset.x10;
-  z_k[11] = model->dataset.x11;
-  // Now perform a one-step update in the parameter vector W by applying RLS to equation (S27).
-  // initialize z_n
   for (int i = 0; i < (model->n + model->m); i++)
   {
-    z_n[i] = 0.0;
+    setIndexVec12(&(model->z_n), i, 0.0);
   }
   for (int i = 0; i < (model->n + model->m); i++)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      z_n[i] += getIndex(model->P_n, i, j) * z_k[j];
+      setIndexVec12(&(model->z_n), i, getIndexVec12(model->z_n, i) + getIndexMat12(model->P_n, i, j) * getIndexVec12(model->dataset, j));
     }
   }
-  z_k_dot_z_n = 0.0;
+  model->x_n_dot_z_n = 0.0;
   float buffer = 0.0;
   for (int i = 0; i < (model->n + model->m); i++)
   {
-    buffer = z_k[i] * z_n[i];
+    buffer = getIndexVec12(model->dataset, i) * getIndexVec12(model->z_n, i);
     if (isnanf(buffer) == 0)
     {
-      z_k_dot_z_n += buffer;
+      model->x_n_dot_z_n += buffer;
     }
   }
-  if (fabs(model->lambda + z_k_dot_z_n) > 0)
+  if (fabs(model->lambda + model->x_n_dot_z_n) > 0)
   {
     for (int i = 0; i < (model->n + model->m); i++)
     {
-      g_n[i] = (1.0 / (model->lambda + z_k_dot_z_n)) * z_n[i];
+      setIndexVec12(&(model->g_n), i, (1.0 / (model->lambda + model->x_n_dot_z_n)) * getIndexVec12(model->z_n, i));
     }
   }
   else
   {
     for (int i = 0; i < (model->n + model->m); i++)
     {
-      g_n[i] = (1.0 / model->lambda) * z_n[i];
+      setIndexVec12(&(model->g_n), i, (1.0 / model->lambda) * getIndexVec12(model->z_n, i));
     }
   }
-  // αₙ = dₙ - transpose(wₙ₋₁) * xₙ
-  // initialize alpha_n
   for (int i = 0; i < (model->n + model->m); i++)
   {
-    alpha_n[i] = 0.0;
+    setIndexVec12(&(model->alpha_n), i, 0.0);
   }
   for (int i = 0; i < (model->n + model->m); i++)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      alpha_n[i] += 0.0 - getIndex(model->W_n, i, j) * z_k[j];
+      setIndexVec12(&(model->alpha_n), i, getIndexVec12(model->alpha_n, i) + 0.0 - getIndexMat12(model->W_n, i, j) * getIndexVec12(model->dataset, j));
     }
   }
-  updateChange = 0.0;
-  float correction = 0.0;
   for (int i = 0; i < (model->n + model->m); i++)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      correction = alpha_n[i] * g_n[j];
-      // sum the absolute value of the corrections to the filter coefficients to see if there is any update
-      updateChange += fabs(getIndex(model->W_n, i, j) - correction);
-      buffer = getIndex(model->W_n, i, j) + correction;
+      buffer = getIndexMat12(model->W_n, i, j) + getIndexVec12(model->alpha_n, i) * getIndexVec12(model->g_n, j);
       if (isnanf(buffer) == 0)
       {
-        setIndex(&(model->W_n), i, j, buffer);
+        setIndexMat12(&(model->W_n), i, j, buffer);
       }
     }
-  }
-  // trigger a policy update if the RLS algorithm has converged
-  if (fabs(updateChange) > minimumChange)
-  {
-    // triggerUpdate = 1;
   }
   int scaleFlag = 0;
   for (int i = 0; i < (model->n + model->m); i++)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      buffer = (1.0 / model->lambda) * (getIndex(model->P_n, i, j) - g_n[i] * z_n[j]);
+      buffer = (1.0 / model->lambda) * (getIndexMat12(model->P_n, i, j) - getIndexVec12(model->g_n, i) * getIndexVec12(model->z_n, j));
       if (isnanf(buffer) == 0)
       {
-        if (fabs(buffer) > clipping)
+        if (fabs(buffer) > model->clippingValue)
         {
           scaleFlag = 1;
         }
-        setIndex(&(model->P_n), i, j, buffer);
+        setIndexMat12(&(model->P_n), i, j, buffer);
       }
     }
   }
@@ -868,7 +1413,7 @@ void stepForward(LinearQuadraticRegulator *model)
     {
       for (int j = 0; j < (model->n + model->m); j++)
       {
-        setIndex(&(model->P_n), i, j, clippingFactor * getIndex(model->P_n, i, j));
+        setIndexMat12(&(model->P_n), i, j, model->clippingFactor * getIndexMat12(model->P_n, i, j));
       }
     }
   }
@@ -883,40 +1428,38 @@ void updateControlPolicy(LinearQuadraticRegulator *model)
   // Q(xₖ, uₖ) ≡ 0.5 * transpose([xₖ; uₖ]) * S * [xₖ; uₖ] = 0.5 * transpose([xₖ; uₖ]) * [Sₓₓ Sₓᵤ; Sᵤₓ Sᵤᵤ] * [xₖ; uₖ]
   model->k = 1;
   model->j = model->j + 1;
-  // initialize the filter matrix
-  // putBuffer(model->m + model->n, model->m + model->n, W_n, model->W_n);
 
   for (int i = 0; i < model->m; i++)
   {
     for (int j = 0; j < model->n; j++)
     {
-      S_ux[i][j] = getIndex(model->W_n, model->n + i, j);
+      setIndexMat210(&(model->Sux), i, j, getIndexMat12(model->W_n, model->n + i, j));
     }
   }
   for (int i = 0; i < model->m; i++)
   {
     for (int j = 0; j < model->m; j++)
     {
-      S_uu[i][j] = getIndex(model->W_n, model->n + i, model->n + j);
+      setIndexMat2(&(model->Suu), i, j, getIndexMat12(model->W_n, model->n + i, model->n + j));
     }
   }
 
   // Perform the control update using (S24), which is uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
   // uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
-  float determinant = S_uu[1][1] * S_uu[2][2] - S_uu[1][2] * S_uu[2][1];
+  float determinant = getIndexMat2(model->Suu, 1, 1) * getIndexMat2(model->Suu, 2, 2) - getIndexMat2(model->Suu, 1, 2) * getIndexMat2(model->Suu, 2, 1);
   // check the rank of S_uu to see if it's equal to 2 (invertible matrix)
   if (fabs(determinant) > 0.001) // greater than zero
   {
-    S_uu_inverse[0][0] = S_uu[1][1] / determinant;
-    S_uu_inverse[0][1] = -S_uu[0][1] / determinant;
-    S_uu_inverse[1][0] = -S_uu[1][0] / determinant;
-    S_uu_inverse[1][1] = S_uu[0][0] / determinant;
+    setIndexMat2(&(model->SuuInverse), 0, 0, getIndexMat2(model->Suu, 1, 1) / determinant);
+    setIndexMat2(&(model->SuuInverse), 0, 1, -getIndexMat2(model->Suu, 0, 1) / determinant);
+    setIndexMat2(&(model->SuuInverse), 1, 0, -getIndexMat2(model->Suu, 1, 0) / determinant);
+    setIndexMat2(&(model->SuuInverse), 1, 1, getIndexMat2(model->Suu, 0, 0) / determinant);
     // initialize the gain matrix
     for (int i = 0; i < model->m; i++)
     {
       for (int j = 0; j < model->n; j++)
       {
-        K_j[i][j] = 0.0;
+        setIndexMat210(&(model->K_j), i, j, 0.0);
       }
     }
     for (int i = 0; i < model->m; i++)
@@ -925,30 +1468,10 @@ void updateControlPolicy(LinearQuadraticRegulator *model)
       {
         for (int k = 0; k < model->m; k++)
         {
-          K_j[i][j] += S_uu_inverse[i][k] * S_ux[k][j];
+          setIndexMat210(&(model->K_j), i, j, getIndexMat210(model->K_j, i, j) + getIndexMat2(model->SuuInverse, i, k) * getIndexMat210(model->Sux, k, j));
         }
       }
     }
-    model->K_j.x00 = K_j[0][0];
-    model->K_j.x01 = K_j[0][1];
-    model->K_j.x02 = K_j[0][2];
-    model->K_j.x03 = K_j[0][3];
-    model->K_j.x04 = K_j[0][4];
-    model->K_j.x05 = K_j[0][5];
-    model->K_j.x06 = K_j[0][6];
-    model->K_j.x07 = K_j[0][7];
-    model->K_j.x08 = K_j[0][8];
-    model->K_j.x09 = K_j[0][9];
-    model->K_j.x10 = K_j[1][0];
-    model->K_j.x11 = K_j[1][1];
-    model->K_j.x12 = K_j[1][2];
-    model->K_j.x13 = K_j[1][3];
-    model->K_j.x14 = K_j[1][4];
-    model->K_j.x15 = K_j[1][5];
-    model->K_j.x16 = K_j[1][6];
-    model->K_j.x17 = K_j[1][7];
-    model->K_j.x18 = K_j[1][8];
-    model->K_j.x19 = K_j[1][9];
   }
   return;
 }
@@ -970,7 +1493,6 @@ int main(void)
 
   uint8_t MSG[TRANSMIT_LENGTH] = {'\0'};
   int transmit = 0;
-  int log_counter = 0;
   unsigned long t1 = 0;
   unsigned long t2 = 0;
   unsigned long diff = 0;
@@ -1018,10 +1540,7 @@ int main(void)
 
   // initialize the Encoder and IMU
   HAL_Delay(10);
-  encodeWheel(&model.reactionEncoder, TIM3->CNT);
-  encodeWheel(&model.rollingEncoder, TIM4->CNT);
-  senseCurrent(&(model.reactionCurrentSensor), &(model.rollingCurrentSensor));
-  updateIMU(&model);
+  updateSensors(&model);
 
   HAL_Delay(3000);
   /* USER CODE END 2 */
@@ -1034,8 +1553,6 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    t1 = DWT->CYCCNT;
-
     if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == 0)
     {
       if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == 0)
@@ -1047,20 +1564,23 @@ int main(void)
     else
     {
       model.active = 0;
-      model.reactionPWM = 0.0;
-      model.rollingPWM = 0.0;
+      model.reactionDutyCycle = 0.0;
+      model.rollingDutyCycle = 0.0;
       TIM2->CCR1 = 0;
       TIM2->CCR2 = 0;
     }
 
-    if (fabs(model.imu1.roll) > roll_safety_angle || fabs(model.imu1.pitch) > pitch_safety_angle || model.k > max_episode_length)
+    if (fabs(model.imu1.roll) > model.rollSafetyAngle || fabs(model.imu1.pitch) > model.pitchSafetyAngle || model.j > model.maxEpisodeLength)
     {
-      outOfBoundsCounter += 1;
-    } else {
-      outOfBoundsCounter = fmax(0, outOfBoundsCounter - 1);
+      model.outOfBoundsCounter = model.outOfBoundsCounter + 1;
+    }
+    else
+    {
+      model.outOfBoundsCounter = fmax(0, model.outOfBoundsCounter - 1);
     }
 
-    if (outOfBoundsCounter > maxOutOfBounds) {
+    if (model.outOfBoundsCounter > model.maxOutOfBounds)
+    {
       model.active = 0;
       HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
     }
@@ -1069,144 +1589,41 @@ int main(void)
     {
       for (int i = 0; i < 5; i++)
       {
-        // measure
-        updateIMU(&model);
-        model.dataset.x0 = model.imu1.roll;
-        model.dataset.x1 = model.imu1.roll_velocity;
-        model.dataset.x2 = model.imu1.roll_acceleration;
-        model.dataset.x3 = model.imu1.pitch;
-        model.dataset.x4 = model.imu1.pitch_velocity;
-        model.dataset.x5 = model.imu1.pitch_acceleration;
-        x_k[0] = model.dataset.x0;
-        x_k[1] = model.dataset.x1;
-        x_k[2] = model.dataset.x2;
-        x_k[3] = model.dataset.x3;
-        x_k[4] = model.dataset.x4;
-        x_k[5] = model.dataset.x5;
-        encodeWheel(&(model.reactionEncoder), TIM3->CNT);
-        encodeWheel(&(model.rollingEncoder), TIM4->CNT);
-        senseCurrent(&(model.reactionCurrentSensor), &(model.rollingCurrentSensor));
-        // dataset = (xₖ, uₖ)
-        model.dataset.x6 = model.reactionEncoder.velocity;
-        model.dataset.x7 = model.rollingEncoder.velocity;
-        model.dataset.x8 = model.reactionCurrentSensor.currentVelocity;
-        model.dataset.x9 = model.rollingCurrentSensor.currentVelocity;
-        x_k[6] = model.dataset.x6;
-        x_k[7] = model.dataset.x7;
-        x_k[8] = model.dataset.x8;
-        x_k[9] = model.dataset.x9;
-        K_j[0][0] = model.K_j.x00;
-        K_j[0][1] = model.K_j.x01;
-        K_j[0][2] = model.K_j.x02;
-        K_j[0][3] = model.K_j.x03;
-        K_j[0][4] = model.K_j.x04;
-        K_j[0][5] = model.K_j.x05;
-        K_j[0][6] = model.K_j.x06;
-        K_j[0][7] = model.K_j.x07;
-        K_j[0][8] = model.K_j.x08;
-        K_j[0][9] = model.K_j.x09;
-        K_j[1][0] = model.K_j.x10;
-        K_j[1][1] = model.K_j.x11;
-        K_j[1][2] = model.K_j.x12;
-        K_j[1][3] = model.K_j.x13;
-        K_j[1][4] = model.K_j.x14;
-        K_j[1][5] = model.K_j.x15;
-        K_j[1][6] = model.K_j.x16;
-        K_j[1][7] = model.K_j.x17;
-        K_j[1][8] = model.K_j.x18;
-        K_j[1][9] = model.K_j.x19;
-        u_k[0] = 0.0;
-        u_k[1] = 0.0;
-        // feeback policy
-        for (int i = 0; i < model.m; i++)
-        {
-          for (int j = 0; j < model.n; j++)
-          {
-            u_k[i] += -K_j[i][j] * x_k[j];
-          }
-        }
-        // seed = DWT->CYCCNT;
-        // srand(seed);
-        // u_k[0] += (float)(rand() % noiseNumerator) / noiseDenominator;
-        // seed = DWT->CYCCNT;
-        // srand(seed);
-        // u_k[0] -= (float)(rand() % noiseNumerator) / noiseDenominator;
-        // seed = DWT->CYCCNT;
-        // srand(seed);
-        // u_k[1] += (float)(rand() % noiseNumerator) / noiseDenominator;
-        // seed = DWT->CYCCNT;
-        // srand(seed);
-        // u_k[1] -= (float)(rand() % noiseNumerator) / noiseDenominator;
-        model.reactionPWM += reactionPulseStep * u_k[0];
-        model.rollingPWM += rollingPulseStep * u_k[1];
-        model.reactionPWM = fmin(255.0 * 255.0, model.reactionPWM);
-        model.reactionPWM = fmax(-255.0 * 255.0, model.reactionPWM);
-        model.rollingPWM = fmin(255.0 * 255.0, model.rollingPWM);
-        model.rollingPWM = fmax(-255.0 * 255.0, model.rollingPWM);
-        TIM2->CCR1 = (int)fabs(model.rollingPWM);
-        TIM2->CCR2 = (int)fabs(model.reactionPWM);
-        if (model.reactionPWM < 0)
-        {
-          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
-          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
-        }
-        else
-        {
-          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_SET);
-          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
-        }
-        if (model.rollingPWM < 0)
-        {
-          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
-          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
-        }
-        else
-        {
-          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
-          HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
-        }
+        t1 = DWT->CYCCNT;
+        updateSensors(&model);
+        computeFeedbackPolicy(&model);
+        applyFeedbackPolicy(&model);
         stepForward(&model);
+        t2 = DWT->CYCCNT;
+        diff = t2 - t1;
+        model.dt = (float)diff / model.cpuClock;
       }
       updateControlPolicy(&model);
     }
     else
     {
-      model.reactionPWM = 0.0;
-      model.rollingPWM = 0.0;
-      TIM2->CCR1 = 0;
-      TIM2->CCR2 = 0;
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
-      encodeWheel(&model.reactionEncoder, TIM3->CNT);
-      encodeWheel(&model.rollingEncoder, TIM4->CNT);
-      senseCurrent(&(model.reactionCurrentSensor), &(model.rollingCurrentSensor));
-      updateIMU(&model);
+      t1 = DWT->CYCCNT;
+      resetActuators(&model);
+      updateSensors(&model);
+      computeFeedbackPolicy(&model);
+      t2 = DWT->CYCCNT;
+      diff = t2 - t1;
+      model.dt = (float)diff / model.cpuClock;
     }
-    // if (model.k % updatePolicyPeriod == 0 || triggerUpdate == 1)
-    // {
-    //   updateControlPolicy(&model);
-    //   triggerUpdate = 0;
-    // }
 
-    model.imu1.yaw += dt * r_dot[2];
-
-    log_counter++;
-    if (log_counter > LOG_CYCLE && HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == 0)
+    model.logCounter = model.logCounter + 1;
+    if (model.logCounter > model.logPeriod && HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == 0)
     {
       transmit = 1;
     }
     if (transmit == 1)
     {
       transmit = 0;
-      log_counter = 0;
-
-
+      model.logCounter = 0;
 
       sprintf(MSG,
-              "AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | GX1: %0.2f, GY1: %0.2f, GZ1: %0.2f, | GX2: %0.2f, GY2: %0.2f, GZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %f, | x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, x10: %0.2f, x11: %0.2f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, dt: %0.6f\r\n",
-              model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.gyrX, model.imu1.gyrY, model.imu1.gyrZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11, getIndex(model.P_n, 0, 0), getIndex(model.P_n, 1, 1), getIndex(model.P_n, 2, 2), getIndex(model.P_n, 3, 3), getIndex(model.P_n, 4, 4), getIndex(model.P_n, 5, 5), getIndex(model.P_n, 6, 6), getIndex(model.P_n, 7, 7), getIndex(model.P_n, 8, 8), getIndex(model.P_n, 9, 9), getIndex(model.P_n, 10, 10), getIndex(model.P_n, 11, 11), dt);
+              "AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, | x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, x10: %0.2f, x11: %0.2f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, dt: %0.6f\r\n",
+              model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11, getIndexMat12(model.P_n, 0, 0), getIndexMat12(model.P_n, 1, 1), getIndexMat12(model.P_n, 2, 2), getIndexMat12(model.P_n, 3, 3), getIndexMat12(model.P_n, 4, 4), getIndexMat12(model.P_n, 5, 5), getIndexMat12(model.P_n, 6, 6), getIndexMat12(model.P_n, 7, 7), getIndexMat12(model.P_n, 8, 8), getIndexMat12(model.P_n, 9, 9), getIndexMat12(model.P_n, 10, 10), getIndexMat12(model.P_n, 11, 11), model.dt);
 
       // sprintf(MSG,
       //         "x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, dt: %0.6f\r\n",
@@ -1216,12 +1633,12 @@ int main(void)
       //         "roll: %0.2f, pitch: %0.2f, | P11: %0.2f, P22: %0.2f, P33: %0.2f, P44: %0.2f, P55: %0.2f, P66: %0.2f, P77: %0.2f, P88: %0.2f, P99: %0.2f, P1010: %0.2f, P1111: %0.2f, P1212: %0.2f, dt: %0.6f\r\n",
       //         model.imu1.roll, model.imu1.pitch, P_n[0][0], P_n[0][1], P_n[0][2], P_n[0][3], P_n[0][4], P_n[0][5], P_n[0][6], P_n[0][7], P_n[0][8], P_n[0][9], P_n[0][10], P_n[0][11], dt);
       // sprintf(MSG,
-      //         "roll: %0.2f, pitch: %0.2f, | z_k_dot_z_n: %0.2f, P00: %0.2f, P_n11: %0.2f, P_n22: %0.2f, P_n33: %0.2f, P_n44: %0.2f, dt: %0.6f\r\n",
-      //         model.imu1.roll, model.imu1.pitch, z_k_dot_z_n, getIndex(model.W_n, 0, 0), getIndex(model.W_n, 1, 1), getIndex(model.W_n, 2, 2), getIndex(model.W_n, 3, 3), getIndex(model.W_n, 4, 4), dt);
+      //         "roll: %0.2f, pitch: %0.2f, | x_n_dot_z_n: %0.2f, P00: %0.2f, P_n11: %0.2f, P_n22: %0.2f, P_n33: %0.2f, P_n44: %0.2f, dt: %0.6f\r\n",
+      //         model.imu1.roll, model.imu1.pitch, x_n_dot_z_n, getIndexMat12(model.W_n, 0, 0), getIndexMat12(model.W_n, 1, 1), getIndexMat12(model.W_n, 2, 2), getIndexMat12(model.W_n, 3, 3), getIndexMat12(model.W_n, 4, 4), dt);
 
       // sprintf(MSG,
-      //         "roll: %0.2f, pitch: %0.2f, | z_k_dot_z_n: %0.2f, z_n0: %0.2f, z_n1: %0.2f, z_n2: %0.2f, z_n3: %0.2f, z_n4: %0.2f, z_n5: %0.2f, z_n6: %0.2f, z_n7: %0.2f, z_n8: %0.2f, z_n9: %0.2f, z_n10: %0.2f, z_n11: %0.2f, dt: %0.6f\r\n",
-      //         model.imu1.roll, model.imu1.pitch, z_k_dot_z_n, z_n[0], z_n[1], z_n[2], z_n[3], z_n[4], z_n[5], z_n[6], z_n[7], z_n[8], z_n[9], z_n[10], z_n[11], dt);
+      //         "roll: %0.2f, pitch: %0.2f, | x_n_dot_z_n: %0.2f, z_n0: %0.2f, z_n1: %0.2f, z_n2: %0.2f, z_n3: %0.2f, z_n4: %0.2f, z_n5: %0.2f, z_n6: %0.2f, z_n7: %0.2f, z_n8: %0.2f, z_n9: %0.2f, z_n10: %0.2f, z_n11: %0.2f, dt: %0.6f\r\n",
+      //         model.imu1.roll, model.imu1.pitch, x_n_dot_z_n, z_n[0], z_n[1], z_n[2], z_n[3], z_n[4], z_n[5], z_n[6], z_n[7], z_n[8], z_n[9], z_n[10], z_n[11], dt);
 
       // sprintf(MSG,
       // "yaw: %0.2f, roll: %0.2f, rollv: %0.2f, pitch: %0.2f, pitchv: %0.2f, | aX1: %0.2f, aY1: %0.2f, aZ1: %0.2f, | aX2: %0.2f, aY2: %0.2f, aZ2: %0.2f, | encB: %d, encT: %d, dt: %0.6f\r\n",
@@ -1239,10 +1656,6 @@ int main(void)
 
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 1000);
     }
-    t2 = DWT->CYCCNT;
-    diff = t2 - t1;
-    dt = (float)diff / CPU_CLOCK;
-    model.dt = dt;
     // Rinse and repeat :)
   }
   /* USER CODE END 3 */
