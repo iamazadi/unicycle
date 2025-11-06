@@ -1099,7 +1099,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->active = 0;
   model->cpuClock = 84000000.0;
   model->dt = 0.0;
-  model->reactionDutyCycleChange = 255.0 * 64.0;
+  model->reactionDutyCycleChange = 255.0 * 48.0;
   model->rollingDutyCycleChnage = 255.0 * 32.0;
   model->clippingValue = 100.0;
   model->clippingFactor = 0.9;
@@ -1564,10 +1564,7 @@ int main(void)
     else
     {
       model.active = 0;
-      model.reactionDutyCycle = 0.0;
-      model.rollingDutyCycle = 0.0;
-      TIM2->CCR1 = 0;
-      TIM2->CCR2 = 0;
+      resetActuators(&model);
     }
 
     if (fabs(model.imu1.roll) > model.rollSafetyAngle || fabs(model.imu1.pitch) > model.pitchSafetyAngle || model.j > model.maxEpisodeLength)
@@ -1587,6 +1584,7 @@ int main(void)
 
     if (model.active == 1)
     {
+      model.logPeriod = 40;
       for (int i = 0; i < 5; i++)
       {
         t1 = DWT->CYCCNT;
@@ -1594,6 +1592,7 @@ int main(void)
         computeFeedbackPolicy(&model);
         applyFeedbackPolicy(&model);
         stepForward(&model);
+        model.logCounter = model.logCounter + 1;
         t2 = DWT->CYCCNT;
         diff = t2 - t1;
         model.dt = (float)diff / model.cpuClock;
@@ -1602,16 +1601,17 @@ int main(void)
     }
     else
     {
+      model.logPeriod = 80;
       t1 = DWT->CYCCNT;
       resetActuators(&model);
       updateSensors(&model);
       computeFeedbackPolicy(&model);
+      model.logCounter = model.logCounter + 1;
       t2 = DWT->CYCCNT;
       diff = t2 - t1;
       model.dt = (float)diff / model.cpuClock;
     }
 
-    model.logCounter = model.logCounter + 1;
     if (model.logCounter > model.logPeriod && HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == 0)
     {
       transmit = 1;
