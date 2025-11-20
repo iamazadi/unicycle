@@ -864,6 +864,8 @@ typedef struct
   float gamma;                         // x-Euler angle (roll)
   float fusedBeta;                     // y-Euler angle (pitch) as the result of fusing the accelerometer sensor measurements with the gyroscope sensor measurements
   float fusedGamma;                    // x-Euler angle (roll) as the result of fusing the accelerometer sensor measurements with the gyroscope sensor measurements
+  int noiseQuotient;                   // the quotient of the random number for generating the probing noise
+  float noiseScale;                    // the scale of by which the remainder of the probing noise is to be divided
   Mat34 Q;                             // The matrix of unknown parameters
   Vec3 r;                              // the average of the body angular rate from rate gyro
   Vec3 rDot;                           // the average of the body angular rate in Euler angles
@@ -1037,8 +1039,15 @@ void computeFeedbackPolicy(LinearQuadraticRegulator *model)
 
 void applyFeedbackPolicy(LinearQuadraticRegulator *model)
 {
-  float input0 = model->dataset.x10;
-  float input1 = model->dataset.x11;
+  // Add probing noise to the input for persistent excitation
+  int seed = DWT->CYCCNT;
+  srand(seed);
+  float input0 = model->dataset.x10 + (float)(rand() % model->noiseQuotient - model->noiseQuotient / 2) / model->noiseScale;
+  model->dataset.x10 = input0;
+  seed = DWT->CYCCNT;
+  srand(seed);
+  float input1 = model->dataset.x11 + (float)(rand() % model->noiseQuotient - model->noiseQuotient / 2) / model->noiseScale;
+  model->dataset.x11 = input1;
   model->reactionDutyCycle += model->reactionDutyCycleChange * input0;
   model->rollingDutyCycle += model->rollingDutyCycleChnage * input1;
   model->reactionDutyCycle = fmin(255.0 * 255.0, model->reactionDutyCycle);
@@ -1112,6 +1121,8 @@ void initialize(LinearQuadraticRegulator *model)
   model->outOfBoundsCounter = 0;
   model->kappa1 = 0.01;
   model->kappa2 = 0.01;
+  model->noiseQuotient = 100;
+  model->noiseScale = 10000.0;
 
   Mat12 P_n;
   Mat12 W_n;
