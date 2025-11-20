@@ -1099,19 +1099,19 @@ void initialize(LinearQuadraticRegulator *model)
   model->active = 0;
   model->cpuClock = 84000000.0;
   model->dt = 0.0;
-  model->reactionDutyCycleChange = 255.0 * 48.0;
-  model->rollingDutyCycleChnage = 255.0 * 48.0;
+  model->reactionDutyCycleChange = 255.0 * 64.0;
+  model->rollingDutyCycleChnage = 255.0 * 64.0;
   model->clippingValue = 100.0;
   model->clippingFactor = 0.9;
   model->rollSafetyAngle = 0.21;
   model->pitchSafetyAngle = 0.21;
   model->maxEpisodeLength = 50000;
-  model->logPeriod = 80;
+  model->logPeriod = 30;
   model->logCounter = 0;
   model->maxOutOfBounds = 10;
   model->outOfBoundsCounter = 0;
-  model->kappa1 = 0.03;
-  model->kappa2 = 0.03;
+  model->kappa1 = 0.01;
+  model->kappa2 = 0.01;
 
   Mat12 P_n;
   Mat12 W_n;
@@ -1542,7 +1542,7 @@ int main(void)
   HAL_Delay(10);
   updateSensors(&model);
 
-  HAL_Delay(3000);
+  HAL_Delay(1000);
   /* USER CODE END 2 */
 
   /* Infinite loop */
