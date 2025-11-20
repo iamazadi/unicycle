@@ -1100,13 +1100,13 @@ void initialize(LinearQuadraticRegulator *model)
   model->cpuClock = 84000000.0;
   model->dt = 0.0;
   model->reactionDutyCycleChange = 255.0 * 48.0;
-  model->rollingDutyCycleChnage = 255.0 * 32.0;
+  model->rollingDutyCycleChnage = 255.0 * 48.0;
   model->clippingValue = 100.0;
   model->clippingFactor = 0.9;
   model->rollSafetyAngle = 0.21;
   model->pitchSafetyAngle = 0.21;
   model->maxEpisodeLength = 50000;
-  model->logPeriod = 10;
+  model->logPeriod = 80;
   model->logCounter = 0;
   model->maxOutOfBounds = 10;
   model->outOfBoundsCounter = 0;
@@ -1584,7 +1584,6 @@ int main(void)
 
     if (model.active == 1)
     {
-      model.logPeriod = 40;
       for (int i = 0; i < 5; i++)
       {
         t1 = DWT->CYCCNT;
@@ -1601,7 +1600,6 @@ int main(void)
     }
     else
     {
-      model.logPeriod = 80;
       t1 = DWT->CYCCNT;
       resetActuators(&model);
       updateSensors(&model);
@@ -1618,13 +1616,14 @@ int main(void)
     }
     if (transmit == 1)
     {
+      t1 = DWT->CYCCNT;
       transmit = 0;
       model.logCounter = 0;
 
       sprintf(MSG,
               "AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, | x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, x10: %0.2f, x11: %0.2f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, dt: %0.6f\r\n",
               model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, model.dataset.x10, model.dataset.x11, getIndexMat12(model.P_n, 0, 0), getIndexMat12(model.P_n, 1, 1), getIndexMat12(model.P_n, 2, 2), getIndexMat12(model.P_n, 3, 3), getIndexMat12(model.P_n, 4, 4), getIndexMat12(model.P_n, 5, 5), getIndexMat12(model.P_n, 6, 6), getIndexMat12(model.P_n, 7, 7), getIndexMat12(model.P_n, 8, 8), getIndexMat12(model.P_n, 9, 9), getIndexMat12(model.P_n, 10, 10), getIndexMat12(model.P_n, 11, 11), model.dt);
-
+      
       // sprintf(MSG,
       //         "x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, dt: %0.6f\r\n",
       //         model.dataset.x0, model.dataset.x1, model.dataset.x2, model.dataset.x3, model.dataset.x4, model.dataset.x5, model.dataset.x6, model.dataset.x7, model.dataset.x8, model.dataset.x9, dt);
@@ -1655,6 +1654,9 @@ int main(void)
       //   model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, dt);
 
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 1000);
+      t2 = DWT->CYCCNT;
+      diff = t2 - t1;
+      model.dt += (float)diff / model.cpuClock;
     }
     // Rinse and repeat :)
   }
