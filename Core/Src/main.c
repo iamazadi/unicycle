@@ -868,6 +868,7 @@ typedef struct
   float noiseScale;                    // the scale of by which the remainder of the probing noise is to be divided
   float time;                          // the time that has elapsed since the start up of the microcontroller in seconds
   float changes;                       // the magnitude of the changes to the filter coefficients after one step forward
+  float convergenceThreshold;          // the threshold value of the changes to filter coefficients below which the RLS is assumed to be converged
   Mat34 Q;                             // The matrix of unknown parameters
   Vec3 r;                              // the average of the body angular rate from rate gyro
   Vec3 rDot;                           // the average of the body angular rate in Euler angles
@@ -1304,6 +1305,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->gamma = 0.0;
   model->fusedGamma = 0.0;
   model->changes = 0.0;
+  model->convergenceThreshold = 2.0;
 
   IMU imu1;
   IMU imu2;
@@ -1625,7 +1627,7 @@ int main(void)
       computeFeedbackPolicy(&model);
       applyFeedbackPolicy(&model);
       stepForward(&model);
-      if (fabs(model.changes) < 2.0)
+      if (fabs(model.changes) < model.convergenceThreshold)
       {
         updateControlPolicy(&model);
       }
