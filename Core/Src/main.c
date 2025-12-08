@@ -588,12 +588,21 @@ typedef struct
 
 void encodeWheel(Encoder *encoder, int newValue)
 {
+  int difference = newValue - encoder->value;
+  if (abs(difference) > 30000) {
+    if (newValue > 30000) {
+      difference = (newValue - 65535) - encoder->value;
+    } else {
+      difference = newValue - (encoder->value - 65535);
+    }
+  }
   encoder->value = newValue;
-  encoder->radianAngle = (float)(encoder->value % encoder->pulse_per_revolution) / (float)encoder->pulse_per_revolution * 2.0 * M_PI;
-  float angle = sin(encoder->radianAngle);
-  float velocity = angle - encoder->angle;
+  float angle = encoder->radianAngle + (float) difference / (float)encoder->pulse_per_revolution * 2.0 * M_PI;
+  // encoder->radianAngle = (float)(encoder->value % encoder->pulse_per_revolution) / (float)encoder->pulse_per_revolution * 2.0 * M_PI;
+  // float angle = sin(encoder->radianAngle);
+  float velocity = angle - encoder->radianAngle;
   float acceleration = velocity - encoder->velocity;
-  encoder->angle = angle;
+  encoder->radianAngle = angle;
   encoder->velocity = velocity;
   encoder->acceleration = acceleration;
   return;
@@ -891,18 +900,18 @@ typedef struct
 void updateIMU(LinearQuadraticRegulator *model)
 {
   updateIMU1(&(model->imu1));
-  // updateIMU2(&(model->imu2));
+  updateIMU2(&(model->imu2));
   setIndexVec3(&(model->imu1.R), 0, model->imu1.accX);
   setIndexVec3(&(model->imu1.R), 1, model->imu1.accY);
   setIndexVec3(&(model->imu1.R), 2, model->imu1.accZ);
-  // setIndexVec3(&(model->imu2.R), 0, model->imu2.accX);
-  // setIndexVec3(&(model->imu2.R), 1, model->imu2.accY);
-  // setIndexVec3(&(model->imu2.R), 2, model->imu2.accZ);
+  setIndexVec3(&(model->imu2.R), 0, model->imu2.accX);
+  setIndexVec3(&(model->imu2.R), 1, model->imu2.accY);
+  setIndexVec3(&(model->imu2.R), 2, model->imu2.accZ);
 
   for (int i = 0; i < 3; i++)
   {
     setIndexVec3(&(model->imu1._R), i, 0.0);
-    // setIndexVec3(&(model->imu2._R), i, 0.0);
+    setIndexVec3(&(model->imu2._R), i, 0.0);
   }
 
   for (int i = 0; i < 3; i++)
@@ -910,47 +919,47 @@ void updateIMU(LinearQuadraticRegulator *model)
     for (int j = 0; j < 3; j++)
     {
       setIndexVec3(&(model->imu1._R), i, getIndexVec3(model->imu1._R, i) + getIndexMat3(model->imu1.B_A_R, i, j) * getIndexVec3(model->imu1.R, j));
-      // setIndexVec3(&(model->imu2._R), i, getIndexVec3(model->imu2._R, i) + getIndexMat3(model->imu2.B_A_R, i, j) * getIndexVec3(model->imu2.R, j));
+      setIndexVec3(&(model->imu2._R), i, getIndexVec3(model->imu2._R, i) + getIndexMat3(model->imu2.B_A_R, i, j) * getIndexVec3(model->imu2.R, j));
     }
   }
 
   for (int i = 0; i < 3; i++)
   {
     setIndexMat32(&(model->Matrix), i, 0, getIndexVec3(model->imu1._R, i));
-    // setIndexMat32(&(model->Matrix), i, 1, getIndexVec3(model->imu2._R, i));
+    setIndexMat32(&(model->Matrix), i, 1, getIndexVec3(model->imu2._R, i));
   }
 
-  // for (int i = 0; i < 3; i++)
-  // {
-  //   for (int j = 0; j < 4; j++)
-  //   {
-  //     setIndexMat34(&(model->Q), i, j, 0.0);
-  //     for (int k = 0; k < 2; k++)
-  //     {
-  //       setIndexMat34(&(model->Q), i, j, getIndexMat34(model->Q, i, j) + getIndexMat32(model->Matrix, i, k) * getIndexMat24(model->X, k, j));
-  //     }
-  //   }
-  // }
-  // setIndexVec3(&(model->g), 0, getIndexMat34(model->Q, 0, 0));
-  // setIndexVec3(&(model->g), 1, getIndexMat34(model->Q, 1, 0));
-  // setIndexVec3(&(model->g), 2, getIndexMat34(model->Q, 2, 0));
-  setIndexVec3(&(model->g), 0, getIndexVec3(model->imu1.R, 0));
-  setIndexVec3(&(model->g), 1, getIndexVec3(model->imu1.R, 1));
-  setIndexVec3(&(model->g), 2, getIndexVec3(model->imu1.R, 2));
+  for (int i = 0; i < 3; i++)
+  {
+    for (int j = 0; j < 4; j++)
+    {
+      setIndexMat34(&(model->Q), i, j, 0.0);
+      for (int k = 0; k < 2; k++)
+      {
+        setIndexMat34(&(model->Q), i, j, getIndexMat34(model->Q, i, j) + getIndexMat32(model->Matrix, i, k) * getIndexMat24(model->X, k, j));
+      }
+    }
+  }
+  setIndexVec3(&(model->g), 0, getIndexMat34(model->Q, 0, 0));
+  setIndexVec3(&(model->g), 1, getIndexMat34(model->Q, 1, 0));
+  setIndexVec3(&(model->g), 2, getIndexMat34(model->Q, 2, 0));
+  // setIndexVec3(&(model->g), 0, getIndexVec3(model->imu1.R, 0));
+  // setIndexVec3(&(model->g), 1, getIndexVec3(model->imu1.R, 1));
+  // setIndexVec3(&(model->g), 2, getIndexVec3(model->imu1.R, 2));
   model->beta = atan2(-getIndexVec3(model->g, 0), sqrt(pow(getIndexVec3(model->g, 1), 2) + pow(getIndexVec3(model->g, 2), 2)));
   model->gamma = atan2(getIndexVec3(model->g, 1), getIndexVec3(model->g, 2));
 
   setIndexVec3(&(model->imu1.G), 0, model->imu1.gyrX);
   setIndexVec3(&(model->imu1.G), 1, model->imu1.gyrY);
   setIndexVec3(&(model->imu1.G), 2, model->imu1.gyrZ);
-  // setIndexVec3(&(model->imu2.G), 0, model->imu2.gyrX);
-  // setIndexVec3(&(model->imu2.G), 1, model->imu2.gyrY);
-  // setIndexVec3(&(model->imu2.G), 2, model->imu2.gyrZ);
+  setIndexVec3(&(model->imu2.G), 0, model->imu2.gyrX);
+  setIndexVec3(&(model->imu2.G), 1, model->imu2.gyrY);
+  setIndexVec3(&(model->imu2.G), 2, model->imu2.gyrZ);
 
   for (int i = 0; i < 3; i++)
   {
     setIndexVec3(&(model->imu1._G), i, 0.0);
-    // setIndexVec3(&(model->imu2._G), i, 0.0);
+    setIndexVec3(&(model->imu2._G), i, 0.0);
   }
 
   for (int i = 0; i < 3; i++)
@@ -958,13 +967,13 @@ void updateIMU(LinearQuadraticRegulator *model)
     for (int j = 0; j < 3; j++)
     {
       setIndexVec3(&(model->imu1._G), i, getIndexVec3(model->imu1._G, i) + getIndexMat3(model->imu1.B_A_R, i, j) * getIndexVec3(model->imu1.G, j));
-      // setIndexVec3(&(model->imu2._G), i, getIndexVec3(model->imu2._G, i) + getIndexMat3(model->imu2.B_A_R, i, j) * getIndexVec3(model->imu2.G, j));
+      setIndexVec3(&(model->imu2._G), i, getIndexVec3(model->imu2._G, i) + getIndexMat3(model->imu2.B_A_R, i, j) * getIndexVec3(model->imu2.G, j));
     }
   }
   for (int i = 0; i < 3; i++)
   {
-    // setIndexVec3(&(model->r), i, (getIndexVec3(model->imu1._G, i) + getIndexVec3(model->imu2._G, i)) / 2.0);
-    setIndexVec3(&(model->r), i, getIndexVec3(model->imu1._G, i));
+    setIndexVec3(&(model->r), i, (getIndexVec3(model->imu1._G, i) + getIndexVec3(model->imu2._G, i)) / 2.0);
+    // setIndexVec3(&(model->r), i, getIndexVec3(model->imu1._G, i));
   }
 
   setIndexMat3(&(model->E), 0, 0, 0.0);
@@ -1238,23 +1247,23 @@ void initialize(LinearQuadraticRegulator *model)
       if (i == j)
       {
         setIndexMat3(&B_A1_R, i, j, 1.0);
+        // setIndexMat3(&B_A2_R, i, j, 1.0);
       }
       else
       {
         setIndexMat3(&B_A1_R, i, j, 0.0);
+        // setIndexMat3(&B_A2_R, i, j, 0.0);
       }
       setIndexMat3(&E, i, j, 0.0);
     }
   }
 
-  float sensorAngle = -30.0 / 180.0 * M_PI;
-
-  setIndexMat3(&B_A2_R, 0, 0, -sin(sensorAngle));
-  setIndexMat3(&B_A2_R, 1, 0, cos(sensorAngle));
+  setIndexMat3(&B_A2_R, 0, 0, 0.0);
+  setIndexMat3(&B_A2_R, 1, 0, 1.0);
   setIndexMat3(&B_A2_R, 2, 0, 0.0);
 
-  setIndexMat3(&B_A2_R, 0, 1, -cos(sensorAngle));
-  setIndexMat3(&B_A2_R, 1, 1, -sin(sensorAngle));
+  setIndexMat3(&B_A2_R, 0, 1, -1.0);
+  setIndexMat3(&B_A2_R, 1, 1, 0.0);
   setIndexMat3(&B_A2_R, 2, 1, 0.0);
 
   setIndexMat3(&B_A2_R, 0, 2, 0.0);
@@ -1277,14 +1286,14 @@ void initialize(LinearQuadraticRegulator *model)
     }
   }
 
-  setIndexMat24(&X, 0, 0, 0.586913);
-  setIndexMat24(&X, 0, 1, -11.3087);
-  setIndexMat24(&X, 0, 2, 0.747681);
-  setIndexMat24(&X, 0, 3, 0.0);
-  setIndexMat24(&X, 1, 0, 0.446183);
-  setIndexMat24(&X, 1, 1, 8.92749);
-  setIndexMat24(&X, 1, 2, -3.54337);
-  setIndexMat24(&X, 1, 3, 0.0);
+  setIndexMat24(&X, 0, 0, 1.568);
+  setIndexMat24(&X, 0, 1, 15.28);
+  setIndexMat24(&X, 0, 2, 20.80);
+  setIndexMat24(&X, 0, 3, 8.028);
+  setIndexMat24(&X, 1, 0, -0.639);
+  setIndexMat24(&X, 1, 1, -13.65);
+  setIndexMat24(&X, 1, 2, 36.04);
+  setIndexMat24(&X, 1, 3, -2.785);
 
   model->P_n = P_n;
   model->W_n = W_n;
@@ -1330,9 +1339,9 @@ void initialize(LinearQuadraticRegulator *model)
   imu1._R = _R1;
   imu1.G = G1;
   imu1._G = _G1;
-  imu2.accXOffset = 75;
-  imu2.accYOffset = -25;
-  imu2.accZOffset = -18;
+  imu2.accXOffset = 0;
+  imu2.accYOffset = 0;
+  imu2.accZOffset = 0;
   imu2.accXScale = 0.000488281;
   imu2.accYScale = 0.000488281;
   imu2.accZScale = 0.000488281;
@@ -1583,7 +1592,7 @@ int main(void)
   HAL_Delay(10);
   updateSensors(&model);
 
-  HAL_Delay(1000);
+  HAL_Delay(500);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -1671,8 +1680,8 @@ int main(void)
       model.logCounter = 0;
 
       sprintf(MSG,
-              "active: %0.1f, changes: %0.2f, AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
-              (float)model.active, model.changes, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu1.roll, model.imu1.pitch, (float)(model.reactionEncoder.value), (float)(model.rollingEncoder.value), (float)model.j, (float)model.k, getIndexMat12(model.P_n, 0, 0), getIndexMat12(model.P_n, 1, 1), getIndexMat12(model.P_n, 2, 2), getIndexMat12(model.P_n, 3, 3), getIndexMat12(model.P_n, 4, 4), getIndexMat12(model.P_n, 5, 5), getIndexMat12(model.P_n, 6, 6), getIndexMat12(model.P_n, 7, 7), getIndexMat12(model.P_n, 8, 8), getIndexMat12(model.P_n, 9, 9), getIndexMat12(model.P_n, 10, 10), getIndexMat12(model.P_n, 11, 11), model.time, model.dt);
+              "active: %0.1f, changes: %0.2f, | AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
+              (float)model.active, model.changes, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, (float)model.k, getIndexMat12(model.P_n, 0, 0), getIndexMat12(model.P_n, 1, 1), getIndexMat12(model.P_n, 2, 2), getIndexMat12(model.P_n, 3, 3), getIndexMat12(model.P_n, 4, 4), getIndexMat12(model.P_n, 5, 5), getIndexMat12(model.P_n, 6, 6), getIndexMat12(model.P_n, 7, 7), getIndexMat12(model.P_n, 8, 8), getIndexMat12(model.P_n, 9, 9), getIndexMat12(model.P_n, 10, 10), getIndexMat12(model.P_n, 11, 11), model.time, model.dt);
 
       // sprintf(MSG,
       //         "active: %0.1f, changes: %0.2f, AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
