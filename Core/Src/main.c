@@ -1137,14 +1137,14 @@ void initialize(LinearQuadraticRegulator *model)
   model->active = 0;
   model->CPUClock = 84000000.0;
   model->dt = 0.0;
-  model->reactionDutyCycleChange = 255.0 * 32.0;
+  model->reactionDutyCycleChange = 255.0 * 64.0;
   model->rollingDutyCycleChnage = 255.0 * 32.0;
   model->clippingValue = 100.0;
   model->clippingFactor = 0.9;
   model->rollSafetyAngle = 0.21;
   model->pitchSafetyAngle = 0.21;
   model->maxEpisodeLength = 50000;
-  model->logPeriod = 40;
+  model->logPeriod = 5;
   model->logCounter = 0;
   model->maxOutOfBounds = 10;
   model->outOfBoundsCounter = 0;
@@ -1322,9 +1322,9 @@ void initialize(LinearQuadraticRegulator *model)
 
   IMU imu1;
   IMU imu2;
-  imu1.accXOffset = -24;
-  imu1.accYOffset = -60;
-  imu1.accZOffset = 27;
+  imu1.accXOffset = -19;
+  imu1.accYOffset = -37;
+  imu1.accZOffset = 30;
   imu1.accXScale = 0.000488281; // scale : 1 / 2048
   imu1.accYScale = 0.000488281;
   imu1.accZScale = 0.000488281;
@@ -1339,9 +1339,9 @@ void initialize(LinearQuadraticRegulator *model)
   imu1._R = _R1;
   imu1.G = G1;
   imu1._G = _G1;
-  imu2.accXOffset = 0;
-  imu2.accYOffset = 0;
-  imu2.accZOffset = 0;
+  imu2.accXOffset = -45;
+  imu2.accYOffset = -4;
+  imu2.accZOffset = -6;
   imu2.accXScale = 0.000488281;
   imu2.accYScale = 0.000488281;
   imu2.accZScale = 0.000488281;
@@ -1661,15 +1661,7 @@ int main(void)
       model.dt = (float)diff / model.CPUClock;
     }
 
-    if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == 0)
-    {
-      model.logPeriod = 5;
-    }
-    else
-    {
-      model.logPeriod = 50;
-    }
-    if (model.logCounter > model.logPeriod)
+    if (model.logCounter > model.logPeriod && HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == 0)
     {
       transmit = 1;
     }
@@ -1709,9 +1701,8 @@ int main(void)
       //   model.rollingCurrentSensor.current0, model.rollingCurrentSensor.currentVelocity, TIM4->CNT, model.rollingEncoder.angle, model.rollingEncoder.velocity, model.rollingEncoder.acceleration,
       //   model.reactionCurrentSensor.current0, model.reactionCurrentSensor.currentVelocity, TIM3->CNT, model.reactionEncoder.angle, model.reactionEncoder.velocity, model.reactionEncoder.acceleration, dt);
 
-      // sprintf(MSG,
-      //   "ax2: %d, ay2: %d, az2: %d, | gx2: %d, gy2: %d, gz2: %d, dt: %0.6f\r\n",
-      //   model.imu2.rawAccX, model.imu2.rawAccY, model.imu2.rawAccZ, model.imu2.rawGyrX, model.imu2.rawGyrY, model.imu2.rawGyrZ, dt);
+      // sprintf(MSG, "ax1: %d, ay1: %d, az1: %d, | ax2: %d, ay2: %d, az2: %d, dt: %0.6f\r\n",
+      //         model.imu1.rawAccX, model.imu1.rawAccY, model.imu1.rawAccZ, model.imu2.rawAccX, model.imu2.rawAccY, model.imu2.rawAccZ, model.dt);
       // sprintf(MSG,
       //   "ax2: %0.2f, ay2: %0.2f, az2: %0.2f, | gx2: %0.2f, gy2: %0.2f, gz2: %0.2f, dt: %0.6f\r\n",
       //   model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, dt);
