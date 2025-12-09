@@ -1007,7 +1007,7 @@ void updateIMU(LinearQuadraticRegulator *model)
 
   model->fusedBeta = model->kappa1 * model->beta + (1.0 - model->kappa1) * (model->fusedBeta + model->dt * (getIndexVec3(model->rDot, 1) / 180.0 * M_PI));
   model->fusedGamma = model->kappa2 * model->gamma + (1.0 - model->kappa2) * (model->fusedGamma + model->dt * (getIndexVec3(model->rDot, 2) / 180.0 * M_PI));
-  model->imu1.yaw += model->dt * getIndexVec3(model->rDot, 0);
+  model->imu1.yaw += model->dt * getIndexVec3(model->rDot, 0) / 180.0 * M_PI;
 
   float _roll = model->fusedBeta;
   float _pitch = -model->fusedGamma;
