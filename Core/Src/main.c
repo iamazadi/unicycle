@@ -589,15 +589,19 @@ typedef struct
 void encodeWheel(Encoder *encoder, int newValue)
 {
   int difference = newValue - encoder->value;
-  if (abs(difference) > 30000) {
-    if (newValue > 30000) {
+  if (abs(difference) > 30000)
+  {
+    if (newValue > 30000)
+    {
       difference = (newValue - 65535) - encoder->value;
-    } else {
+    }
+    else
+    {
       difference = newValue - (encoder->value - 65535);
     }
   }
   encoder->value = newValue;
-  float angle = encoder->radianAngle + (float) difference / (float)encoder->pulse_per_revolution * 2.0 * M_PI;
+  float angle = encoder->radianAngle + (float)difference / (float)encoder->pulse_per_revolution * 2.0 * M_PI;
   // encoder->radianAngle = (float)(encoder->value % encoder->pulse_per_revolution) / (float)encoder->pulse_per_revolution * 2.0 * M_PI;
   // float angle = sin(encoder->radianAngle);
   float velocity = angle - encoder->radianAngle;
@@ -878,6 +882,8 @@ typedef struct
   float time;                          // the time that has elapsed since the start up of the microcontroller in seconds
   float changes;                       // the magnitude of the changes to the filter coefficients after one step forward
   float convergenceThreshold;          // the threshold value of the changes to filter coefficients below which the RLS is assumed to be converged
+  int convergenceCounter;              // the number of consecutive times that the changes to filter coefficients are less than the convergence threshold
+  int convergenceMaxCount;             // the maximum number of consecutive times for the changes below the threshold to determine convergence
   Mat34 Q;                             // The matrix of unknown parameters
   Vec3 r;                              // the average of the body angular rate from rate gyro
   Vec3 rDot;                           // the average of the body angular rate in Euler angles
@@ -1137,7 +1143,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->active = 0;
   model->CPUClock = 84000000.0;
   model->dt = 0.0;
-  model->reactionDutyCycleChange = 255.0 * 64.0;
+  model->reactionDutyCycleChange = 255.0 * 128.0;
   model->rollingDutyCycleChnage = 255.0 * 32.0;
   model->clippingValue = 100.0;
   model->clippingFactor = 0.9;
@@ -1318,7 +1324,9 @@ void initialize(LinearQuadraticRegulator *model)
   model->gamma = 0.0;
   model->fusedGamma = 0.0;
   model->changes = 0.0;
-  model->convergenceThreshold = 2.0;
+  model->convergenceThreshold = 2.5;
+  model->convergenceCounter = 0;
+  model->convergenceMaxCount = 5;
 
   IMU imu1;
   IMU imu2;
@@ -1642,6 +1650,14 @@ int main(void)
       stepForward(&model);
       if (fabs(model.changes) < model.convergenceThreshold)
       {
+        model.convergenceCounter = model.convergenceCounter + 1;
+      }
+      else
+      {
+        model.convergenceCounter = 0;
+      }
+      if (model.convergenceCounter >= model.convergenceMaxCount)
+      {
         updateControlPolicy(&model);
       }
       model.logCounter = model.logCounter + 1;
@@ -1672,8 +1688,8 @@ int main(void)
       model.logCounter = 0;
 
       sprintf(MSG,
-              "active: %0.1f, changes: %0.2f, | AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
-              (float)model.active, model.changes, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, (float)model.k, getIndexMat12(model.P_n, 0, 0), getIndexMat12(model.P_n, 1, 1), getIndexMat12(model.P_n, 2, 2), getIndexMat12(model.P_n, 3, 3), getIndexMat12(model.P_n, 4, 4), getIndexMat12(model.P_n, 5, 5), getIndexMat12(model.P_n, 6, 6), getIndexMat12(model.P_n, 7, 7), getIndexMat12(model.P_n, 8, 8), getIndexMat12(model.P_n, 9, 9), getIndexMat12(model.P_n, 10, 10), getIndexMat12(model.P_n, 11, 11), model.time, model.dt);
+              "active: %0.1f, changes: %0.2f, | AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, yaw: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
+              (float)model.active, model.changes, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.imu1.yaw, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, (float)model.k, getIndexMat12(model.P_n, 0, 0), getIndexMat12(model.P_n, 1, 1), getIndexMat12(model.P_n, 2, 2), getIndexMat12(model.P_n, 3, 3), getIndexMat12(model.P_n, 4, 4), getIndexMat12(model.P_n, 5, 5), getIndexMat12(model.P_n, 6, 6), getIndexMat12(model.P_n, 7, 7), getIndexMat12(model.P_n, 8, 8), getIndexMat12(model.P_n, 9, 9), getIndexMat12(model.P_n, 10, 10), getIndexMat12(model.P_n, 11, 11), model.time, model.dt);
 
       // sprintf(MSG,
       //         "active: %0.1f, changes: %0.2f, AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
