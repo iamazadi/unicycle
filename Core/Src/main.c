@@ -1008,15 +1008,15 @@ void updateIMU(LinearQuadraticRegulator *model)
 
   float rDot0 = getIndexVec3(model->rDot, 0) / 180.0 * M_PI;
   float rDot1 = getIndexVec3(model->rDot, 1) / 180.0 * M_PI;
-  float rDot2 = -getIndexVec3(model->rDot, 2) / 180.0 * M_PI;
+  float rDot2 = getIndexVec3(model->rDot, 2) / 180.0 * M_PI;
   model->fusedBeta = model->kappa1 * model->beta + (1.0 - model->kappa1) * (model->fusedBeta + model->dt * rDot1);
-  model->fusedGamma = model->kappa2 * (-model->gamma) + (1.0 - model->kappa2) * (model->fusedGamma + model->dt * rDot2);
+  model->fusedGamma = model->kappa2 * model->gamma + (1.0 - model->kappa2) * (model->fusedGamma + model->dt * rDot2);
   model->alpha += model->dt * rDot0;
 
-  float _roll = model->fusedBeta;
-  float _pitch = model->fusedGamma;
-  float _roll_velocity = (rDot1 + (_roll - model->imu1.roll) / model->dt) / 2.0;
-  float _pitch_velocity = (rDot2 + (_pitch - model->imu1.pitch) / model->dt) / 2.0;
+  float _roll = model->fusedGamma;
+  float _pitch = model->fusedBeta;
+  float _roll_velocity = (rDot2 + (_roll - model->imu1.roll) / model->dt) / 2.0;
+  float _pitch_velocity = (rDot1 + (_pitch - model->imu1.pitch) / model->dt) / 2.0;
   model->imu1.roll_acceleration = _roll_velocity - model->imu1.roll_velocity;
   model->imu1.pitch_acceleration = _pitch_velocity - model->imu1.pitch_velocity;
   model->imu1.roll_velocity = _roll_velocity;
@@ -1095,13 +1095,13 @@ void applyFeedbackPolicy(LinearQuadraticRegulator *model)
   }
   if (model->rollingDutyCycle < 0)
   {
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
   }
   else
   {
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
   }
 }
 
@@ -1255,19 +1255,21 @@ void initialize(LinearQuadraticRegulator *model)
     setIndexVec3(&_G2, i, 0.0);
     for (int j = 0; j < 3; j++)
     {
-      if (i == j)
-      {
-        setIndexMat3(&B_A1_R, i, j, 1.0);
-        // setIndexMat3(&B_A2_R, i, j, 1.0);
-      }
-      else
-      {
-        setIndexMat3(&B_A1_R, i, j, 0.0);
-        // setIndexMat3(&B_A2_R, i, j, 0.0);
-      }
       setIndexMat3(&E, i, j, 0.0);
     }
   }
+
+  setIndexMat3(&B_A1_R, 0, 0, 1.0);
+  setIndexMat3(&B_A1_R, 1, 0, 0.0);
+  setIndexMat3(&B_A1_R, 2, 0, 0.0);
+
+  setIndexMat3(&B_A1_R, 0, 1, 0.0);
+  setIndexMat3(&B_A1_R, 1, 1, 1.0);
+  setIndexMat3(&B_A1_R, 2, 1, 0.0);
+
+  setIndexMat3(&B_A1_R, 0, 2, 0.0);
+  setIndexMat3(&B_A1_R, 1, 2, 0.0);
+  setIndexMat3(&B_A1_R, 2, 2, 1.0);
 
   setIndexMat3(&B_A2_R, 0, 0, 0.0);
   setIndexMat3(&B_A2_R, 1, 0, 1.0);
