@@ -873,7 +873,6 @@ typedef struct
   int logCounter;                      // the number of control cycles elpased since the last log message printing
   int maxOutOfBounds;                  // the maximum number of consecutive cycles where states are out of the safety bounds
   int outOfBoundsCounter;              // the number of consecutive times when either of safety angles have been detected out of bounds
-  float alpha;                         // z-Euler angle (yaw)
   float beta;                          // y-Euler angle (pitch)
   float gamma;                         // x-Euler angle (roll)
   float fusedBeta;                     // y-Euler angle (pitch) as the result of fusing the accelerometer sensor measurements with the gyroscope sensor measurements
@@ -1006,24 +1005,20 @@ void updateIMU(LinearQuadraticRegulator *model)
     }
   }
 
-  float rDot0 = getIndexVec3(model->rDot, 0) / 180.0 * M_PI;
-  float rDot1 = getIndexVec3(model->rDot, 1) / 180.0 * M_PI;
-  float rDot2 = getIndexVec3(model->rDot, 2) / 180.0 * M_PI;
-  model->fusedBeta = model->kappa1 * model->beta + (1.0 - model->kappa1) * (model->fusedBeta + model->dt * rDot1);
-  model->fusedGamma = model->kappa2 * model->gamma + (1.0 - model->kappa2) * (model->fusedGamma + model->dt * rDot2);
-  model->alpha += model->dt * rDot0;
+  model->fusedBeta = model->kappa1 * model->beta + (1.0 - model->kappa1) * (model->fusedBeta + model->dt * (getIndexVec3(model->rDot, 1) / 180.0 * M_PI));
+  model->fusedGamma = model->kappa2 * model->gamma + (1.0 - model->kappa2) * (model->fusedGamma + model->dt * (getIndexVec3(model->rDot, 2) / 180.0 * M_PI));
+  model->imu1.yaw += model->dt * getIndexVec3(model->rDot, 0) / 180.0 * M_PI;
 
-  float _roll = model->fusedGamma;
-  float _pitch = model->fusedBeta;
-  float _roll_velocity = (rDot2 + (_roll - model->imu1.roll) / model->dt) / 2.0;
-  float _pitch_velocity = (rDot1 + (_pitch - model->imu1.pitch) / model->dt) / 2.0;
+  float _roll = model->fusedBeta;
+  float _pitch = -model->fusedGamma;
+  float _roll_velocity = ((getIndexVec3(model->rDot, 1) / 180.0 * M_PI) + (_roll - model->imu1.roll) / model->dt) / 2.0;
+  float _pitch_velocity = ((-getIndexVec3(model->rDot, 2) / 180.0 * M_PI) + (_pitch - model->imu1.pitch) / model->dt) / 2.0;
   model->imu1.roll_acceleration = _roll_velocity - model->imu1.roll_velocity;
   model->imu1.pitch_acceleration = _pitch_velocity - model->imu1.pitch_velocity;
   model->imu1.roll_velocity = _roll_velocity;
   model->imu1.pitch_velocity = _pitch_velocity;
   model->imu1.roll = _roll;
   model->imu1.pitch = _pitch;
-  model->imu1.yaw = model->alpha;
 }
 
 void updateSensors(LinearQuadraticRegulator *model)
@@ -1095,13 +1090,13 @@ void applyFeedbackPolicy(LinearQuadraticRegulator *model)
   }
   if (model->rollingDutyCycle < 0)
   {
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
   }
   else
   {
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
   }
 }
 
@@ -1148,7 +1143,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->active = 0;
   model->CPUClock = 84000000.0;
   model->dt = 0.0;
-  model->reactionDutyCycleChange = 255.0 * 255.0;
+  model->reactionDutyCycleChange = 255.0 * 128.0;
   model->rollingDutyCycleChnage = 255.0 * 32.0;
   model->clippingValue = 100.0;
   model->clippingFactor = 0.9;
@@ -1157,10 +1152,10 @@ void initialize(LinearQuadraticRegulator *model)
   model->maxEpisodeLength = 50000;
   model->logPeriod = 5;
   model->logCounter = 0;
-  model->maxOutOfBounds = 5;
+  model->maxOutOfBounds = 10;
   model->outOfBoundsCounter = 0;
-  model->kappa1 = 0.05;
-  model->kappa2 = 0.05;
+  model->kappa1 = 0.01;
+  model->kappa2 = 0.01;
   model->noiseQuotient = 100;
   model->noiseScale = 10000.0;
   model->time = 0.0;
@@ -1255,21 +1250,19 @@ void initialize(LinearQuadraticRegulator *model)
     setIndexVec3(&_G2, i, 0.0);
     for (int j = 0; j < 3; j++)
     {
+      if (i == j)
+      {
+        setIndexMat3(&B_A1_R, i, j, 1.0);
+        // setIndexMat3(&B_A2_R, i, j, 1.0);
+      }
+      else
+      {
+        setIndexMat3(&B_A1_R, i, j, 0.0);
+        // setIndexMat3(&B_A2_R, i, j, 0.0);
+      }
       setIndexMat3(&E, i, j, 0.0);
     }
   }
-
-  setIndexMat3(&B_A1_R, 0, 0, 1.0);
-  setIndexMat3(&B_A1_R, 1, 0, 0.0);
-  setIndexMat3(&B_A1_R, 2, 0, 0.0);
-
-  setIndexMat3(&B_A1_R, 0, 1, 0.0);
-  setIndexMat3(&B_A1_R, 1, 1, 1.0);
-  setIndexMat3(&B_A1_R, 2, 1, 0.0);
-
-  setIndexMat3(&B_A1_R, 0, 2, 0.0);
-  setIndexMat3(&B_A1_R, 1, 2, 0.0);
-  setIndexMat3(&B_A1_R, 2, 2, 1.0);
 
   setIndexMat3(&B_A2_R, 0, 0, 0.0);
   setIndexMat3(&B_A2_R, 1, 0, 1.0);
@@ -1326,7 +1319,6 @@ void initialize(LinearQuadraticRegulator *model)
   model->z_n = z_n;
   model->g_n = g_n;
   model->alpha_n = alpha_n;
-  model->alpha = 0.0;
   model->beta = 0.0;
   model->fusedBeta = 0.0;
   model->gamma = 0.0;
@@ -1608,7 +1600,7 @@ int main(void)
   HAL_Delay(10);
   updateSensors(&model);
 
-  HAL_Delay(100);
+  HAL_Delay(500);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -1697,7 +1689,7 @@ int main(void)
 
       sprintf(MSG,
               "active: %0.1f, changes: %0.2f, | AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, yaw: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
-              (float)model.active, model.changes, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.fusedBeta, model.fusedGamma, model.alpha, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, (float)model.k, getIndexMat12(model.P_n, 0, 0), getIndexMat12(model.P_n, 1, 1), getIndexMat12(model.P_n, 2, 2), getIndexMat12(model.P_n, 3, 3), getIndexMat12(model.P_n, 4, 4), getIndexMat12(model.P_n, 5, 5), getIndexMat12(model.P_n, 6, 6), getIndexMat12(model.P_n, 7, 7), getIndexMat12(model.P_n, 8, 8), getIndexMat12(model.P_n, 9, 9), getIndexMat12(model.P_n, 10, 10), getIndexMat12(model.P_n, 11, 11), model.time, model.dt);
+              (float)model.active, model.changes, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.imu1.yaw, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, (float)model.k, getIndexMat12(model.P_n, 0, 0), getIndexMat12(model.P_n, 1, 1), getIndexMat12(model.P_n, 2, 2), getIndexMat12(model.P_n, 3, 3), getIndexMat12(model.P_n, 4, 4), getIndexMat12(model.P_n, 5, 5), getIndexMat12(model.P_n, 6, 6), getIndexMat12(model.P_n, 7, 7), getIndexMat12(model.P_n, 8, 8), getIndexMat12(model.P_n, 9, 9), getIndexMat12(model.P_n, 10, 10), getIndexMat12(model.P_n, 11, 11), model.time, model.dt);
 
       // sprintf(MSG,
       //         "active: %0.1f, changes: %0.2f, AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
