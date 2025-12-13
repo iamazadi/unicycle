@@ -1149,7 +1149,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->CPUClock = 84000000.0;
   model->dt = 0.0;
   model->reactionDutyCycleChange = 255.0 * 255.0;
-  model->rollingDutyCycleChnage = 255.0 * 64.0;
+  model->rollingDutyCycleChnage = 255.0 * 32.0;
   model->clippingValue = 100.0;
   model->clippingFactor = 0.9;
   model->rollSafetyAngle = 0.21;
