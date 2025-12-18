@@ -862,8 +862,8 @@ typedef struct
   float rollingDutyCycle;              // rolling wheel's motor PWM duty cycle
   float reactionDutyCycleChange;       // the maximum incremental change in the reaction motor's duty cycle
   float rollingDutyCycleChnage;        // the maximum incremental change in the rolling motor's duty cycle
-  float clippingValue;                 // the clipping value for any of the P matrix elements at which the clipping is applied
-  float clippingFactor;                // the coefficient by which the P matrix elements are rescaled through scalar multiplication
+  float decayValue;                    // the decay value for any of the P matrix elements at which decaying is applied
+  float decayFactor;                   // the coefficient by which the P matrix elements are rescaled through scalar multiplication
   float rollSafetyAngle;               // the roll angle in radian beyond which the controller must become deactive for safety
   float pitchSafetyAngle;              // the pitch angle in radian beyond which the controller must become deactive for safety
   float kappa1;                        // tuning parameters to minimize estimate variance (the ratio between the accelerometer and the gyroscope in sensor fusion)
@@ -1145,12 +1145,12 @@ void initialize(LinearQuadraticRegulator *model)
   model->dt = 0.0;
   model->reactionDutyCycleChange = 255.0 * 128.0;
   model->rollingDutyCycleChnage = 255.0 * 32.0;
-  model->clippingValue = 100.0;
-  model->clippingFactor = 0.9;
+  model->decayValue = 100.0;
+  model->decayFactor = 0.9;
   model->rollSafetyAngle = 0.21;
   model->pitchSafetyAngle = 0.21;
   model->maxEpisodeLength = 50000;
-  model->logPeriod = 5;
+  model->logPeriod = 3;
   model->logCounter = 0;
   model->maxOutOfBounds = 10;
   model->outOfBoundsCounter = 0;
@@ -1324,7 +1324,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->gamma = 0.0;
   model->fusedGamma = 0.0;
   model->changes = 0.0;
-  model->convergenceThreshold = 2.5;
+  model->convergenceThreshold = 2.0;
   model->convergenceCounter = 0;
   model->convergenceMaxCount = 5;
 
@@ -1445,7 +1445,13 @@ void stepForward(LinearQuadraticRegulator *model)
       }
     }
   }
-  model->changes = calculateChanges(W_1, model->W_n);
+  float _changes = calculateChanges(W_1, model->W_n);
+  if (_changes <= model->convergenceThreshold && _changes <= model->changes) {
+    model->convergenceCounter = model->convergenceCounter + 1;
+  } else {
+    model->convergenceCounter = 0;
+  }
+  model->changes = _changes;
   int scaleFlag = 0;
   for (int i = 0; i < (model->n + model->m); i++)
   {
@@ -1454,7 +1460,7 @@ void stepForward(LinearQuadraticRegulator *model)
       buffer = (1.0 / model->lambda) * (getIndexMat12(model->P_n, i, j) - getIndexVec12(model->g_n, i) * getIndexVec12(model->z_n, j));
       if (isnanf(buffer) == 0)
       {
-        if (fabs(buffer) > model->clippingValue)
+        if (fabs(buffer) > model->decayValue)
         {
           scaleFlag = 1;
         }
@@ -1468,7 +1474,7 @@ void stepForward(LinearQuadraticRegulator *model)
     {
       for (int j = 0; j < (model->n + model->m); j++)
       {
-        setIndexMat12(&(model->P_n), i, j, model->clippingFactor * getIndexMat12(model->P_n, i, j));
+        setIndexMat12(&(model->P_n), i, j, model->decayFactor * getIndexMat12(model->P_n, i, j));
       }
     }
   }
@@ -1503,7 +1509,7 @@ void updateControlPolicy(LinearQuadraticRegulator *model)
   // uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
   float determinant = getIndexMat2(model->Suu, 1, 1) * getIndexMat2(model->Suu, 2, 2) - getIndexMat2(model->Suu, 1, 2) * getIndexMat2(model->Suu, 2, 1);
   // check the rank of S_uu to see if it's equal to 2 (invertible matrix)
-  if (fabs(determinant) > 0.001) // greater than zero
+  if (fabs(determinant) > 0.01) // greater than zero
   {
     setIndexMat2(&(model->SuuInverse), 0, 0, getIndexMat2(model->Suu, 1, 1) / determinant);
     setIndexMat2(&(model->SuuInverse), 0, 1, -getIndexMat2(model->Suu, 0, 1) / determinant);
@@ -1600,7 +1606,7 @@ int main(void)
   HAL_Delay(10);
   updateSensors(&model);
 
-  HAL_Delay(500);
+  HAL_Delay(100);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -1648,14 +1654,6 @@ int main(void)
       computeFeedbackPolicy(&model);
       applyFeedbackPolicy(&model);
       stepForward(&model);
-      if (fabs(model.changes) < model.convergenceThreshold)
-      {
-        model.convergenceCounter = model.convergenceCounter + 1;
-      }
-      else
-      {
-        model.convergenceCounter = 0;
-      }
       if (model.convergenceCounter >= model.convergenceMaxCount)
       {
         updateControlPolicy(&model);
