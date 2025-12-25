@@ -1144,13 +1144,13 @@ void initialize(LinearQuadraticRegulator *model)
   model->CPUClock = 84000000.0;
   model->dt = 0.0;
   model->reactionDutyCycleChange = 255.0 * 128.0;
-  model->rollingDutyCycleChnage = 255.0 * 32.0;
+  model->rollingDutyCycleChnage = 255.0 * 48.0;
   model->decayValue = 100.0;
   model->decayFactor = 0.9;
   model->rollSafetyAngle = 0.21;
   model->pitchSafetyAngle = 0.21;
   model->maxEpisodeLength = 50000;
-  model->logPeriod = 3;
+  model->logPeriod = 2;
   model->logCounter = 0;
   model->maxOutOfBounds = 10;
   model->outOfBoundsCounter = 0;
@@ -1324,9 +1324,9 @@ void initialize(LinearQuadraticRegulator *model)
   model->gamma = 0.0;
   model->fusedGamma = 0.0;
   model->changes = 0.0;
-  model->convergenceThreshold = 2.0;
+  model->convergenceThreshold = 3.0;
   model->convergenceCounter = 0;
-  model->convergenceMaxCount = 5;
+  model->convergenceMaxCount = 3;
 
   IMU imu1;
   IMU imu2;
@@ -1686,8 +1686,8 @@ int main(void)
       model.logCounter = 0;
 
       sprintf(MSG,
-              "active: %0.1f, changes: %0.2f, | AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, yaw: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
-              (float)model.active, model.changes, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.imu1.yaw, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, (float)model.k, getIndexMat12(model.P_n, 0, 0), getIndexMat12(model.P_n, 1, 1), getIndexMat12(model.P_n, 2, 2), getIndexMat12(model.P_n, 3, 3), getIndexMat12(model.P_n, 4, 4), getIndexMat12(model.P_n, 5, 5), getIndexMat12(model.P_n, 6, 6), getIndexMat12(model.P_n, 7, 7), getIndexMat12(model.P_n, 8, 8), getIndexMat12(model.P_n, 9, 9), getIndexMat12(model.P_n, 10, 10), getIndexMat12(model.P_n, 11, 11), model.time, model.dt);
+              "active: %0.1f, changes: %0.2f, | AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | GX1: %0.2f, GY1: %0.2f, GZ1: %0.2f, | GX2: %0.2f, GY2: %0.2f, GZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, yaw: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
+              (float)model.active, model.changes, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.gyrX, model.imu1.gyrY, model.imu1.gyrZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, model.imu1.roll, model.imu1.pitch, model.imu1.yaw, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, (float)model.k, getIndexMat12(model.P_n, 0, 0), getIndexMat12(model.P_n, 1, 1), getIndexMat12(model.P_n, 2, 2), getIndexMat12(model.P_n, 3, 3), getIndexMat12(model.P_n, 4, 4), getIndexMat12(model.P_n, 5, 5), getIndexMat12(model.P_n, 6, 6), getIndexMat12(model.P_n, 7, 7), getIndexMat12(model.P_n, 8, 8), getIndexMat12(model.P_n, 9, 9), getIndexMat12(model.P_n, 10, 10), getIndexMat12(model.P_n, 11, 11), model.time, model.dt);
 
       // sprintf(MSG,
       //         "active: %0.1f, changes: %0.2f, AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
