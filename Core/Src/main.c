@@ -34,11 +34,11 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TRANSMIT_LENGTH 600
+#define TRANSMIT_LENGTH 512
 #define RECEIVE_FRAME_LENGTH 32
 #define TRANSMIT_FRAME_LENGTH 5
-#define N 10
-#define M 2
+#define N 12
+#define M 3
 #define SLAVE_ADDRESS 0xA4
 #define TRANSFER_REQUEST 0x02
 #define MASTER_REQ_ROLL_H 0x14
@@ -66,6 +66,7 @@ DMA_HandleTypeDef hdma_adc1;
 
 I2C_HandleTypeDef hi2c1;
 
+TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
@@ -92,6 +93,7 @@ static void MX_TIM4_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -106,7 +108,7 @@ int uart_receive_ok = 0;
 uint8_t transferRequest = MASTER_REQ_ACC_X_H;
 uint8_t raw_data[14] = {0};
 uint16_t AD_RES = 0;
-uint32_t AD_RES_BUFFER[2];
+uint32_t AD_RES_BUFFER[3];
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -116,23 +118,39 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   }
 }
 
+void setServoAngle(uint32_t angle)
+{
+  if (angle > 180)
+  {
+    angle = 180;
+  }
+
+  uint32_t minPulseWidth = 1000; // 1ms pulse width at a 1MHz clock
+  uint32_t maxPulseWidth = 2000; // 2ms pulse width
+  uint32_t pulse = ((angle * (maxPulseWidth - minPulseWidth)) / 180) + minPulseWidth;
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, pulse); // Changed to TIM2, Channel 1
+}
+
 typedef struct
 {
-  float row0[12];
-  float row1[12];
-  float row2[12];
-  float row3[12];
-  float row4[12];
-  float row5[12];
-  float row6[12];
-  float row7[12];
-  float row8[12];
-  float row9[12];
-  float row10[12];
-  float row11[12];
-} Mat12;
+  float row0[M + N];
+  float row1[M + N];
+  float row2[M + N];
+  float row3[M + N];
+  float row4[M + N];
+  float row5[M + N];
+  float row6[M + N];
+  float row7[M + N];
+  float row8[M + N];
+  float row9[M + N];
+  float row10[M + N];
+  float row11[M + N];
+  float row12[M + N];
+  float row13[M + N];
+  float row14[M + N];
+} Mat15;
 
-float getIndexMat12(Mat12 matrix, int i, int j)
+float getIndexMat15(Mat15 matrix, int i, int j)
 {
   switch (i)
   {
@@ -172,13 +190,22 @@ float getIndexMat12(Mat12 matrix, int i, int j)
   case 11:
     return matrix.row11[j];
     break;
+  case 12:
+    return matrix.row12[j];
+    break;
+  case 13:
+    return matrix.row13[j];
+    break;
+  case 14:
+    return matrix.row14[j];
+    break;
   default:
     break;
   }
   return 0.0;
 }
 
-void setIndexMat12(Mat12 *matrix, int i, int j, float value)
+void setIndexMat15(Mat15 *matrix, int i, int j, float value)
 {
   switch (i)
   {
@@ -218,7 +245,15 @@ void setIndexMat12(Mat12 *matrix, int i, int j, float value)
   case 11:
     matrix->row11[j] = value;
     break;
-
+  case 12:
+    matrix->row12[j] = value;
+    break;
+  case 13:
+    matrix->row13[j] = value;
+    break;
+  case 14:
+    matrix->row14[j] = value;
+    break;
   default:
     break;
   }
@@ -612,16 +647,19 @@ void encodeWheel(Encoder *encoder, int newValue)
   return;
 }
 
-void senseCurrent(CurrentSensor *reactionCurrentSensor, CurrentSensor *rollingCurrentSensor)
+void senseCurrent(CurrentSensor *reactionCurrentSensor, CurrentSensor *rollingCurrentSensor, CurrentSensor *pendulumCurrentSensor)
 {
   // Start ADC Conversion in DMA Mode (Periodically Every 1ms)
-  HAL_ADC_Start_DMA(&hadc1, AD_RES_BUFFER, 2);
+  HAL_ADC_Start_DMA(&hadc1, AD_RES_BUFFER, 3);
   reactionCurrentSensor->current1 = reactionCurrentSensor->current0;
   rollingCurrentSensor->current1 = rollingCurrentSensor->current0;
+  pendulumCurrentSensor->current1 = pendulumCurrentSensor->current0;
   reactionCurrentSensor->current0 = (AD_RES_BUFFER[0] << 4);
   rollingCurrentSensor->current0 = (AD_RES_BUFFER[1] << 4);
+  pendulumCurrentSensor->current0 = (AD_RES_BUFFER[2] << 4);
   reactionCurrentSensor->currentVelocity = (float)(reactionCurrentSensor->current0 - reactionCurrentSensor->current1) / reactionCurrentSensor->currentScale;
   rollingCurrentSensor->currentVelocity = (float)(rollingCurrentSensor->current0 - rollingCurrentSensor->current1) / rollingCurrentSensor->currentScale;
+  pendulumCurrentSensor->currentVelocity = (float)(pendulumCurrentSensor->current0 - pendulumCurrentSensor->current1) / pendulumCurrentSensor->currentScale;
 }
 
 void updateIMU1(IMU *sensor) // GY-25 I2C
@@ -693,9 +731,12 @@ typedef struct
   float x9;
   float x10;
   float x11;
-} Vec12;
+  float x12;
+  float x13;
+  float x14;
+} Vec15;
 
-float getIndexVec12(Vec12 vector, int i)
+float getIndexVec15(Vec15 vector, int i)
 {
   switch (i)
   {
@@ -746,14 +787,22 @@ float getIndexVec12(Vec12 vector, int i)
   case 11:
     return vector.x11;
     break;
-
+  case 12:
+    return vector.x12;
+    break;
+  case 13:
+    return vector.x13;
+    break;
+  case 14:
+    return vector.x14;
+    break;
   default:
     break;
   }
   return 0.0;
 }
 
-void setIndexVec12(Vec12 *vector, int i, float value)
+void setIndexVec15(Vec15 *vector, int i, float value)
 {
   switch (i)
   {
@@ -793,7 +842,15 @@ void setIndexVec12(Vec12 *vector, int i, float value)
   case 11:
     vector->x11 = value;
     break;
-
+  case 12:
+    vector->x12 = value;
+    break;
+  case 13:
+    vector->x13 = value;
+    break;
+  case 14:
+    vector->x14 = value;
+    break;
   default:
     break;
   }
@@ -801,11 +858,12 @@ void setIndexVec12(Vec12 *vector, int i, float value)
 
 typedef struct
 {
-  float row0[10];
-  float row1[10];
-} Mat210;
+  float row0[N];
+  float row1[N];
+  float row2[N];
+} Mat312;
 
-float getIndexMat210(Mat210 matrix, int i, int j)
+float getIndexMat312(Mat312 matrix, int i, int j)
 {
   switch (i)
   {
@@ -815,14 +873,16 @@ float getIndexMat210(Mat210 matrix, int i, int j)
   case 1:
     return matrix.row1[j];
     break;
-
+  case 2:
+    return matrix.row2[j];
+    break;
   default:
     break;
   }
   return 0.0;
 }
 
-void setIndexMat210(Mat210 *matrix, int i, int j, float value)
+void setIndexMat312(Mat312 *matrix, int i, int j, float value)
 {
   switch (i)
   {
@@ -832,7 +892,9 @@ void setIndexMat210(Mat210 *matrix, int i, int j, float value)
   case 1:
     matrix->row1[j] = value;
     break;
-
+  case 2:
+    matrix->row2[j] = value;
+    break;
   default:
     break;
   }
@@ -841,13 +903,17 @@ void setIndexMat210(Mat210 *matrix, int i, int j, float value)
 // Represents a Linear Quadratic Regulator (LQR) model.
 typedef struct
 {
-  Mat12 W_n;                           // filter matrix
-  Mat12 P_n;                           // inverse autocorrelation matrix
-  Mat210 K_j;                          // feedback policy
-  Vec12 dataset;                       // (xₖ, uₖ)
-  Vec12 z_n;                           // z_n in RLS
-  Vec12 g_n;                           // g_n in RLS
-  Vec12 alpha_n;                       // alpha_n in RLS
+  Mat15 W_n;       // filter matrix
+  Mat15 P_n;       // inverse autocorrelation matrix
+  Mat312 K_j;      // feedback policy
+  Vec15 dataset;   // (xₖ, uₖ)
+  Vec15 z_n;       // z_n in RLS
+  Vec15 g_n;       // g_n in RLS
+  Vec15 alpha_n;   // alpha_n in RLS
+  Mat3 Suu;        // The input-input kernel
+  Mat3 SuuInverse; // the inverse of the input-input kernel
+  Mat312 Sux;      // the input-state kernel
+  Vec3 u_k;
   float x_n_dot_z_n;                   // the inner product of the x_n (dataset) and z_n
   int j;                               // step number
   int k;                               // time k
@@ -860,8 +926,10 @@ typedef struct
   float dt;                            // period in seconds
   float reactionDutyCycle;             // reaction wheel's motor PWM duty cycle
   float rollingDutyCycle;              // rolling wheel's motor PWM duty cycle
+  float servoAngle;                    // the angle of the laterla pendulum servo motor
   float reactionDutyCycleChange;       // the maximum incremental change in the reaction motor's duty cycle
-  float rollingDutyCycleChnage;        // the maximum incremental change in the rolling motor's duty cycle
+  float rollingDutyCycleChange;        // the maximum incremental change in the rolling motor's duty cycle
+  float servoAngleChange;              // the incremental changes to the servo angle
   float decayValue;                    // the decay value for any of the P matrix elements at which decaying is applied
   float decayFactor;                   // the coefficient by which the P matrix elements are rescaled through scalar multiplication
   float rollSafetyAngle;               // the roll angle in radian beyond which the controller must become deactive for safety
@@ -890,17 +958,14 @@ typedef struct
   Mat3 E;                              // a matrix transfom from body rates to Euler angular rates
   Mat24 X;                             // The optimal fusion matrix
   Mat32 Matrix;                        // all sensor measurements combined
-  Vec3 g;                              // The gravity vector
-  Mat2 Suu;                            // The input-input kernel
-  Mat2 SuuInverse;                     // the inverse of the input-input kernel
-  Mat210 Sux;                          // the input-state kernel
-  Vec2 u_k;                            // the input vector
+  Vec3 g;                              // The gravity vector                          // the input vector
   IMU imu1;                            // the first inertial measurement unit
   IMU imu2;                            // the second inertial measurement unit
   Encoder reactionEncoder;             // the reaction wheel encoder
   Encoder rollingEncoder;              // the rolling wheel encoder
   CurrentSensor reactionCurrentSensor; // the reaction wheel's motor current sensor
   CurrentSensor rollingCurrentSensor;  // the rolling wheel's motor current sensor
+  CurrentSensor pendulumCurrentSensor; // the lateral pendulum current sensor
   Vec3 position;                       // the position of the body relative to the inertial frame origin
 } LinearQuadraticRegulator;
 
@@ -1022,7 +1087,6 @@ void updateIMU(LinearQuadraticRegulator *model)
   model->imu1.pitch = _pitch;
 }
 
-
 void calculatePosition(LinearQuadraticRegulator *model)
 {
   float delta_distance = -model->rollingEncoder.velocity * 0.075;
@@ -1062,37 +1126,42 @@ void updateSensors(LinearQuadraticRegulator *model)
   updateIMU(model);
   encodeWheel(&(model->reactionEncoder), TIM3->CNT);
   encodeWheel(&(model->rollingEncoder), TIM4->CNT);
-  senseCurrent(&(model->reactionCurrentSensor), &(model->rollingCurrentSensor));
+  senseCurrent(&(model->reactionCurrentSensor), &(model->rollingCurrentSensor), &(model->pendulumCurrentSensor));
   // dataset = (xₖ, uₖ)
-  setIndexVec12(&(model->dataset), 0, model->imu1.roll);
-  setIndexVec12(&(model->dataset), 1, model->imu1.roll_velocity);
-  setIndexVec12(&(model->dataset), 2, model->imu1.roll_acceleration);
-  setIndexVec12(&(model->dataset), 3, model->imu1.pitch);
-  setIndexVec12(&(model->dataset), 4, model->imu1.pitch_velocity);
-  setIndexVec12(&(model->dataset), 5, model->imu1.pitch_acceleration);
-  setIndexVec12(&(model->dataset), 6, model->reactionEncoder.velocity);
-  setIndexVec12(&(model->dataset), 7, model->rollingEncoder.velocity);
-  setIndexVec12(&(model->dataset), 8, model->reactionCurrentSensor.currentVelocity);
-  setIndexVec12(&(model->dataset), 9, model->rollingCurrentSensor.currentVelocity);
+  setIndexVec15(&(model->dataset), 0, model->imu1.roll);
+  setIndexVec15(&(model->dataset), 1, model->imu1.roll_velocity);
+  setIndexVec15(&(model->dataset), 2, model->imu1.roll_acceleration);
+  setIndexVec15(&(model->dataset), 3, model->imu1.pitch);
+  setIndexVec15(&(model->dataset), 4, model->imu1.pitch_velocity);
+  setIndexVec15(&(model->dataset), 5, model->imu1.pitch_acceleration);
+  setIndexVec15(&(model->dataset), 6, model->reactionEncoder.velocity);
+  setIndexVec15(&(model->dataset), 7, model->rollingEncoder.velocity);
+  setIndexVec15(&(model->dataset), 8, model->rollingEncoder.acceleration);
+  // setIndexVec15(&(model->dataset), 8, 0.0);
+  setIndexVec15(&(model->dataset), 9, model->reactionCurrentSensor.currentVelocity);
+  setIndexVec15(&(model->dataset), 10, model->rollingCurrentSensor.currentVelocity);
+  setIndexVec15(&(model->dataset), 11, model->pendulumCurrentSensor.currentVelocity);
   calculatePosition(model);
   return;
 }
 
 void computeFeedbackPolicy(LinearQuadraticRegulator *model)
 {
-  setIndexVec2(&(model->u_k), 0, 0.0);
-  setIndexVec2(&(model->u_k), 1, 0.0);
+  setIndexVec3(&(model->u_k), 0, 0.0);
+  setIndexVec3(&(model->u_k), 1, 0.0);
+  setIndexVec3(&(model->u_k), 2, 0.0);
   // feeback policy
   for (int i = 0; i < model->m; i++)
   {
     for (int j = 0; j < model->n; j++)
     {
-      setIndexVec2(&(model->u_k), i, getIndexVec2(model->u_k, i) + -getIndexMat210(model->K_j, i, j) * getIndexVec12(model->dataset, j));
+      setIndexVec3(&(model->u_k), i, getIndexVec3(model->u_k, i) + -getIndexMat312(model->K_j, i, j) * getIndexVec15(model->dataset, j));
     }
   }
   // dataset = (xₖ, uₖ)
-  setIndexVec12(&(model->dataset), 10, getIndexVec2(model->u_k, 0));
-  setIndexVec12(&(model->dataset), 11, getIndexVec2(model->u_k, 1));
+  setIndexVec15(&(model->dataset), 12, getIndexVec3(model->u_k, 0));
+  setIndexVec15(&(model->dataset), 13, getIndexVec3(model->u_k, 1));
+  setIndexVec15(&(model->dataset), 14, getIndexVec3(model->u_k, 2));
   return;
 }
 
@@ -1101,18 +1170,25 @@ void applyFeedbackPolicy(LinearQuadraticRegulator *model)
   // Add probing noise to the input for persistent excitation
   int seed = DWT->CYCCNT;
   srand(seed);
-  float input0 = model->dataset.x10 + (float)(rand() % model->noiseQuotient - model->noiseQuotient / 2) / model->noiseScale;
-  model->dataset.x10 = input0;
+  float input0 = model->dataset.x12 + (float)(rand() % model->noiseQuotient - model->noiseQuotient / 2) / model->noiseScale;
+  model->dataset.x12 = input0;
   seed = DWT->CYCCNT;
   srand(seed);
-  float input1 = model->dataset.x11 + (float)(rand() % model->noiseQuotient - model->noiseQuotient / 2) / model->noiseScale;
-  model->dataset.x11 = input1;
+  float input1 = model->dataset.x13 + (float)(rand() % model->noiseQuotient - model->noiseQuotient / 2) / model->noiseScale;
+  model->dataset.x13 = input1;
+  seed = DWT->CYCCNT;
+  srand(seed);
+  float input2 = model->dataset.x14 + (float)(rand() % model->noiseQuotient - model->noiseQuotient / 2) / model->noiseScale;
+  model->dataset.x14 = input2;
   model->reactionDutyCycle += model->reactionDutyCycleChange * input0;
-  model->rollingDutyCycle += model->rollingDutyCycleChnage * input1;
+  model->rollingDutyCycle += model->rollingDutyCycleChange * input1;
+  model->servoAngle += model->servoAngleChange * input2;
   model->reactionDutyCycle = fmin(255.0 * 255.0, model->reactionDutyCycle);
   model->reactionDutyCycle = fmax(-255.0 * 255.0, model->reactionDutyCycle);
   model->rollingDutyCycle = fmin(255.0 * 255.0, model->rollingDutyCycle);
   model->rollingDutyCycle = fmax(-255.0 * 255.0, model->rollingDutyCycle);
+  model->servoAngle = fmin(70.0, model->servoAngle);
+  model->servoAngle = fmax(-70.0, model->servoAngle);
   TIM2->CCR1 = (int)fabs(model->rollingDutyCycle);
   TIM2->CCR2 = (int)fabs(model->reactionDutyCycle);
   if (model->reactionDutyCycle < 0)
@@ -1135,12 +1211,15 @@ void applyFeedbackPolicy(LinearQuadraticRegulator *model)
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_SET);
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
   }
+  setServoAngle(90.0 + model->servoAngle);
 }
 
 void resetActuators(LinearQuadraticRegulator *model)
 {
   model->reactionDutyCycle = 0.0;
   model->rollingDutyCycle = 0.0;
+  model->servoAngle = 0.0;
+  setServoAngle(90.0);
   TIM2->CCR1 = 0;
   TIM2->CCR2 = 0;
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET);
@@ -1149,14 +1228,14 @@ void resetActuators(LinearQuadraticRegulator *model)
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_RESET);
 }
 
-float calculateChanges(Mat12 W_1, Mat12 W_2)
+float calculateChanges(Mat15 W_1, Mat15 W_2)
 {
   float changes = 0.0;
-  for (int i = 0; i < 12; i++)
+  for (int i = 0; i < N + M; i++)
   {
-    for (int j = 0; j < 12; j++)
+    for (int j = 0; j < N + M; j++)
     {
-      changes += fabs(getIndexMat12(W_2, i, j) - getIndexMat12(W_1, i, j));
+      changes += fabs(getIndexMat15(W_2, i, j) - getIndexMat15(W_1, i, j));
     }
   }
   return changes;
@@ -1180,27 +1259,43 @@ void initialize(LinearQuadraticRegulator *model)
   model->active = 0;
   model->CPUClock = 84000000.0;
   model->dt = 0.0;
-  model->reactionDutyCycleChange = 255.0 * 128.0;
-  model->rollingDutyCycleChnage = 255.0 * 48.0;
+  model->reactionDutyCycleChange = 255.0 * 100.0;
+  model->rollingDutyCycleChange = 255.0 * 50.0;
+  model->servoAngleChange = -1.0;
+  model->changes = 0.0;
+  model->convergenceThreshold = 5.25;
+  model->convergenceCounter = 0;
+  model->convergenceMaxCount = 10;
+  model->servoAngle = 0.0;
+  model->reactionDutyCycle = 0.0;
+  model->rollingDutyCycle = 0.0;
   model->decayValue = 100.0;
-  model->decayFactor = 0.9;
-  model->rollSafetyAngle = 0.21;
-  model->pitchSafetyAngle = 0.21;
+  model->decayFactor = 0.85;
+  model->rollSafetyAngle = 0.12;
+  model->pitchSafetyAngle = 0.12;
   model->maxEpisodeLength = 50000;
   model->logPeriod = 2;
   model->logCounter = 0;
-  model->maxOutOfBounds = 10;
+  model->maxOutOfBounds = 5;
   model->outOfBoundsCounter = 0;
   model->kappa1 = 0.01;
   model->kappa2 = 0.01;
   model->noiseQuotient = 100;
-  model->noiseScale = 10000.0;
+  model->noiseScale = 10000.0 - 2000.0;
   model->time = 0.0;
 
-  Mat12 P_n;
-  Mat12 W_n;
-  Mat210 K_j;
-  Vec12 dataset;
+  Mat15 P_n;
+  Mat15 W_n;
+  Mat312 K_j;
+  Vec15 dataset;
+  Vec3 u_k;
+  Vec15 z_n;
+  Vec15 g_n;
+  Vec15 alpha_n;
+  Mat3 Suu;
+  Mat3 SuuInverse;
+  Mat312 Sux;
+
   Mat3 B_A1_R;
   Mat3 B_A2_R;
   Mat34 Q;
@@ -1218,59 +1313,53 @@ void initialize(LinearQuadraticRegulator *model)
   Vec3 _G1;
   Vec3 _G2;
   Mat3 E;
-  Vec2 u_k;
-  Vec12 z_n;
-  Vec12 g_n;
-  Vec12 alpha_n;
-  Mat2 Suu;
-  Mat2 SuuInverse;
-  Mat210 Sux;
 
-  for (int i = 0; i < 2; i++)
+  for (int i = 0; i < M; i++)
   {
-    for (int j = 0; j < 2; j++)
+    for (int j = 0; j < M; j++)
     {
-      setIndexMat2(&Suu, i, j, 0.0);
-      setIndexMat2(&SuuInverse, i, j, 0.0);
+      setIndexMat3(&Suu, i, j, 0.0);
+      setIndexMat3(&SuuInverse, i, j, 0.0);
     }
-    for (int j = 0; j < 10; j++)
+    for (int j = 0; j < N; j++)
     {
-      setIndexMat210(&Sux, i, j, 0.0);
+      setIndexMat312(&Sux, i, j, 0.0);
     }
   }
 
   int seed = DWT->CYCCNT;
   srand(seed);
 
-  for (int i = 0; i < (model->n + model->n); i++)
+  for (int i = 0; i < (model->n + model->m); i++)
   {
-    for (int j = 0; j < (model->n + model->n); j++)
+    for (int j = 0; j < (model->n + model->m); j++)
     {
       seed = DWT->CYCCNT;
       srand(seed);
-      setIndexMat12(&W_n, i, j, (float)(rand() % 100) / 100.0);
+      setIndexMat15(&W_n, i, j, (float)(rand() % 100) / 100.0);
       if (i == j)
       {
-        setIndexMat12(&P_n, i, j, 1.0);
+        setIndexMat15(&P_n, i, j, 1.0);
       }
       else
       {
-        setIndexMat12(&P_n, i, j, 0.0);
+        setIndexMat15(&P_n, i, j, 0.0);
       }
-      setIndexMat210(&K_j, i, j, (float)(rand() % 100) / 100.0);
+      setIndexMat312(&K_j, i, j, (float)(rand() % 100) / 100.0);
     }
-    setIndexVec12(&dataset, i, 0.0);
+    setIndexVec15(&dataset, i, 0.0);
   }
 
-  for (int i = 0; i < 12; i++)
+  for (int i = 0; i < model->n + model->m; i++)
   {
-    setIndexVec12(&z_n, i, 0.0);
-    setIndexVec12(&g_n, i, 0.0);
-    setIndexVec12(&alpha_n, i, 0.0);
+    setIndexVec15(&z_n, i, 0.0);
+    setIndexVec15(&g_n, i, 0.0);
+    setIndexVec15(&alpha_n, i, 0.0);
   }
 
-  setIndexVec2(&u_k, 0, 0.0);
-  setIndexVec2(&u_k, 1, 0.0);
+  setIndexVec3(&u_k, 0, 0.0);
+  setIndexVec3(&u_k, 1, 0.0);
+  setIndexVec3(&u_k, 2, 0.0);
 
   for (int i = 0; i < 3; i++)
   {
@@ -1360,10 +1449,6 @@ void initialize(LinearQuadraticRegulator *model)
   model->fusedBeta = 0.0;
   model->gamma = 0.0;
   model->fusedGamma = 0.0;
-  model->changes = 0.0;
-  model->convergenceThreshold = 3.0;
-  model->convergenceCounter = 0;
-  model->convergenceMaxCount = 3;
 
   IMU imu1;
   IMU imu2;
@@ -1405,12 +1490,14 @@ void initialize(LinearQuadraticRegulator *model)
   Encoder rollingEncoder = {3020, 0, 0, 0, 0, 0};
   CurrentSensor reactionCurrentSensor = {31500.0, 0, 0, 0};
   CurrentSensor rollingCurrentSensor = {31500.0, 0, 0, 0};
+  CurrentSensor pendulumCurrentSensor = {31500.0, 0, 0, 0};
   model->imu1 = imu1;
   model->imu2 = imu2;
   model->reactionEncoder = reactionEncoder;
   model->rollingEncoder = rollingEncoder;
   model->reactionCurrentSensor = reactionCurrentSensor;
   model->rollingCurrentSensor = rollingCurrentSensor;
+  model->pendulumCurrentSensor = pendulumCurrentSensor;
   model->reactionDutyCycle = 0.0;
   model->rollingDutyCycle = 0.0;
   Vec3 position;
@@ -1429,20 +1516,20 @@ void stepForward(LinearQuadraticRegulator *model)
 {
   for (int i = 0; i < (model->n + model->m); i++)
   {
-    setIndexVec12(&(model->z_n), i, 0.0);
+    setIndexVec15(&(model->z_n), i, 0.0);
   }
   for (int i = 0; i < (model->n + model->m); i++)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      setIndexVec12(&(model->z_n), i, getIndexVec12(model->z_n, i) + getIndexMat12(model->P_n, i, j) * getIndexVec12(model->dataset, j));
+      setIndexVec15(&(model->z_n), i, getIndexVec15(model->z_n, i) + getIndexMat15(model->P_n, i, j) * getIndexVec15(model->dataset, j));
     }
   }
   model->x_n_dot_z_n = 0.0;
   float buffer = 0.0;
   for (int i = 0; i < (model->n + model->m); i++)
   {
-    buffer = getIndexVec12(model->dataset, i) * getIndexVec12(model->z_n, i);
+    buffer = getIndexVec15(model->dataset, i) * getIndexVec15(model->z_n, i);
     if (isnanf(buffer) == 0)
     {
       model->x_n_dot_z_n += buffer;
@@ -1452,38 +1539,38 @@ void stepForward(LinearQuadraticRegulator *model)
   {
     for (int i = 0; i < (model->n + model->m); i++)
     {
-      setIndexVec12(&(model->g_n), i, (1.0 / (model->lambda + model->x_n_dot_z_n)) * getIndexVec12(model->z_n, i));
+      setIndexVec15(&(model->g_n), i, (1.0 / (model->lambda + model->x_n_dot_z_n)) * getIndexVec15(model->z_n, i));
     }
   }
   else
   {
     for (int i = 0; i < (model->n + model->m); i++)
     {
-      setIndexVec12(&(model->g_n), i, (1.0 / model->lambda) * getIndexVec12(model->z_n, i));
+      setIndexVec15(&(model->g_n), i, (1.0 / model->lambda) * getIndexVec15(model->z_n, i));
     }
   }
   for (int i = 0; i < (model->n + model->m); i++)
   {
-    setIndexVec12(&(model->alpha_n), i, 0.0);
+    setIndexVec15(&(model->alpha_n), i, 0.0);
   }
   for (int i = 0; i < (model->n + model->m); i++)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      setIndexVec12(&(model->alpha_n), i, getIndexVec12(model->alpha_n, i) + 0.0 - getIndexMat12(model->W_n, i, j) * getIndexVec12(model->dataset, j));
+      setIndexVec15(&(model->alpha_n), i, getIndexVec15(model->alpha_n, i) + 0.0 - getIndexMat15(model->W_n, i, j) * getIndexVec15(model->dataset, j));
     }
   }
   // a backup of old filter coefficients before updating for calculating the magnitude of changes
-  Mat12 W_1;
+  Mat15 W_1;
   for (int i = 0; i < (model->n + model->m); i++)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      setIndexMat12(&W_1, i, j, getIndexMat12(model->W_n, i, j));
-      buffer = getIndexMat12(model->W_n, i, j) + getIndexVec12(model->alpha_n, i) * getIndexVec12(model->g_n, j);
+      setIndexMat15(&W_1, i, j, getIndexMat15(model->W_n, i, j));
+      buffer = getIndexMat15(model->W_n, i, j) + getIndexVec15(model->alpha_n, i) * getIndexVec15(model->g_n, j);
       if (isnanf(buffer) == 0)
       {
-        setIndexMat12(&(model->W_n), i, j, buffer);
+        setIndexMat15(&(model->W_n), i, j, buffer);
       }
     }
   }
@@ -1502,14 +1589,14 @@ void stepForward(LinearQuadraticRegulator *model)
   {
     for (int j = 0; j < (model->n + model->m); j++)
     {
-      buffer = (1.0 / model->lambda) * (getIndexMat12(model->P_n, i, j) - getIndexVec12(model->g_n, i) * getIndexVec12(model->z_n, j));
+      buffer = (1.0 / model->lambda) * (getIndexMat15(model->P_n, i, j) - getIndexVec15(model->g_n, i) * getIndexVec15(model->z_n, j));
       if (isnanf(buffer) == 0)
       {
         if (fabs(buffer) > model->decayValue)
         {
           scaleFlag = 1;
         }
-        setIndexMat12(&(model->P_n), i, j, buffer);
+        setIndexMat15(&(model->P_n), i, j, buffer);
       }
     }
   }
@@ -1519,7 +1606,7 @@ void stepForward(LinearQuadraticRegulator *model)
     {
       for (int j = 0; j < (model->n + model->m); j++)
       {
-        setIndexMat12(&(model->P_n), i, j, model->decayFactor * getIndexMat12(model->P_n, i, j));
+        setIndexMat15(&(model->P_n), i, j, model->decayFactor * getIndexMat15(model->P_n, i, j));
       }
     }
   }
@@ -1532,40 +1619,64 @@ void updateControlPolicy(LinearQuadraticRegulator *model)
 {
   // unpack the vector Wⱼ₊₁ into the kernel matrix
   // Q(xₖ, uₖ) ≡ 0.5 * transpose([xₖ; uₖ]) * S * [xₖ; uₖ] = 0.5 * transpose([xₖ; uₖ]) * [Sₓₓ Sₓᵤ; Sᵤₓ Sᵤᵤ] * [xₖ; uₖ]
-  model->k = 1;
-  model->j = model->j + 1;
 
   for (int i = 0; i < model->m; i++)
   {
     for (int j = 0; j < model->n; j++)
     {
-      setIndexMat210(&(model->Sux), i, j, getIndexMat12(model->W_n, model->n + i, j));
+      setIndexMat312(&(model->Sux), i, j, getIndexMat15(model->W_n, model->n + i, j));
     }
   }
   for (int i = 0; i < model->m; i++)
   {
     for (int j = 0; j < model->m; j++)
     {
-      setIndexMat2(&(model->Suu), i, j, getIndexMat12(model->W_n, model->n + i, model->n + j));
+      setIndexMat3(&(model->Suu), i, j, getIndexMat15(model->W_n, model->n + i, model->n + j));
     }
   }
 
   // Perform the control update using (S24), which is uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
   // uₖ = -S⁻¹ᵤᵤ * Sᵤₓ * xₖ
-  float determinant = getIndexMat2(model->Suu, 1, 1) * getIndexMat2(model->Suu, 2, 2) - getIndexMat2(model->Suu, 1, 2) * getIndexMat2(model->Suu, 2, 1);
+  // float determinant = getIndexMat3(model->Suu, 1, 1) * getIndexMat3(model->Suu, 2, 2) - getIndexMat3(model->Suu, 1, 2) * getIndexMat3(model->Suu, 2, 1);
+  float determinant = getIndexMat3(model->Suu, 0, 0) * getIndexMat3(model->Suu, 1, 1) * getIndexMat3(model->Suu, 2, 2) +
+                      getIndexMat3(model->Suu, 0, 1) * getIndexMat3(model->Suu, 1, 2) * getIndexMat3(model->Suu, 2, 0) +
+                      getIndexMat3(model->Suu, 0, 2) * getIndexMat3(model->Suu, 1, 0) * getIndexMat3(model->Suu, 2, 1) -
+                      getIndexMat3(model->Suu, 0, 0) * getIndexMat3(model->Suu, 1, 2) * getIndexMat3(model->Suu, 2, 1) -
+                      getIndexMat3(model->Suu, 0, 1) * getIndexMat3(model->Suu, 1, 0) * getIndexMat3(model->Suu, 2, 2) -
+                      getIndexMat3(model->Suu, 0, 2) * getIndexMat3(model->Suu, 1, 1) * getIndexMat3(model->Suu, 2, 0);
   // check the rank of S_uu to see if it's equal to 2 (invertible matrix)
   if (fabs(determinant) > 0.01) // greater than zero
   {
-    setIndexMat2(&(model->SuuInverse), 0, 0, getIndexMat2(model->Suu, 1, 1) / determinant);
-    setIndexMat2(&(model->SuuInverse), 0, 1, -getIndexMat2(model->Suu, 0, 1) / determinant);
-    setIndexMat2(&(model->SuuInverse), 1, 0, -getIndexMat2(model->Suu, 1, 0) / determinant);
-    setIndexMat2(&(model->SuuInverse), 1, 1, getIndexMat2(model->Suu, 0, 0) / determinant);
+    model->k = 1;
+    model->j = model->j + 1;
+    // setIndexMat3(&(model->SuuInverse), 0, 0, getIndexMat3(model->Suu, 1, 1) / determinant);
+    // setIndexMat3(&(model->SuuInverse), 0, 1, -getIndexMat3(model->Suu, 0, 1) / determinant);
+    // setIndexMat3(&(model->SuuInverse), 1, 0, -getIndexMat3(model->Suu, 1, 0) / determinant);
+    // setIndexMat3(&(model->SuuInverse), 1, 1, getIndexMat3(model->Suu, 0, 0) / determinant);
+    Mat3 cofactor;
+    setIndexMat3(&cofactor, 0, 0, getIndexMat3(model->Suu, 1, 1) * getIndexMat3(model->Suu, 2, 2) - getIndexMat3(model->Suu, 1, 2) * getIndexMat3(model->Suu, 2, 1));
+    setIndexMat3(&cofactor, 0, 1, -(getIndexMat3(model->Suu, 1, 0) * getIndexMat3(model->Suu, 2, 2) - getIndexMat3(model->Suu, 1, 2) * getIndexMat3(model->Suu, 2, 0)));
+    setIndexMat3(&cofactor, 0, 2, getIndexMat3(model->Suu, 1, 0) * getIndexMat3(model->Suu, 2, 1) - getIndexMat3(model->Suu, 1, 1) * getIndexMat3(model->Suu, 2, 0));
+    setIndexMat3(&cofactor, 1, 0, -(getIndexMat3(model->Suu, 0, 1) * getIndexMat3(model->Suu, 2, 2) - getIndexMat3(model->Suu, 0, 2) * getIndexMat3(model->Suu, 2, 1)));
+    setIndexMat3(&cofactor, 1, 1, getIndexMat3(model->Suu, 0, 0) * getIndexMat3(model->Suu, 2, 2) - getIndexMat3(model->Suu, 0, 2) * getIndexMat3(model->Suu, 2, 0));
+    setIndexMat3(&cofactor, 1, 2, -(getIndexMat3(model->Suu, 0, 0) * getIndexMat3(model->Suu, 2, 1) - getIndexMat3(model->Suu, 0, 1) * getIndexMat3(model->Suu, 2, 0)));
+    setIndexMat3(&cofactor, 2, 0, getIndexMat3(model->Suu, 0, 1) * getIndexMat3(model->Suu, 1, 2) - getIndexMat3(model->Suu, 0, 2) * getIndexMat3(model->Suu, 1, 1));
+    setIndexMat3(&cofactor, 2, 1, -(getIndexMat3(model->Suu, 0, 0) * getIndexMat3(model->Suu, 1, 2) - getIndexMat3(model->Suu, 0, 2) * getIndexMat3(model->Suu, 1, 0)));
+    setIndexMat3(&cofactor, 2, 2, getIndexMat3(model->Suu, 0, 0) * getIndexMat3(model->Suu, 1, 1) - getIndexMat3(model->Suu, 0, 1) * getIndexMat3(model->Suu, 1, 0));
+    // transpose of the cofactor matrix
+    for (int i = 0; i < model->m; i++)
+    {
+      for (int j = 0; j < model->m; j++)
+      {
+        setIndexMat3(&(model->SuuInverse), i, j, getIndexMat3(cofactor, j, i) / determinant);
+      }
+    }
     // initialize the gain matrix
     for (int i = 0; i < model->m; i++)
     {
       for (int j = 0; j < model->n; j++)
       {
-        setIndexMat210(&(model->K_j), i, j, 0.0);
+        setIndexMat312(&(model->K_j), i, j, 0.0);
       }
     }
     for (int i = 0; i < model->m; i++)
@@ -1574,7 +1685,7 @@ void updateControlPolicy(LinearQuadraticRegulator *model)
       {
         for (int k = 0; k < model->m; k++)
         {
-          setIndexMat210(&(model->K_j), i, j, getIndexMat210(model->K_j, i, j) + getIndexMat2(model->SuuInverse, i, k) * getIndexMat210(model->Sux, k, j));
+          setIndexMat312(&(model->K_j), i, j, getIndexMat312(model->K_j, i, j) + getIndexMat3(model->SuuInverse, i, k) * getIndexMat312(model->Sux, k, j));
         }
       }
     }
@@ -1635,6 +1746,7 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM3_Init();
   MX_I2C1_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
   HAL_Delay(10);
@@ -1643,6 +1755,7 @@ int main(void)
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
   HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
   HAL_Delay(10);
@@ -1650,7 +1763,6 @@ int main(void)
   // initialize the Encoder and IMU
   HAL_Delay(10);
   updateSensors(&model);
-
   HAL_Delay(100);
   /* USER CODE END 2 */
 
@@ -1731,12 +1843,12 @@ int main(void)
       model.logCounter = 0;
 
       sprintf(MSG,
-              "x: %0.2f, y: %0.2f, z: %0.2f, active: %0.1f, changes: %0.2f, | AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | GX1: %0.2f, GY1: %0.2f, GZ1: %0.2f, | GX2: %0.2f, GY2: %0.2f, GZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, yaw: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
-              getIndexVec3(model.position, 0), getIndexVec3(model.position, 1), getIndexVec3(model.position, 2), (float)model.active, model.changes, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.gyrX, model.imu1.gyrY, model.imu1.gyrZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, model.imu1.roll, model.imu1.pitch, model.imu1.yaw, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, (float)model.k, getIndexMat12(model.P_n, 0, 0), getIndexMat12(model.P_n, 1, 1), getIndexMat12(model.P_n, 2, 2), getIndexMat12(model.P_n, 3, 3), getIndexMat12(model.P_n, 4, 4), getIndexMat12(model.P_n, 5, 5), getIndexMat12(model.P_n, 6, 6), getIndexMat12(model.P_n, 7, 7), getIndexMat12(model.P_n, 8, 8), getIndexMat12(model.P_n, 9, 9), getIndexMat12(model.P_n, 10, 10), getIndexMat12(model.P_n, 11, 11), model.time, model.dt);
+              "changes: %0.2f, x: %0.2f, y: %0.2f, z: %0.2f, active: %0.1f | AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, yaw: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, P12: %0.2f, P13: %0.2f, P14: %0.2f, time: %0.2f, dt: %0.6f\r\n",
+              model.changes, getIndexVec3(model.position, 0), getIndexVec3(model.position, 1), getIndexVec3(model.position, 2), (float)model.active, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.imu1.yaw, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, (float)model.k, getIndexMat15(model.P_n, 0, 0), getIndexMat15(model.P_n, 1, 1), getIndexMat15(model.P_n, 2, 2), getIndexMat15(model.P_n, 3, 3), getIndexMat15(model.P_n, 4, 4), getIndexMat15(model.P_n, 5, 5), getIndexMat15(model.P_n, 6, 6), getIndexMat15(model.P_n, 7, 7), getIndexMat15(model.P_n, 8, 8), getIndexMat15(model.P_n, 9, 9), getIndexMat15(model.P_n, 10, 10), getIndexMat15(model.P_n, 11, 11), getIndexMat15(model.P_n, 12, 12), getIndexMat15(model.P_n, 13, 13), getIndexMat15(model.P_n, 14, 14), model.time, model.dt);
 
       // sprintf(MSG,
       //         "active: %0.1f, changes: %0.2f, AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
-      //         (float)model.active, model.changes, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, (float)model.k, getIndexMat12(model.P_n, 0, 0), getIndexMat12(model.P_n, 1, 1), getIndexMat12(model.P_n, 2, 2), getIndexMat12(model.P_n, 3, 3), getIndexMat12(model.P_n, 4, 4), getIndexMat12(model.P_n, 5, 5), getIndexMat12(model.P_n, 6, 6), getIndexMat12(model.P_n, 7, 7), getIndexMat12(model.P_n, 8, 8), getIndexMat12(model.P_n, 9, 9), getIndexMat12(model.P_n, 10, 10), getIndexMat12(model.P_n, 11, 11), model.time, model.dt);
+      //         (float)model.active, model.changes, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, (float)model.k, getIndexMat15(model.P_n, 0, 0), getIndexMat15(model.P_n, 1, 1), getIndexMat15(model.P_n, 2, 2), getIndexMat15(model.P_n, 3, 3), getIndexMat15(model.P_n, 4, 4), getIndexMat15(model.P_n, 5, 5), getIndexMat15(model.P_n, 6, 6), getIndexMat15(model.P_n, 7, 7), getIndexMat15(model.P_n, 8, 8), getIndexMat15(model.P_n, 9, 9), getIndexMat15(model.P_n, 10, 10), getIndexMat15(model.P_n, 11, 11), model.time, model.dt);
 
       // sprintf(MSG,
       //         "x0: %0.2f, x1: %0.2f, x2: %0.2f, x3: %0.2f, x4: %0.2f, x5: %0.2f, x6: %0.2f, x7: %0.2f, x8: %0.2f, x9: %0.2f, dt: %0.6f\r\n",
@@ -1747,7 +1859,7 @@ int main(void)
       //         model.imu1.roll, model.imu1.pitch, P_n[0][0], P_n[0][1], P_n[0][2], P_n[0][3], P_n[0][4], P_n[0][5], P_n[0][6], P_n[0][7], P_n[0][8], P_n[0][9], P_n[0][10], P_n[0][11], dt);
       // sprintf(MSG,
       //         "roll: %0.2f, pitch: %0.2f, | x_n_dot_z_n: %0.2f, P00: %0.2f, P_n11: %0.2f, P_n22: %0.2f, P_n33: %0.2f, P_n44: %0.2f, dt: %0.6f\r\n",
-      //         model.imu1.roll, model.imu1.pitch, x_n_dot_z_n, getIndexMat12(model.W_n, 0, 0), getIndexMat12(model.W_n, 1, 1), getIndexMat12(model.W_n, 2, 2), getIndexMat12(model.W_n, 3, 3), getIndexMat12(model.W_n, 4, 4), dt);
+      //         model.imu1.roll, model.imu1.pitch, x_n_dot_z_n, getIndexMat15(model.W_n, 0, 0), getIndexMat15(model.W_n, 1, 1), getIndexMat15(model.W_n, 2, 2), getIndexMat15(model.W_n, 3, 3), getIndexMat15(model.W_n, 4, 4), dt);
 
       // sprintf(MSG,
       //         "roll: %0.2f, pitch: %0.2f, | x_n_dot_z_n: %0.2f, z_n0: %0.2f, z_n1: %0.2f, z_n2: %0.2f, z_n3: %0.2f, z_n4: %0.2f, z_n5: %0.2f, z_n6: %0.2f, z_n7: %0.2f, z_n8: %0.2f, z_n9: %0.2f, z_n10: %0.2f, z_n11: %0.2f, dt: %0.6f\r\n",
@@ -1771,6 +1883,7 @@ int main(void)
       diff = t2 - t1;
       model.dt += (float)diff / model.CPUClock;
     }
+
     // Rinse and repeat :)
     elapsedTime2 = DWT->CYCCNT;
     elapsedTime = elapsedTime2 - elapsedTime1;
@@ -1854,7 +1967,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.NbrOfConversion = 3;
   hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -1876,6 +1989,14 @@ static void MX_ADC1_Init(void)
    */
   sConfig.Channel = ADC_CHANNEL_4;
   sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+   */
+  sConfig.Rank = 3;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -1916,6 +2037,79 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+}
+
+/**
+ * @brief TIM1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 84 - 1;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 20000 - 1;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+  HAL_TIM_MspPostInit(&htim1);
 }
 
 /**
