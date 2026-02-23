@@ -1137,7 +1137,6 @@ void updateSensors(LinearQuadraticRegulator *model)
   setIndexVec15(&(model->dataset), 6, model->reactionEncoder.velocity);
   setIndexVec15(&(model->dataset), 7, model->rollingEncoder.velocity);
   setIndexVec15(&(model->dataset), 8, model->rollingEncoder.acceleration);
-  // setIndexVec15(&(model->dataset), 8, 0.0);
   setIndexVec15(&(model->dataset), 9, model->reactionCurrentSensor.currentVelocity);
   setIndexVec15(&(model->dataset), 10, model->rollingCurrentSensor.currentVelocity);
   setIndexVec15(&(model->dataset), 11, model->pendulumCurrentSensor.currentVelocity);
@@ -1452,8 +1451,8 @@ void initialize(LinearQuadraticRegulator *model)
 
   IMU imu1;
   IMU imu2;
-  imu1.accXOffset = -19;
-  imu1.accYOffset = -37;
+  imu1.accXOffset = -12;
+  imu1.accYOffset = -90;
   imu1.accZOffset = 30;
   imu1.accXScale = 0.000488281; // scale : 1 / 2048
   imu1.accYScale = 0.000488281;
@@ -1469,9 +1468,9 @@ void initialize(LinearQuadraticRegulator *model)
   imu1._R = _R1;
   imu1.G = G1;
   imu1._G = _G1;
-  imu2.accXOffset = -45;
-  imu2.accYOffset = -4;
-  imu2.accZOffset = -6;
+  imu2.accXOffset = -97;
+  imu2.accYOffset = 0;
+  imu2.accZOffset = -13;
   imu2.accXScale = 0.000488281;
   imu2.accYScale = 0.000488281;
   imu2.accZScale = 0.000488281;
@@ -1843,8 +1842,8 @@ int main(void)
       model.logCounter = 0;
 
       sprintf(MSG,
-              "changes: %0.2f, x: %0.2f, y: %0.2f, z: %0.2f, active: %0.1f | AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, yaw: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, P12: %0.2f, P13: %0.2f, P14: %0.2f, time: %0.2f, dt: %0.6f\r\n",
-              model.changes, getIndexVec3(model.position, 0), getIndexVec3(model.position, 1), getIndexVec3(model.position, 2), (float)model.active, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.imu1.yaw, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, (float)model.j, (float)model.k, getIndexMat15(model.P_n, 0, 0), getIndexMat15(model.P_n, 1, 1), getIndexMat15(model.P_n, 2, 2), getIndexMat15(model.P_n, 3, 3), getIndexMat15(model.P_n, 4, 4), getIndexMat15(model.P_n, 5, 5), getIndexMat15(model.P_n, 6, 6), getIndexMat15(model.P_n, 7, 7), getIndexMat15(model.P_n, 8, 8), getIndexMat15(model.P_n, 9, 9), getIndexMat15(model.P_n, 10, 10), getIndexMat15(model.P_n, 11, 11), getIndexMat15(model.P_n, 12, 12), getIndexMat15(model.P_n, 13, 13), getIndexMat15(model.P_n, 14, 14), model.time, model.dt);
+              "changes: %0.2f, x: %0.2f, y: %0.2f, z: %0.2f, active: %0.1f | AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, yaw: %0.2f, | encT: %0.2f, encB: %0.2f, encS: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, P12: %0.2f, P13: %0.2f, P14: %0.2f, time: %0.2f, dt: %0.6f\r\n",
+              model.changes, getIndexVec3(model.position, 0), getIndexVec3(model.position, 1), getIndexVec3(model.position, 2), (float)model.active, model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu1.roll, model.imu1.pitch, model.imu1.yaw, model.reactionEncoder.radianAngle, model.rollingEncoder.radianAngle, model.servoAngle, (float)model.j, (float)model.k, getIndexMat15(model.P_n, 0, 0), getIndexMat15(model.P_n, 1, 1), getIndexMat15(model.P_n, 2, 2), getIndexMat15(model.P_n, 3, 3), getIndexMat15(model.P_n, 4, 4), getIndexMat15(model.P_n, 5, 5), getIndexMat15(model.P_n, 6, 6), getIndexMat15(model.P_n, 7, 7), getIndexMat15(model.P_n, 8, 8), getIndexMat15(model.P_n, 9, 9), getIndexMat15(model.P_n, 10, 10), getIndexMat15(model.P_n, 11, 11), getIndexMat15(model.P_n, 12, 12), getIndexMat15(model.P_n, 13, 13), getIndexMat15(model.P_n, 14, 14), model.time, model.dt);
 
       // sprintf(MSG,
       //         "active: %0.1f, changes: %0.2f, AX1: %0.2f, AY1: %0.2f, AZ1: %0.2f, | AX2: %0.2f, AY2: %0.2f, AZ2: %0.2f, | roll: %0.2f, pitch: %0.2f, | encT: %0.2f, encB: %0.2f, | j: %0.1f, k: %0.1f, | P0: %0.2f, P1: %0.2f, P2: %0.2f, P3: %0.2f, P4: %0.2f, P5: %0.2f, P6: %0.2f, P7: %0.2f, P8: %0.2f, P9: %0.2f, P10: %0.2f, P11: %0.2f, time: %0.2f, dt: %0.6f\r\n",
@@ -1872,11 +1871,10 @@ int main(void)
       //   model.rollingCurrentSensor.current0, model.rollingCurrentSensor.currentVelocity, TIM4->CNT, model.rollingEncoder.angle, model.rollingEncoder.velocity, model.rollingEncoder.acceleration,
       //   model.reactionCurrentSensor.current0, model.reactionCurrentSensor.currentVelocity, TIM3->CNT, model.reactionEncoder.angle, model.reactionEncoder.velocity, model.reactionEncoder.acceleration, dt);
 
-      // sprintf(MSG, "ax1: %d, ay1: %d, az1: %d, | ax2: %d, ay2: %d, az2: %d, dt: %0.6f\r\n",
+      // sprintf(MSG, "rawAx1: %d, rawAy1: %d, rawAz1: %d, | rawAx2: %d, rawAy2: %d, rawAz2: %d, dt: %0.6f\r\n",
       //         model.imu1.rawAccX, model.imu1.rawAccY, model.imu1.rawAccZ, model.imu2.rawAccX, model.imu2.rawAccY, model.imu2.rawAccZ, model.dt);
-      // sprintf(MSG,
-      //   "ax2: %0.2f, ay2: %0.2f, az2: %0.2f, | gx2: %0.2f, gy2: %0.2f, gz2: %0.2f, dt: %0.6f\r\n",
-      //   model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.imu2.gyrX, model.imu2.gyrY, model.imu2.gyrZ, dt);
+      // sprintf(MSG, "ax1: %0.2f, ay1: %0.2f, az1: %0.2f, | ax2: %0.2f, ay2: %0.2f, az2: %0.2f, dt: %0.6f\r\n",
+      //         model.imu1.accX, model.imu1.accY, model.imu1.accZ, model.imu2.accX, model.imu2.accY, model.imu2.accZ, model.dt);
 
       HAL_UART_Transmit(&huart6, MSG, sizeof(MSG), 1000);
       t2 = DWT->CYCCNT;
