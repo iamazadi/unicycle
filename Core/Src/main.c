@@ -1258,20 +1258,20 @@ void initialize(LinearQuadraticRegulator *model)
   model->active = 0;
   model->CPUClock = 84000000.0;
   model->dt = 0.0;
-  model->reactionDutyCycleChange = 255.0 * 100.0;
-  model->rollingDutyCycleChange = 255.0 * 50.0;
-  model->servoAngleChange = -1.0;
+  model->reactionDutyCycleChange = 255.0 * 255.0;
+  model->rollingDutyCycleChange = 255.0 * 24.0;
+  model->servoAngleChange = -1.6;
   model->changes = 0.0;
-  model->convergenceThreshold = 5.25;
+  model->convergenceThreshold = 6.28;
   model->convergenceCounter = 0;
-  model->convergenceMaxCount = 10;
+  model->convergenceMaxCount = 6;
   model->servoAngle = 0.0;
   model->reactionDutyCycle = 0.0;
   model->rollingDutyCycle = 0.0;
   model->decayValue = 100.0;
-  model->decayFactor = 0.85;
-  model->rollSafetyAngle = 0.12;
-  model->pitchSafetyAngle = 0.12;
+  model->decayFactor = 0.9;
+  model->rollSafetyAngle = 0.11;
+  model->pitchSafetyAngle = 0.11;
   model->maxEpisodeLength = 50000;
   model->logPeriod = 2;
   model->logCounter = 0;
@@ -1280,7 +1280,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->kappa1 = 0.01;
   model->kappa2 = 0.01;
   model->noiseQuotient = 100;
-  model->noiseScale = 10000.0 - 2000.0;
+  model->noiseScale = 100000.0 - 20000.0;
   model->time = 0.0;
 
   Mat15 P_n;
