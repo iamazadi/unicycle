@@ -1136,7 +1136,8 @@ void updateSensors(LinearQuadraticRegulator *model)
   setIndexVec15(&(model->dataset), 5, model->imu1.pitch_acceleration);
   setIndexVec15(&(model->dataset), 6, model->reactionEncoder.velocity);
   setIndexVec15(&(model->dataset), 7, model->rollingEncoder.velocity);
-  setIndexVec15(&(model->dataset), 8, model->rollingEncoder.acceleration);
+  // setIndexVec15(&(model->dataset), 8, model->rollingEncoder.acceleration);
+    setIndexVec15(&(model->dataset), 8, 0.0);
   setIndexVec15(&(model->dataset), 9, model->reactionCurrentSensor.currentVelocity);
   setIndexVec15(&(model->dataset), 10, model->rollingCurrentSensor.currentVelocity);
   setIndexVec15(&(model->dataset), 11, model->pendulumCurrentSensor.currentVelocity);
