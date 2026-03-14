@@ -1262,7 +1262,7 @@ void initialize(LinearQuadraticRegulator *model)
   model->k = 1;
   model->n = N;
   model->m = M;
-  model->lambda = 0.85;
+  model->lambda = 0.80;
   model->delta = 0.01;
   model->active = 0;
   model->CPUClock = 84000000.0;
